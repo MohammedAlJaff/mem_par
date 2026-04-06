@@ -38,6 +38,56 @@ mem_par/
 └── setup.py
 ```
 
+## Setup
+
+The repo-level environment target is Python 3.10. A good remote setup flow is:
+
+```bash
+mamba env create -f environment.yml
+mamba activate mem-par
+```
+
+Then install the PyTorch build that matches the machine:
+
+```bash
+# Apple Silicon or CPU-only Linux
+pip install "torch>=2.1" "torchvision>=0.16"
+
+# NVIDIA Linux with CUDA 12.4
+pip install "torch>=2.1" "torchvision>=0.16" --index-url https://download.pytorch.org/whl/cu124
+
+# NVIDIA Linux with CUDA 12.1
+pip install "torch>=2.1" "torchvision>=0.16" --index-url https://download.pytorch.org/whl/cu121
+```
+
+Finally install the repo requirements:
+
+```bash
+pip install -r requirements.txt
+```
+
+That installs:
+
+- the main package in editable mode via `-e .`
+- the vendored `third_party/torch-fidelity` package for the JiT baseline
+- evaluation packages such as `clean-fid` and `lpips`
+- baseline extras such as `natsort` and `pytorch-fid`
+
+If the environment already exists, update it with:
+
+```bash
+mamba env update -f environment.yml --prune
+mamba activate mem-par
+pip install -r requirements.txt
+```
+
+Quick sanity checks:
+
+```bash
+python -c "import torch, torchvision, yaml, sklearn, cleanfid, lpips, natsort, pytorch_fid; print(torch.__version__)"
+python -m experiments.synthetic.low_d.spiral_mem_demo.run --help
+```
+
 ## Canonical Experiment Modules
 
 - `python -m experiments.synthetic.high_d.gmm_subspace.run`

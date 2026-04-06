@@ -215,7 +215,7 @@ def write_slurm_script(
 #SBATCH --error={log_pattern}
 #SBATCH --array=0-{n_runs - 1}
 
-module load Python/3.10.4-GCCcore-11.3.0
+module load Miniforge3/24.7.1-2-hpc1-bdist
 source /proj/{account}/envs/parambnd/bin/activate
 
 cd {project_dir}

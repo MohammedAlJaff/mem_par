@@ -1,0 +1,11 @@
+name: mem-par
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip>=24
+  - setuptools>=68
+  - wheel
+
+  # Install torch/torchvision after activation so each machine can choose
+  # the right wheel (CPU, Apple Silicon, or a specific CUDA build).
