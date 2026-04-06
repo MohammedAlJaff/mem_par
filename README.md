@@ -40,45 +40,46 @@ mem_par/
 
 ## Setup
 
-The repo-level environment target is Python 3.10. A good remote setup flow is:
+The repo-level environment target is Python 3.10. A simple setup flow is:
 
 ```bash
-mamba env create -f environment.yml
-mamba activate mem-par
+mamba env create -n mem_param_env -f environment.yml
+mamba activate mem_param_env
+python -m pip install -r requirements.txt
 ```
 
-Then install the PyTorch build that matches the machine:
-
-```bash
-# Apple Silicon or CPU-only Linux
-pip install "torch>=2.1" "torchvision>=0.16"
-
-# NVIDIA Linux with CUDA 12.4
-pip install "torch>=2.1" "torchvision>=0.16" --index-url https://download.pytorch.org/whl/cu124
-
-# NVIDIA Linux with CUDA 12.1
-pip install "torch>=2.1" "torchvision>=0.16" --index-url https://download.pytorch.org/whl/cu121
-```
-
-Finally install the repo requirements:
-
-```bash
-pip install -r requirements.txt
-```
-
-That installs:
+`requirements.txt` installs:
 
 - the main package in editable mode via `-e .`
 - the vendored `third_party/torch-fidelity` package for the JiT baseline
 - evaluation packages such as `clean-fid` and `lpips`
+- notebook tooling such as `jupyterlab`
 - baseline extras such as `natsort` and `pytorch-fid`
+
+### GPU PyTorch on clusters
+
+`environment.yml` intentionally keeps PyTorch out of the base environment so each machine can
+install the right build afterward.
+
+For NVIDIA Linux clusters, install a CUDA-enabled PyTorch build after activating the env:
+
+```bash
+CONDA_OVERRIDE_CUDA=11.8 mamba install -y -c conda-forge "pytorch==2.5.1=cuda*" "torchvision=*=cuda*"
+python -m pip install -r requirements.txt
+```
+
+For CPU-only Linux or Apple Silicon, just activate the env and install the requirements:
+
+```bash
+python -m pip install -r requirements.txt
+```
 
 If the environment already exists, update it with:
 
 ```bash
-mamba env update -f environment.yml --prune
-mamba activate mem-par
-pip install -r requirements.txt
+mamba env update -n mem_param_env -f environment.yml --prune
+mamba activate mem_param_env
+python -m pip install -r requirements.txt
 ```
 
 Quick sanity checks:
