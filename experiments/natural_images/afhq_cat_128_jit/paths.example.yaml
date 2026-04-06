@@ -1,0 +1,4 @@
+data_root: /proj/berzelius-2025-NNN/data/afhq/train/cat
+holdout_root: /proj/berzelius-2025-NNN/data/afhq/val/cat
+cluster_project_dir: /proj/berzelius-2025-NNN/parameterization_boundary
+slurm_account: berzelius-2025-NNN

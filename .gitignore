@@ -1,0 +1,62 @@
+# Local paths and configs (per-machine)
+**/paths.local.yaml
+**/paths.local.yml
+.claude/settings.local.json
+.claude/scheduled-tasks.json
+
+# Experiment outputs and runs (large, per-machine)
+**/runs/*
+!**/runs/.gitkeep
+output/
+tmp/
+
+# Note: vendored third-party code (baselines/*/vendor/, third_party/*/)
+# is tracked and included in the repo for reproducibility
+
+# Generated figures and plots (large, regenerable)
+**/figures/*
+!**/figures/.gitkeep
+
+# Python and build caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Data downloads (large, regenerable)
+tmp/data/
+tmp/jupyter-notebook/
+
+# Checkpoints and model weights (large, regenerable)
+*.pt
+*.pth
+*.ckpt
+
+# Testing
+.pytest_cache/
+
+# Environment
+.env
+venv/
+ENV/
