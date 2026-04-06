@@ -4,6 +4,8 @@ from setuptools import find_packages, setup
 
 
 def read_requirements() -> list[str]:
+    # Read requirements from requirements.txt
+    # Exclude editable installs and comments
     requirements_path = Path(__file__).with_name("requirements.txt")
     requirements = []
     for raw_line in requirements_path.read_text().splitlines():
@@ -15,8 +17,9 @@ def read_requirements() -> list[str]:
         requirements.append(line)
     return requirements
 
+
 setup(
-    name="parameterization_boundary",
+    name="memparam",
     version="0.1.0",
     packages=find_packages(),
     python_requires=">=3.10",
