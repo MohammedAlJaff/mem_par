@@ -1,31 +1,13 @@
-# Parameterization Boundary
+# Equivalent in Principle, Unequal in Practice
 
-**Does prediction parameterization shift the memorization–generalization phase boundary in flow matching models?**
+**How target parameterization shapes memorization and generalization in diffusion and flow-based models**
 
-This repo is organized around experiments as the primary scientific unit.
-
-## Quick Start
-
-```bash
-pip install -r requirements.txt
-
-# Canonical synthetic smoke test
-python -m experiments.synthetic.high_d.gmm_subspace.run --device cpu --d 4 --n 500
-
-# Sweep generation
-python -m experiments.synthetic.high_d.gmm_subspace.sweep --dry-run
-
-# Aggregate local results
-python -m experiments.synthetic.high_d.gmm_subspace.aggregate
-
-# Baseline sandbox
-python -m baselines.flow_matching.run train-2d --dataset checkerboard
-```
+This repo is organized around experiments as the primary scientific unit for studying how target parameterization affects memorization and generalization.
 
 ## Layout
 
 ```text
-parameterization_boundary/
+mem_par/
 ├── experiments/
 │   ├── synthetic/
 │   │   ├── low_d/
@@ -85,9 +67,8 @@ Each experiment folder contains:
 
 ```bibtex
 @article{aljaff2026equivalent,
-  title={Equivalent in Principle, Unequal in Practice: How Parametrization 
-         Shapes the Memorization--Generalization Phase Boundary in 
-         Score-Based Generative Models},
+  title={Equivalent in Principle, Unequal in Practice: How Target Parameterization
+         Shapes Memorization and Generalization in Diffusion and Flow-Based Models},
   author={Al-Jaff, Mohammad and Henter, Gustav Eje and Azizpour, Hossein 
           and Kragic, Danica},
   journal={arXiv preprint},
