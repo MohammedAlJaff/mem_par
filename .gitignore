@@ -60,3 +60,11 @@ tmp/jupyter-notebook/
 .env
 venv/
 ENV/
+
+# Large vendored binary files (FID stats, demo outputs, precomputed visuals)
+*.npz
+*.pkl
+baselines/flow_matching/vendor/outputs/
+baselines/jit/vendor/demo/
+baselines/jit/vendor/fid_stats/
+third_party/torch-fidelity/doc/img/*.gif
