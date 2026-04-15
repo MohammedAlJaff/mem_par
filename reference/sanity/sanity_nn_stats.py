@@ -11,9 +11,10 @@ alpha = 0.5  =>  midpoint between two   =>  r ~ 1,  f_mem ~ 0
 alpha = 0.99 =>  near-copies            =>  r small, f_mem high
 
 Run:
-    python reference/sanity/sanity_nn_stats.py
+    python reference/sanity/sanity_nn_stats.py --ratio-threshold 0.5
 """
 
+import argparse
 import os
 import sys
 
@@ -22,7 +23,7 @@ import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from experiments.natural_images.common.evaluation.memorization import (
+from mp_metrics import (
     compute_f_mem,
     compute_nn_stats,
 )
@@ -72,13 +73,28 @@ def run_one(ref: torch.Tensor, gen: torch.Tensor, label: str, threshold: float =
     return stats, f_mem
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Sanity-check NN-ratio memorization metrics with controlled synthetic data."
+    )
+    parser.add_argument(
+        "--ratio-threshold",
+        type=float,
+        default=0.5,
+        help="Threshold used for f_mem = mean(r < threshold).",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     n_ref, dim = 50, 16
     n_gen = 200
     ref = make_reference(n_ref, dim)
 
     print(f"Reference: {n_ref} points in R^{dim}")
     print(f"Generated: {n_gen} points per test")
+    print(f"Using ratio threshold: {args.ratio_threshold:.3f}")
     print(
         f"{'':32s}  |  {'f_mem':>5s}  {'mean_r':>8s}  {'med_r':>8s}  "
         f"{'min_r':>8s}  {'max_r':>8s}"
@@ -88,19 +104,24 @@ def main():
     # Sweep alpha from exact copy to midpoint.
     for alpha in [1.0, 0.999, 0.99, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5]:
         gen = make_interpolated(ref, alpha=alpha, m=n_gen)
-        run_one(ref, gen, f"alpha={alpha:.3f}")
+        run_one(ref, gen, f"alpha={alpha:.3f}", threshold=args.ratio_threshold)
 
     print("-" * 100)
     torch.manual_seed(99)
     noise = torch.randn(n_gen, dim)
-    run_one(ref, noise, "pure noise (no relation)")
+    run_one(ref, noise, "pure noise (no relation)", threshold=args.ratio_threshold)
 
     print("-" * 100)
     for sigma in [0.0, 1e-4, 1e-2, 0.1, 0.5]:
         torch.manual_seed(7)
         idx = torch.randint(0, n_ref, (n_gen,))
         gen = ref[idx] + sigma * torch.randn(n_gen, dim)
-        run_one(ref, gen, f"copy + noise(sigma={sigma})")
+        run_one(
+            ref,
+            gen,
+            f"copy + noise(sigma={sigma})",
+            threshold=args.ratio_threshold,
+        )
 
     print("\n=== Quick reference ===")
     print("alpha=1.0 (exact copy)   -> f_mem should be ~1, r ~ 0")

@@ -15,6 +15,9 @@ This folder is the canonical home for reusable first-party code.
 
 - `mp_metrics/`
   Memorization metrics and checkpoint replay evaluation.
+  The canonical `f_mem` threshold lives at `config.evaluation.ratio_threshold`
+  and is respected by direct tensor metrics, folder-based metrics, and
+  checkpoint replay.
 
 - `mp_artifacts/`
   Run layout, config snapshots, checkpoints, tensors, and JSON artifacts.

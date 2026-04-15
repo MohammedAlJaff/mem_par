@@ -12,7 +12,16 @@ Each script has a different teaching role:
 - `check_unet.py`: image-model plumbing check. Verifies shapes, short-run optimization, and basic sampling for the UNet stack.
 - `check_jit_memory.py`: capacity check for the JiT image model. Useful before launching expensive high-resolution sweeps.
 - `sanity_nn_stats.py`: controlled nearest-neighbor metric sanity check that
-  makes the expected `f_mem` behavior explicit.
+  makes the expected `f_mem` behavior explicit. It now accepts
+  `--ratio-threshold` so the active memorization threshold is visible and
+  controlled at run time.
+- `sanity_skimage_mem_curves.py`: real-image memorization sanity check using
+  `skimage.data`. For each selected source image, it adds increasing Gaussian
+  noise and plots one `f_mem` curve per image while using the full selected
+  image set (including the source image) as reference.
+- `../notebooks/skimage_memorization_sanity.ipynb`: notebook companion to the
+  `skimage` memorization sanity script, with editable cells for threshold
+  sweeps, image choice, and visual inspection of noisy samples.
 
 Suggested reading and run order:
 

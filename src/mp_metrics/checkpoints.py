@@ -4,7 +4,7 @@ import torch
 
 from gdfm import GDFM
 from mp_artifacts import list_checkpoint_paths, load_config_snapshot, save_json, save_tensor
-from mp_metrics.memorization import compute_memorization_metrics, nearest_neighbor_stats
+from mp_metrics.memorization import compute_memorization_metrics, compute_nn_stats
 
 
 def evaluate_run(run_dir, device="cpu"):
@@ -37,17 +37,18 @@ def evaluate_run(run_dir, device="cpu"):
         metrics = compute_memorization_metrics(
             samples,
             train_tensor,
-            ratio_threshold=float(config.evaluation.ratio_threshold),
             chunk_size=int(config.evaluation.chunk_size),
+            config=config,
         )
         baseline = compute_memorization_metrics(
             reference_tensor[: samples.shape[0]],
             train_tensor,
-            ratio_threshold=float(config.evaluation.ratio_threshold),
             chunk_size=int(config.evaluation.chunk_size),
+            config=config,
         )
         record = {
             "step": int(state["step"]),
+            "ratio_threshold": metrics["ratio_threshold"],
             "f_mem": metrics["f_mem"],
             "mean_nn_ratio": metrics["mean_nn_ratio"],
             "mean_d1": metrics["mean_d1"],
@@ -58,7 +59,7 @@ def evaluate_run(run_dir, device="cpu"):
         records.append(record)
 
         if checkpoint_path == checkpoint_paths[-1]:
-            neighbor_stats = nearest_neighbor_stats(
+            neighbor_stats = compute_nn_stats(
                 samples,
                 train_tensor,
                 chunk_size=int(config.evaluation.chunk_size),
