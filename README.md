@@ -2,37 +2,42 @@
 
 **How target parameterization shapes memorization and generalization in diffusion and flow-based models**
 
-This repo is organized around experiments as the primary scientific unit for studying how target parameterization affects memorization and generalization.
+This repo now has a clearer ownership split:
+
+- `src/` is the canonical umbrella for reusable first-party code
+- `src/gdfm/` owns the model core and backbone setup
+- `src/mp_*/` owns thin reusable study support code such as config, data, metrics, artifacts, and training
+- `experiments/` is the canonical surface for experiment-specific code and scripts
+- `baselines/` and `third_party/` remain preserved vendor/reference code
+- `prototyping/`, `lab/`, and `notebooks/` remain reference material
 
 ## Layout
 
 ```text
 mem_par/
+├── src/
+│   ├── gdfm/
+│   ├── mp_config/
+│   ├── mp_data/
+│   ├── mp_metrics/
+│   ├── mp_artifacts/
+│   └── mp_training/
 ├── experiments/
-│   ├── synthetic/
-│   │   ├── low_d/
-│   │   │   ├── common/
-│   │   │   └── spiral_mem_demo/
-│   │   ├── high_d/
-│   │   │   ├── common/
-│   │   │   ├── gmm_subspace/
-│   │   │   └── torus/
-│   │   └── mnist/
-│   │       └── common/
-│   └── natural_images/
-│       ├── common/
-│       ├── celeba32_grey_unet/
-│       ├── afhq_cat_64_jit/
-│       ├── afhq_cat_64_unet/
-│       ├── afhq_cat_128_jit/
-│       └── afhq_cat_256_jit/
+│   ├── _shared/
+│   ├── mnist_n4_diagonal/
+│   ├── mnist_nsweep/
+│   ├── gmm_subspace/
+│   ├── celeba32_grey/
+│   └── legacy/
 ├── baselines/
 │   ├── flow_matching/
 │   ├── jit/
 │   └── bonnaire/
-├── lab/
-├── notebooks/
+├── lab/                   # pedagogy and sanity material
+├── notebooks/             # exploratory notebooks
+├── prototyping/           # prototype fallback/reference material
 ├── output/                # legacy artifacts only
+├── outputs/               # scratch outputs only
 ├── requirements.txt
 ├── pyproject.toml
 └── setup.py
@@ -85,34 +90,31 @@ python -m pip install -r requirements.txt
 Quick sanity checks:
 
 ```bash
-python -c "import torch, torchvision, yaml, sklearn, cleanfid, lpips, natsort, pytorch_fid; print(torch.__version__)"
-python -m experiments.synthetic.low_d.spiral_mem_demo.run --help
+python -c "import torch, torchvision, yaml, sklearn, cleanfid, lpips, natsort, pytorch_fid, ml_collections; print(torch.__version__)"
+python -m experiments.gmm_subspace.train --help
 ```
 
 ## Canonical Experiment Modules
 
-- `python -m experiments.synthetic.high_d.gmm_subspace.run`
-- `python -m experiments.synthetic.high_d.torus.run`
-- `python -m experiments.synthetic.low_d.spiral_mem_demo.run`
-- `python -m experiments.synthetic.mnist.<experiment>.run`
-- `python -m experiments.natural_images.celeba32_grey_unet.run`
-- `python -m experiments.natural_images.afhq_cat_64_jit.run`
-- `python -m experiments.natural_images.afhq_cat_64_unet.run`
-- `python -m experiments.natural_images.afhq_cat_128_jit.run`
-- `python -m experiments.natural_images.afhq_cat_256_jit.run`
+- `python -m experiments.mnist_n4_diagonal.train`
+- `python -m experiments.mnist_n4_diagonal.evaluate`
+- `python -m experiments.mnist_n4_diagonal.plot`
+- `python -m experiments.mnist_nsweep.train`
+- `python -m experiments.gmm_subspace.train`
+- `python -m experiments.celeba32_grey.train`
 
 Each experiment folder contains:
 
-- `config.yaml` for scientific settings and sweep axes
-- `paths.example.yaml` for machine-specific roots and SLURM settings
-- `run.py`, `sweep.py`, and `aggregate.py`
+- `config.py` returning a canonical `ConfigDict`
+- `train.py`, `evaluate.py`, and `plot.py`
 - local `runs/` and `figures/`
 
 ## Notes
 
-- New experiment outputs stay inside the owning experiment folder.
-- Root `output/` is treated as legacy history and is not part of the canonical workflow.
-- Labs and baselines remain first-class, but they are not the source of truth for paper experiments.
+- New canonical outputs stay inside the owning experiment folder.
+- Root `output/` and `outputs/` are legacy/scratch only and are not part of the canonical workflow.
+- Older experiment code is preserved under `experiments/legacy/`.
+- Labs, notebooks, and prototypes remain useful references, but they are not canonical runtime surfaces.
 
 ## Citation
 

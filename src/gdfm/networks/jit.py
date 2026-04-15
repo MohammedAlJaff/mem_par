@@ -11,7 +11,7 @@ from einops import repeat
 from gdfm.networks.common import ensure_time_batch
 
 
-VENDOR_ROOT = Path(__file__).resolve().parents[2] / "baselines" / "jit" / "vendor"
+VENDOR_ROOT = Path(__file__).resolve().parents[3] / "baselines" / "jit" / "vendor"
 
 
 def _safe_scaled_dot_product_attention(query, key, value, dropout_p=0.0):

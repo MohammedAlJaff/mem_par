@@ -8,6 +8,7 @@
 **/runs/*
 !**/runs/.gitkeep
 output/
+outputs/
 tmp/
 
 # Note: vendored third-party code (baselines/*/vendor/, third_party/*/)

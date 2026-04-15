@@ -153,7 +153,7 @@ def main():
     print("  For real experiments use 10k-50k steps and multiple seeds.")
     print("  This script just verifies all pieces connect correctly.")
     print()
-    print("  The canonical experiment flow (python -m experiments.synthetic.high_d.gmm_subspace.run) does:")
+    print("  The canonical experiment flow (python -m experiments.gmm_subspace.train/evaluate/plot) does:")
     print("  1. Same structure but with local experiment config.yaml")
     print("  2. Full n sweep: n ∈ {50, 100, 200, 500, 1000, 2000, 5000, 10000}")
     print("  3. Multiple seeds for f_mem averaging")
