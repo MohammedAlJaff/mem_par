@@ -1,6 +1,6 @@
 # AFHQ Cat 128 JiT
 
-Resolution-scaling image experiment.
+Archived AFHQ 128x128 JiT experiment from the older natural-images stack.
 
 ## Commands
 

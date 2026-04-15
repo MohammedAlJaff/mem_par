@@ -2,14 +2,43 @@
 
 **How target parameterization shapes memorization and generalization in diffusion and flow-based models**
 
-This repo now has a clearer ownership split:
+This repository studies whether equivalent-in-principle parameterizations
+(`x`, `eps`, `v`) remain unequal in practice when we hold architecture, data,
+and training protocol fixed.
 
-- `src/` is the canonical umbrella for reusable first-party code
-- `src/gdfm/` owns the model core and backbone setup
-- `src/mp_*/` owns thin reusable study support code such as config, data, metrics, artifacts, and training
-- `experiments/` is the canonical surface for experiment-specific code and scripts
-- `baselines/` and `third_party/` remain preserved vendor/reference code
-- `prototyping/`, `lab/`, and `notebooks/` remain reference material
+The repo is now organized around three clear surfaces:
+
+- `src/`
+  reusable first-party code
+- `experiments/`
+  canonical study-specific entrypoints and outputs
+- `baselines/` and `third_party/`
+  preserved external code
+
+Non-canonical but useful material lives under `reference/` and `prototyping/`.
+
+## Current Ownership Split
+
+- `src/gdfm/`
+  canonical GDFM model core, model setup, and backbones
+- `src/mp_config/`
+  base `ConfigDict` defaults and override helpers
+- `src/mp_data/`
+  canonical data loading and subset logic
+- `src/mp_metrics/`
+  memorization metrics and checkpoint replay
+- `src/mp_artifacts/`
+  run layout, config snapshots, checkpoints, and saved tensors
+- `src/mp_training/`
+  shared training loop scaffolding
+- `experiments/<study>/`
+  thin study-specific `config.py`, `train.py`, `evaluate.py`, `plot.py`
+- `experiments/legacy/`
+  preserved pre-reset experiment stack
+- `reference/`
+  walkthroughs, sanity checks, exploratory notebooks, and archive material
+- `prototyping/`
+  fallback and transitional prototype code
 
 ## Layout
 
@@ -23,19 +52,19 @@ mem_par/
 │   ├── mp_artifacts/
 │   └── mp_training/
 ├── experiments/
-│   ├── _shared/
 │   ├── mnist_n4_diagonal/
 │   ├── mnist_nsweep/
 │   ├── gmm_subspace/
 │   ├── celeba32_grey/
 │   └── legacy/
 ├── baselines/
-│   ├── flow_matching/
-│   ├── jit/
-│   └── bonnaire/
-├── lab/                   # pedagogy and sanity material
-├── notebooks/             # exploratory notebooks
-├── prototyping/           # prototype fallback/reference material
+├── third_party/
+├── reference/
+│   ├── walkthroughs/
+│   ├── sanity/
+│   ├── notebooks/
+│   └── archive/
+├── prototyping/
 ├── output/                # legacy artifacts only
 ├── outputs/               # scratch outputs only
 ├── requirements.txt
@@ -45,7 +74,7 @@ mem_par/
 
 ## Setup
 
-The repo-level environment target is Python 3.10. A simple setup flow is:
+The repo-level environment target is Python 3.10.
 
 ```bash
 mamba env create -n mem_param_env -f environment.yml
@@ -53,68 +82,65 @@ mamba activate mem_param_env
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` installs:
-
-- the main package in editable mode via `-e .`
-- the vendored `third_party/torch-fidelity` package for the JiT baseline
-- evaluation packages such as `clean-fid` and `lpips`
-- notebook tooling such as `jupyterlab`
-- baseline extras such as `natsort` and `pytorch-fid`
+`requirements.txt` installs the project in editable mode and pulls in the
+supporting evaluation, notebook, and baseline packages used by the current
+stack.
 
 ### GPU PyTorch on clusters
 
-`environment.yml` intentionally keeps PyTorch out of the base environment so each machine can
-install the right build afterward.
+`environment.yml` intentionally leaves the PyTorch build choice to the machine.
 
-For NVIDIA Linux clusters, install a CUDA-enabled PyTorch build after activating the env:
+For NVIDIA Linux clusters:
 
 ```bash
 CONDA_OVERRIDE_CUDA=11.8 mamba install -y -c conda-forge "pytorch==2.5.1=cuda*" "torchvision=*=cuda*"
 python -m pip install -r requirements.txt
 ```
 
-For CPU-only Linux or Apple Silicon, just activate the env and install the requirements:
+For CPU-only Linux or Apple Silicon:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-If the environment already exists, update it with:
+If you are running directly from a checkout that has not been installed in
+editable mode yet, prefix local commands with `PYTHONPATH=src`.
+
+## Canonical Study Entry Points
 
 ```bash
-mamba env update -n mem_param_env -f environment.yml --prune
-mamba activate mem_param_env
-python -m pip install -r requirements.txt
-```
-
-Quick sanity checks:
-
-```bash
-python -c "import torch, torchvision, yaml, sklearn, cleanfid, lpips, natsort, pytorch_fid, ml_collections; print(torch.__version__)"
+python -m experiments.mnist_n4_diagonal.train --help
+python -m experiments.mnist_n4_diagonal.evaluate --help
+python -m experiments.mnist_n4_diagonal.plot --help
+python -m experiments.mnist_nsweep.train --help
 python -m experiments.gmm_subspace.train --help
+python -m experiments.celeba32_grey.train --help
 ```
 
-## Canonical Experiment Modules
+Each active study folder owns:
 
-- `python -m experiments.mnist_n4_diagonal.train`
-- `python -m experiments.mnist_n4_diagonal.evaluate`
-- `python -m experiments.mnist_n4_diagonal.plot`
-- `python -m experiments.mnist_nsweep.train`
-- `python -m experiments.gmm_subspace.train`
-- `python -m experiments.celeba32_grey.train`
+- `config.py`
+- `train.py`
+- `evaluate.py`
+- `plot.py`
+- local `runs/`
+- local `figures/`
 
-Each experiment folder contains:
+## Safety And Reference Material
 
-- `config.py` returning a canonical `ConfigDict`
-- `train.py`, `evaluate.py`, and `plot.py`
-- local `runs/` and `figures/`
+- `prototyping/gdfm_components.py` remains the fallback reference implementation
+  while canonical GDFM hardens in `src/gdfm/core.py`.
+- `reference/` contains pedagogy, sanity checks, notebooks, and archived
+  context. Useful, but non-canonical.
+- `experiments/legacy/` keeps the old experiment stack readable and importable,
+  but it is not the source of truth for new first-party work.
 
 ## Notes
 
-- New canonical outputs stay inside the owning experiment folder.
-- Root `output/` and `outputs/` are legacy/scratch only and are not part of the canonical workflow.
-- Older experiment code is preserved under `experiments/legacy/`.
-- Labs, notebooks, and prototypes remain useful references, but they are not canonical runtime surfaces.
+- Canonical outputs stay inside the owning experiment folder.
+- Root `output/` and `outputs/` are legacy or scratch only.
+- `baselines/` and `third_party/` stay separate from the canonical first-party
+  stack.
 
 ## Citation
 

@@ -1,8 +1,8 @@
 # High-D Synthetic
 
-Use this subfamily for synthetic experiments with known latent structure in high ambient dimension.
+Archived high-dimensional synthetic subfamily from the older experiment stack.
 
-Current canonical experiments:
+Preserved experiments:
 
 - `gmm_subspace/`
 - `torus/`

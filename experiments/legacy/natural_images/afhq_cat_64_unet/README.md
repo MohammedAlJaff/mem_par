@@ -1,6 +1,6 @@
 # AFHQ Cat 64 UNet
 
-Architectural comparison against the JiT result.
+Archived AFHQ 64x64 UNet experiment from the older natural-images stack.
 
 ## Commands
 

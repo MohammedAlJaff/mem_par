@@ -1,6 +1,6 @@
 # AFHQ Cat 64 JiT
 
-First JiT-based image experiment in the new layout.
+Archived AFHQ 64x64 JiT experiment from the older natural-images stack.
 
 ## Commands
 

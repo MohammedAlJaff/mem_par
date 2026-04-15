@@ -1,7 +1,7 @@
 # Low-D Synthetic
 
-Use this subfamily for synthetic experiments where the data geometry is directly inspectable in 2D or 3D.
+Archived low-dimensional synthetic subfamily from the older experiment stack.
 
-Current canonical experiments:
+Preserved experiments:
 
 - `spiral_mem_demo/`

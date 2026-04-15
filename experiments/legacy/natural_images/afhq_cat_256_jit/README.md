@@ -1,6 +1,6 @@
 # AFHQ Cat 256 JiT
 
-Highest-resolution JiT experiment.
+Archived AFHQ 256x256 JiT experiment from the older natural-images stack.
 
 ## Commands
 

@@ -1,11 +1,20 @@
 # Prototyping
 
-This folder is archived prototype material.
+This folder contains prototype and transition material.
 
-It remains valuable for notation, exploratory code, and transitional reference,
-but it is not the canonical home for new first-party study infrastructure.
+It is still valuable because it holds:
 
-Canonical new work now belongs in:
-- `src/gdfm/` for the model core
+- the cleaned `gdfm_components.py` style and notation exemplar
+- the fallback GDFM reference implementation
+- sidecar prototype samplers and small transitional helpers
+
+It is not the canonical home for new first-party study infrastructure.
+
+Canonical new work belongs in:
+
+- `src/gdfm/` for model-core code
 - `src/mp_*/` for shared study infrastructure
-- `experiments/` for runnable first-party experiment modules
+- `experiments/` for runnable first-party study modules
+
+When canonical GDFM changes, keep the prototype-vs-canonical parity tests green
+so this folder remains a trustworthy fallback.

@@ -1,6 +1,8 @@
 # CelebA32 Grey UNet
 
-Validation image experiment against the Bonnaire-style setting.
+Archived CelebA32 validation experiment from the older natural-images stack.
+
+New canonical image work now lives at `experiments/celeba32_grey/`.
 
 ## Commands
 

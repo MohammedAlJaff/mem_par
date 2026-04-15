@@ -16,7 +16,7 @@ If this guide conflicts with older canonical code, this guide wins.
 
 - Vendored code under `baselines/*/vendor`
 - `third_party/`
-- Untouched exploratory or archival material in `lab/` and `lab/reference/`
+- Untouched exploratory or archival material in `reference/` and `reference/archive/`
 - Historical code that has not been touched yet
 
 ## Reference Exemplar
@@ -97,4 +97,3 @@ Use it as the reference for:
   - align comments and docstrings with the GDFM explanatory style
   - align notation where the change is local and safe
 - Do not do large unrelated rewrites just to chase style consistency.
-

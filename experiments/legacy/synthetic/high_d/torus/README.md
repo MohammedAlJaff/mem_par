@@ -1,6 +1,8 @@
 # Torus
 
-Canonical curved-manifold synthetic experiment.
+Archived torus experiment from the older synthetic stack.
+
+These commands still resolve through the legacy compatibility shim.
 
 ## Commands
 

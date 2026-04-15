@@ -1,6 +1,6 @@
 # Spiral Memorization Demo
 
-Standalone synthetic demo with rich plots and animations.
+Archived low-dimensional synthetic demo with rich plots and animations.
 
 ## Commands
 
