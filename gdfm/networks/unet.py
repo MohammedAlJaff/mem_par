@@ -39,6 +39,14 @@ class BonnaireUNet(nn.Module):
         dropout,
         time_emb_dim=None,
     ):
+        """
+        Build the paper-facing UNet wrapper, then hand off to the existing
+        Bonnaire-style implementation that lives in the repo.
+
+        The important design decision here is that `gdfm` owns the *public*
+        constructor surface, while the older experiment stack can keep its own
+        internal argument names for now.
+        """
         super().__init__()
         if image_size <= 0:
             raise ValueError(f"image_size must be positive, got {image_size}")
@@ -60,6 +68,8 @@ class BonnaireUNet(nn.Module):
         self.dropout = dropout
         self.time_emb_dim = time_emb_dim
 
+        # The wrapped model is the real image backbone. This adapter exists so
+        # the rest of GDFM can talk to a stable constructor and forward API.
         self.model = SmallUNet(
             in_channels=image_channels,
             out_channels=image_channels,
@@ -72,6 +82,17 @@ class BonnaireUNet(nn.Module):
         )
 
     def forward(self, z, t):
+        """
+        Run one UNet forward pass under the canonical `gdfm` contract.
+
+        This adapter does three jobs:
+            1. enforce the expected image shape `[B, C, H, W]`
+            2. enforce the shared time shape `[B]`
+            3. guarantee that the wrapped model preserves the input image shape
+
+        That last check matters because GDFM backbones are expected to predict
+        a tensor living in the same ambient space as the noisy input.
+        """
         if z.dim() != 4:
             raise ValueError(
                 f"BonnaireUNet expects z shape [B, C, H, W], got {tuple(z.shape)}"
@@ -87,6 +108,7 @@ class BonnaireUNet(nn.Module):
                 f"got {z.shape[2]}x{z.shape[3]}"
             )
 
+        # Delegate the real image processing to the wrapped Bonnaire-style UNet.
         out = self.model(z, t)
         if out.shape != z.shape:
             raise ValueError(

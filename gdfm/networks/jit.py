@@ -15,6 +15,14 @@ VENDOR_ROOT = Path(__file__).resolve().parents[2] / "baselines" / "jit" / "vendo
 
 
 def _safe_scaled_dot_product_attention(query, key, value, dropout_p=0.0):
+    """
+    CPU-safe attention fallback for the vendored JiT implementation.
+
+    The vendor code assumes a CUDA-oriented execution path. For local sanity
+    checks and notebook inspection we want the wrapper to work on CPU too, so
+    we replace that attention kernel with a plain PyTorch version that respects
+    the device of the incoming tensors.
+    """
     length_q = query.size(-2)
     length_k = key.size(-2)
     scale_factor = 1.0 / math.sqrt(query.size(-1))
@@ -38,6 +46,14 @@ def _safe_scaled_dot_product_attention(query, key, value, dropout_p=0.0):
 
 
 def _make_device_safe_rope_class():
+    """
+    Rebuild the vendor rotary-embedding class without hard-coded `.cuda()`
+    assumptions.
+
+    The returned class has the same role as the original vendor class, but it
+    stores buffers in a device-agnostic way so the wrapper can be exercised on
+    CPU during tests and notebook walkthroughs.
+    """
     util_module = importlib.import_module("util.model_util")
     broadcat = util_module.broadcat
     rotate_half = util_module.rotate_half
@@ -55,6 +71,13 @@ def _make_device_safe_rope_class():
             num_freqs=1,
             num_cls_token=0,
         ):
+            """
+            Precompute the cosine and sine tables used by rotary attention.
+
+            The vendor implementation builds these once and reuses them in every
+            forward pass. We keep that behavior, but store the result in buffers
+            that follow the module's device automatically.
+            """
             super().__init__()
             if custom_freqs is not None:
                 freqs = custom_freqs
@@ -92,12 +115,21 @@ def _make_device_safe_rope_class():
             self.register_buffer("freqs_sin", freqs_sin)
 
         def forward(self, tensor):
+            """
+            Apply rotary mixing to the last feature dimension of `tensor`.
+            """
             return tensor * self.freqs_cos + rotate_half(tensor) * self.freqs_sin
 
     return DeviceSafeVisionRotaryEmbeddingFast
 
 
 def _load_vendor_module():
+    """
+    Import the vendored JiT module and patch it for CPU-safe local use.
+
+    We patch exactly once per process. After that the wrapper can instantiate
+    JiT models without every caller needing to know about the vendor quirks.
+    """
     if not VENDOR_ROOT.exists():
         raise FileNotFoundError(
             f"Vendored JiT implementation not found at {VENDOR_ROOT}"
@@ -116,6 +148,8 @@ def _load_vendor_module():
         ) from exc
 
     if not getattr(module, "_gdfm_cpu_safe_patch", False):
+        # The wrapper deliberately centralizes these patches so notebooks and
+        # tests can use the same code path as real model setup.
         module.VisionRotaryEmbeddingFast = _make_device_safe_rope_class()
         module.scaled_dot_product_attention = _safe_scaled_dot_product_attention
         module._gdfm_cpu_safe_patch = True
@@ -157,6 +191,13 @@ class JiT(nn.Module):
         in_context_len=32,
         in_context_start=4,
     ):
+        """
+        Build the `gdfm` wrapper around the vendored Li & He JiT backbone.
+
+        This constructor validates the image/patch geometry, loads the vendor
+        module, and hides away the unconditional-label convention that we want
+        for GDFM-side model setup.
+        """
         super().__init__()
         if image_size <= 0:
             raise ValueError(f"image_size must be positive, got {image_size}")
@@ -198,6 +239,9 @@ class JiT(nn.Module):
         self.in_context_start = in_context_start
         self.num_classes = 1
 
+        # The wrapper surface is unconditional, but the vendor implementation
+        # still expects class labels. We therefore instantiate it with a single
+        # null class and always feed that label in `forward`.
         self.model = module.JiT(
             input_size=image_size,
             patch_size=patch_size,
@@ -215,6 +259,15 @@ class JiT(nn.Module):
         self.register_buffer("null_label", torch.zeros(1, dtype=torch.long))
 
     def forward(self, z, t):
+        """
+        Run the wrapped JiT under the canonical `gdfm` image contract.
+
+        Steps:
+            1. validate image rank, channels, spatial size, and time shape
+            2. expand the stored null label to match the batch
+            3. call the underlying vendor model as `model(z, t, labels)`
+            4. verify that the result stays in the same image space
+        """
         if z.dim() != 4:
             raise ValueError(f"JiT expects z shape [B, C, H, W], got {tuple(z.shape)}")
         ensure_time_batch(t, z, "JiT")
@@ -228,6 +281,8 @@ class JiT(nn.Module):
                 f"got {z.shape[2]}x{z.shape[3]}"
             )
 
+        # The public wrapper is unconditional; the dummy label keeps the vendor
+        # signature satisfied without leaking class-conditioning into callers.
         labels = self.null_label.expand(z.shape[0]).to(z.device)
         out = self.model(z, t, labels)
         if out.shape != z.shape:
@@ -238,12 +293,24 @@ class JiT(nn.Module):
 
     @property
     def patch_dim(self):
+        """
+        Number of scalar input values that live inside one image patch.
+        """
         return self.image_channels * self.patch_size**2
 
     @property
     def seq_length(self):
+        """
+        Number of spatial patches processed by the transformer.
+        """
         return (self.image_size // self.patch_size) ** 2
 
     @property
     def bottleneck_ratio(self):
+        """
+        Width expansion from raw patch dimension to transformer hidden size.
+
+        This is a compact way to reason about how aggressively the model lifts
+        local image patches into its latent representation.
+        """
         return self.hidden_dim / self.patch_dim

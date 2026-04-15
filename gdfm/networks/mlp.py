@@ -22,12 +22,25 @@ class TimeCondMLP(nn.Module):
     """
 
     def __init__(self, data_dim, hidden_dim, n_layers, time_emb_dim):
+        """
+        Build the canonical synthetic-data backbone.
+
+        Structure:
+            - one learned time-embedding branch
+            - one plain feed-forward trunk on [z, t_emb]
+
+        This is intentionally simple. For low-dimensional synthetic work we
+        want the backbone to be easy to reason about before we move to image
+        models with more architectural confounders.
+        """
         super().__init__()
         self.data_dim = data_dim
         self.time_emb_dim = time_emb_dim
 
         self.time_mlp = TimeEmbeddingMLP(time_emb_dim, time_emb_dim)
 
+        # We concatenate the data vector and the learned time embedding once,
+        # then use a standard MLP trunk to mix them.
         layers = [nn.Linear(data_dim + time_emb_dim, hidden_dim), nn.SiLU()]
         for _ in range(n_layers - 1):
             layers += [nn.Linear(hidden_dim, hidden_dim), nn.SiLU()]
@@ -36,11 +49,23 @@ class TimeCondMLP(nn.Module):
 
     def time_embedding(self, t):
         """
-        Sinusoidal embedding of scalar t in [0,1].
+        Return the learned time representation consumed by the main MLP trunk.
+
+        We keep this as its own method so notebooks and tests can inspect the
+        time branch directly instead of treating it as hidden inside `forward`.
         """
         return self.time_mlp(t)
 
     def forward(self, z, t):
+        """
+        Predict one output vector per input vector at time `t`.
+
+        Data flow:
+            1. Validate the `[B, D]` data contract and `[B]` time contract.
+            2. Embed time into a learned feature vector.
+            3. Concatenate `[z, t_emb]`.
+            4. Push the result through the feed-forward trunk.
+        """
         if z.dim() != 2:
             raise ValueError(
                 f"TimeCondMLP expects z shape [B, D], got {tuple(z.shape)}"
