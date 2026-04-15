@@ -8,6 +8,14 @@ Short operational guide for agents and contributors working in this repo.
 - Duplication between experiments is acceptable.
 - Do not rebuild a repo-wide abstraction layer.
 
+## Python Style
+
+- Canonical first-party Python follows `PYTHON_STYLE.md`.
+- If the guide conflicts with older canonical code, the guide wins.
+- The cleaned `prototyping/gdfm_components.py` file is the style and notation exemplar.
+- Canonical first-party Python should not use type hints or `from __future__ import annotations`.
+- When touching an existing canonical file, normalize the touched region toward the guide instead of doing a repo-wide rewrite.
+
 ## Canonical Placement
 
 - `experiments/synthetic/low_d/`

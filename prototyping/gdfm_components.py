@@ -1,9 +1,7 @@
-import math
-from dataclasses import dataclass
-from typing import Optional, Tuple
-
 import torch
 import torch.nn as nn
+
+from gdfm import build_network
 
 # ============================================================
 # GDFM: Generalized Denoising Flow Matching
@@ -53,10 +51,10 @@ import torch.nn as nn
 #                   endpoints. Training (sample_t) and sampling
 #                   (linspace grid) both respect these bounds.
 #
-# Secondary defense: _safe_div clamps denominators to abs >= 1e-7.
-#                    This catches floating point edge cases without
-#                    silently producing wrong results far from the
-#                    endpoints.
+# Secondary defense: _safe_div clamps denominators to abs >=
+#                    safe_div_eps. The default is 0.05 following
+#                    Li & He (2025), but the exact floor is a
+#                    config decision rather than a hard-coded rule.
 #
 # Why (3) is always safe:
 #   FM:  a=t, b=1-t, a'=1, b'=-1
@@ -78,127 +76,16 @@ import torch.nn as nn
 # ============================================================
 
 # ============================================================
-# Time-conditioned MLP
+# Conversion logic
+#
+# Everything derives from the interpolation and its derivative:
+#     z_t = a(t) x + b(t) eps
+#     v_t = a'(t) x + b'(t) eps    (ODE velocity, dz_t/dt)
+#
+# Given any one of (x_hat, eps_hat, v_hat) and z_t, we can
+# recover the other two by substitution. All six converters
+# route through this same algebra.
 # ============================================================
-
-
-class TimeCondMLP(nn.Module):
-    """
-    Flat-vector MLP with sinusoidal time embedding.
-    Input:
-        z: [B, D]
-        t: [B]
-    Output:
-        y: [B, D]
-    """
-
-    def __init__(
-        self, data_dim: int, hidden_dim: int, n_layers: int, time_emb_dim: int
-    ):
-        super().__init__()
-        self.data_dim = data_dim
-        self.time_emb_dim = time_emb_dim
-
-        self.time_mlp = nn.Sequential(
-            nn.Linear(time_emb_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, time_emb_dim),
-        )
-
-        layers = [nn.Linear(data_dim + time_emb_dim, hidden_dim), nn.SiLU()]
-        for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.SiLU()]
-        layers += [nn.Linear(hidden_dim, data_dim)]
-        self.net = nn.Sequential(*layers)
-
-    def time_embedding(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Sinusoidal embedding of scalar t in [0,1].
-        t: [B]
-        returns: [B, time_emb_dim]
-        """
-        half = self.time_emb_dim // 2
-        idx = torch.arange(half, device=t.device, dtype=t.dtype)
-        freqs = torch.exp(-math.log(10000.0) * idx / max(half - 1, 1))
-        args = t[:, None] * freqs[None, :]
-        emb = torch.cat([args.sin(), args.cos()], dim=-1)
-        return self.time_mlp(emb)
-
-    def forward(self, z: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        if z.dim() != 2:
-            raise ValueError(
-                f"TimeCondMLP expects z shape [B, D], got {tuple(z.shape)}"
-            )
-        if t.dim() != 1:
-            raise ValueError(f"TimeCondMLP expects t shape [B], got {tuple(t.shape)}")
-        if z.shape[0] != t.shape[0]:
-            raise ValueError(
-                f"Batch mismatch: z has {z.shape[0]} samples, t has {t.shape[0]} samples"
-            )
-
-        t_emb = self.time_embedding(t)
-        return self.net(torch.cat([z, t_emb], dim=-1))
-
-
-## ============================================================
-## Conversion logic
-##
-## Everything derives from the interpolation and its derivative:
-##     z_t = a(t) x + b(t) eps
-##     v_t = a'(t) x + b'(t) eps    (ODE velocity, dz_t/dt)
-##
-## Given any one of (x_hat, eps_hat, v_hat) and z_t, we can
-## recover the other two by substitution. All six converters
-## route through this same algebra.
-## ============================================================
-
-
-"""
-A GDFM is a generalized flow matching model that can be used for:
-- Flow Matching (FM)
-- VP / DDPM-style perturbation paths
-
-Its coefficients are decided by both choices family and the  parameterization.
-
-- We need to ultimatly decide the functional forms of the coefficient funcions a, b, c and d and w.
-
-
-consider the general interpolation function 
-z_t = a(t) x + b(t) eps
-
-let r_hat_theta_t be the predicted output of the model at time t
-
-r_hat(t, z_; theta) = NN(z_t, t; theta)
-
-prediction space parameterization refers to when if we want the network to 
-estimate one of : x, eps, v_t. 
-(where v_t = c(t) x + d(t) eps, and v_t = d/dt of z_t = a(t) x + b(t) eps)
-
-
-
-say we have a NN with x predict output, ie 
-NN(z_t, t; theta) = r_hat(z_t, t; theta) = x_hat 
-
-given the equation z_t = a(t) x + b(t) eps, we can convert an 
-x_hat into an eps_hat: 
-eps_hat = (z_t - a(t) x_hat) / b(t)
-
-also vica-versa, 
-
-what about converting an x_hat into a v_hat? 
-well: given that 
-v_t = c(t) x + d(t) eps
-and z_t = a(t) x + b(t) eps
-and v_t = dz_t / dt = c(t) a(t) x + d(t) b(t) eps = a'(t) x + b'(t) eps
-we can write: 
-v_hat = c(t) x_hat + d(t) eps_hat
-     = c(t) x_hat + d(t) (z_t - a(t) x_hat) / b(t)
-     = (c(t) x_hat b(t) + d(t) z_t - d(t) a(t) x_hat) / b(t)
-     = (x_hat (c(t) b(t) - d(t) a(t)) + d(t) z_t) / b(t)
-
-"""
-
-#  network output conversion functions
 
 
 # ============================================================
@@ -221,18 +108,14 @@ class GDFM(nn.Module):
         v_t = a'(t) x + b'(t) eps         (ODE velocity)
     """
 
-    def __init__(self, config: GDFMConfig):
+    def __init__(self, config):
         super().__init__()
         self.config = config
 
-        # these two sets up all the class attributes
-        # ie: a, b, w, _sample_t, family_name,
+        # These two methods set the family coefficients and the network.
         self._setup_family(config)
         self._setup_network(config)
 
-    # --------------------------------------------------------
-    # Family setup
-    # --------------------------------------------------------
     # --------------------------------------------------------
     # Family setup
     #
@@ -274,15 +157,7 @@ class GDFM(nn.Module):
     # --------------------------------------------------------
 
     def _setup_network(self, cfg):
-        if cfg.network == "mlp":
-            self.net = TimeCondMLP(
-                data_dim=cfg.data_dim,
-                hidden_dim=cfg.hidden_dim,
-                n_layers=cfg.n_layers,
-                time_emb_dim=cfg.time_emb_dim,
-            )
-        else:
-            raise ValueError(f"Unknown network: {cfg.network}")
+        self.net = build_network(cfg)
 
     # --------------------------------------------------------
     # Prediction and loss computation
@@ -292,9 +167,7 @@ class GDFM(nn.Module):
         return self.net(z, t)
 
     # --------------------------------------------------------
-
     # Sampling
-    # --------------------------------------------------------
     # --------------------------------------------------------
     # Sampling (ODE integration from noise to data)
     #
@@ -318,14 +191,13 @@ class GDFM(nn.Module):
         """
         Generate samples by integrating the ODE from noise (t=0) to data (t=1).
 
-        shape:   shape of each sample, e.g. (D,) for flat or (C, H, W) for images
+        z:       initial noise tensor with explicit batch dimension
         n_steps: number of integration steps
         method:  "euler" or "heun"
         device:  defaults to model device
 
-        Returns: [n_samples, ...] tensor of generated samples
-                where n_samples = shape[0] if shape includes batch dim,
-                or pass shape = (B, D) / (B, C, H, W) explicitly.
+        Returns:
+            Tensor with the same shape as z, evolved from noise to data.
         """
         if device is None:
             device = next(self.parameters()).device
@@ -574,17 +446,6 @@ class GDFM(nn.Module):
         """
         return 0.5 * self._beta_vp(t) * self._a_vp(t)
 
-    # def _db_dt_vp(self, t):
-    #     """
-    #     b'(t) = -beta(1-t) * a(t)^2 / (2 * b(t))
-
-    #     Derived from b = sqrt(1 - a^2), chain rule.
-    #     See Appendix A.
-    #     """
-    #     a = self._a_vp(t)
-    #     b = self._b_vp(t)
-    #     beta = self._beta_vp(t)
-    #     return -beta * a**2 / (2.0 * b)
     def _db_dt_vp(self, t):
         """b'(t) = -beta(1-t) * a(t)^2 / (2 * b(t))"""
         a = self._a_vp(t)
@@ -630,17 +491,9 @@ class GDFM(nn.Module):
     # Every conversion routes through recovering x_hat and eps_hat.
     # --------------------------------------------------------
 
-    # def _x_hat_to_eps_hat(self, x_hat, z, t):
-    #     """eps_hat = (z - a*x_hat) / b"""
-    #     return (z - self.a(t) * x_hat) / self.b(t)
-    # safe version
     def _x_hat_to_eps_hat(self, x_hat, z, t):
         """eps_hat = (z - a*x_hat) / b"""
         return self._safe_div(z - self.a(t) * x_hat, self.b(t))
-
-    # def _eps_hat_to_x_hat(self, eps_hat, z, t):
-    #     """x_hat = (z - b*eps_hat) / a"""
-    #     return (z - self.b(t) * eps_hat) / self.a(t)
 
     def _eps_hat_to_x_hat(self, eps_hat, z, t):
         """x_hat = (z - b*eps_hat) / a"""
@@ -656,14 +509,6 @@ class GDFM(nn.Module):
         x_hat = self._eps_hat_to_x_hat(eps_hat, z, t)
         return self.da_dt(t) * x_hat + self.db_dt(t) * eps_hat
 
-    # def _v_hat_to_x_hat(self, v_hat, z, t):
-    #     """
-    #     From v = a'x + b'eps and z = ax + beps, eliminate eps:
-    #         x_hat = (b*v_hat - b'*z) / (a'*b - a*b')
-    #     """
-    #     a, b = self.a(t), self.b(t)
-    #     da, db = self.da_dt(t), self.db_dt(t)
-    #     return (b * v_hat - db * z) / (da * b - a * db)
     def _v_hat_to_x_hat(self, v_hat, z, t):
         """x_hat = (b*v_hat - b'*z) / (a'*b - a*b')"""
         a, b = self.a(t), self.b(t)
@@ -709,13 +554,6 @@ class GDFM(nn.Module):
     # Helpers
     # --------------------------------------------------------
 
-    # def _safe_div(self, num, den):
-    #     """Clamp denominator away from zero to avoid numerical blowup."""
-    #     sign = den.sign()
-    #     sign = torch.where(sign == 0, torch.ones_like(sign), sign)
-    #     safe_den = sign * den.abs().clamp(min=1e-7)
-    #     return num / safe_den
-
     def _safe_div(self, num, den):
         """Clamp denominator away from zero.
 
@@ -750,7 +588,7 @@ class GDFM(nn.Module):
             )
         return t.view([t.shape[0]] + [1] * (ref.dim() - 1))
 
-    def n_params(self) -> int:
+    def n_params(self):
         return sum(p.numel() for p in self.parameters())
 
     def __repr__(self):
@@ -765,7 +603,9 @@ class GDFM(nn.Module):
         )
 
 
-## Better print model summary
+# ============================================================
+# Debug helpers
+# ============================================================
 
 
 def print_model_summary(model):

@@ -65,6 +65,17 @@ third_party/            preserved third-party vendor code
 
 ---
 
+## Python Style
+
+- Canonical first-party Python follows `PYTHON_STYLE.md`.
+- If the guide conflicts with older canonical code, the guide wins.
+- The cleaned `prototyping/gdfm_components.py` file is the style and notation exemplar.
+- Canonical first-party Python should not use type hints or `from __future__ import annotations`.
+- Use GDFM notation in code-adjacent explanation: `eps`, `z_t`, `v_t`, `prediction_space`, `loss_space`, and the explicit convention `t = 0` noise, `t = 1` data.
+- Legacy CLI or config names such as `pred_space` may remain at boundaries when changing them would create unnecessary churn.
+
+---
+
 ## Placement Rules
 
 - If the latent generator is known and controlled, the experiment belongs in `experiments/synthetic/`.
