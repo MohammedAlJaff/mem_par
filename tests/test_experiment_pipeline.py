@@ -5,12 +5,16 @@ from unittest import mock
 
 try:
     import torch
+    from mp_config import clone_config, get_base_config
+    from mp_metrics import compute_memorization_metrics, evaluate_run
+    from mp_training import train_run
 except ModuleNotFoundError:
     torch = None
-
-from mp_config import clone_config, get_base_config
-from mp_metrics import compute_memorization_metrics, evaluate_run
-from mp_training import train_run
+    clone_config = None
+    get_base_config = None
+    compute_memorization_metrics = None
+    evaluate_run = None
+    train_run = None
 
 
 class FakeMNIST:
@@ -45,7 +49,10 @@ class FakeCelebA:
         return image, label
 
 
-@unittest.skipIf(torch is None, "torch is required")
+@unittest.skipIf(
+    torch is None or clone_config is None or evaluate_run is None or train_run is None,
+    "torch and the first-party training stack are required",
+)
 class TestSrcPipeline(unittest.TestCase):
     def _run_pipeline(self, config, study_name, device="cpu"):
         with tempfile.TemporaryDirectory() as tmpdir:

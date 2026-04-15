@@ -12,12 +12,12 @@ try:
     import torch
     from ml_collections import ConfigDict
     import gdfm.samplers as samplers
+    from gdfm import GDFM
 except ModuleNotFoundError:
     torch = None
     ConfigDict = None
     samplers = None
-
-from gdfm import GDFM
+    GDFM = None
 from tests.gdfm_sampler_contract import (
     assert_external_sampler_matches_builtin,
     assert_vp_probability_flow_matches_velocity,
@@ -26,8 +26,8 @@ from tests.gdfm_sampler_contract import (
 
 
 @unittest.skipIf(
-    torch is None or ConfigDict is None or samplers is None,
-    "torch, ml_collections, and gdfm.samplers are required",
+    torch is None or ConfigDict is None or samplers is None or GDFM is None,
+    "torch, ml_collections, and gdfm are required",
 )
 class TestCanonicalGDFMSamplers(unittest.TestCase):
     def make_config(self, **overrides):

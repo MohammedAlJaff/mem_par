@@ -1,7 +1,9 @@
 # src
 
 This folder is the canonical home for reusable first-party code.
-It is also the only live first-party code surface in the repo.
+
+Live paper-study workflows now live in `experiments/`. `src/` stays focused on
+the reusable kernel those studies build on top of.
 
 ## Packages
 
@@ -29,6 +31,8 @@ It is also the only live first-party code surface in the repo.
 ## Boundary
 
 `src/` should stay reusable and study-agnostic.
+
+Runnable study workflows belong in `experiments/`, not in `src/`.
 
 If functionality from the archived trees is needed again, bring the minimum
 needed implementation into `src/` deliberately. Do not recreate imports from

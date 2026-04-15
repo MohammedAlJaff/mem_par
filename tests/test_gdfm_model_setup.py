@@ -13,13 +13,16 @@ from unittest import mock
 
 try:
     import torch
+    from gdfm import build_network
 except ModuleNotFoundError:
     torch = None
+    build_network = None
 
-from gdfm import build_network
 
-
-@unittest.skipIf(torch is None, "torch is not installed in this environment.")
+@unittest.skipIf(
+    torch is None or build_network is None,
+    "torch and gdfm.build_network are required",
+)
 class TestGDFMModelSetup(unittest.TestCase):
     def make_canonical_config(self, arch="mlp", **overrides):
         network = SimpleNamespace(

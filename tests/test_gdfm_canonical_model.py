@@ -3,14 +3,17 @@ import unittest
 try:
     import torch
     from ml_collections import ConfigDict
+    from gdfm import GDFM
 except ModuleNotFoundError:
     torch = None
     ConfigDict = None
+    GDFM = None
 
-from gdfm import GDFM
 
-
-@unittest.skipIf(torch is None or ConfigDict is None, "torch and ml_collections are required")
+@unittest.skipIf(
+    torch is None or ConfigDict is None or GDFM is None,
+    "torch, ml_collections, and gdfm are required",
+)
 class TestCanonicalGDFM(unittest.TestCase):
     def make_config(self):
         config = ConfigDict()

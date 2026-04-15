@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 try:
     import torch
+    from gdfm import GDFM as CanonicalGDFM
 except ModuleNotFoundError:
     torch = None
-
-from gdfm import GDFM as CanonicalGDFM
+    CanonicalGDFM = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +24,10 @@ def load_module(name, path):
     return module
 
 
-@unittest.skipIf(torch is None, "torch is required")
+@unittest.skipIf(
+    torch is None or CanonicalGDFM is None,
+    "torch and the canonical gdfm package are required",
+)
 class TestGDFMParityWithPrototype(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

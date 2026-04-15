@@ -2,62 +2,58 @@
 
 **How target parameterization shapes memorization and generalization in diffusion and flow-based models**
 
-This repository studies whether equivalent-in-principle parameterizations
-(`x`, `eps`, `v`) remain unequal in practice when we hold architecture, data,
-and training protocol fixed.
+This repository is the paper repo for the NeurIPS submission on how `x`, `eps`,
+and `v` parameterizations behave differently in practice even when the
+underlying diffusion or flow-matching setup is held fixed.
 
-The repo is now organized around four clear surfaces:
+The repo now has five clear surfaces:
 
+- `experiments/`
+  live first-party paper workflows
 - `src/`
-  reusable first-party code
+  reusable first-party kernel code
 - `baselines/` and `third_party/`
-  preserved external code
+  preserved external comparison code
 - `prototyping/`
-  fallback and transitional prototype code
+  scratch and fallback scientific code
 - `archives/`
-  zipped snapshots of removed experiment and reference trees
+  legacy zip snapshots of older live trees
 
-## Current Ownership Split
+## Primary Entry Point
 
-- `src/gdfm/`
-  canonical GDFM model core, model setup, and backbones
-- `src/mp_config/`
-  base `ConfigDict` defaults and override helpers
-- `src/mp_data/`
-  canonical data loading and subset logic
-- `src/mp_metrics/`
-  memorization metrics and checkpoint replay
-- `src/mp_artifacts/`
-  run layout, config snapshots, checkpoints, and saved tensors
-- `src/mp_training/`
-  shared training loop scaffolding
-- `prototyping/`
-  fallback and transitional prototype code
-- `archives/`
-  zip files preserving the removed `experiments/` and `reference/` trees
+The first polished live study surface is `experiments/mnist/`.
 
-## Layout
+Start there if you want the reviewer-facing walkthrough:
 
-```text
-mem_par/
-├── src/
-│   ├── gdfm/
-│   ├── mp_config/
-│   ├── mp_data/
-│   ├── mp_metrics/
-│   ├── mp_artifacts/
-│   └── mp_training/
-├── baselines/
-├── third_party/
-├── prototyping/
-├── archives/
-│   ├── experiments_YYYYMMDD.zip
-│   └── reference_YYYYMMDD.zip
-├── tests/
-├── requirements.txt
-├── pyproject.toml
-└── setup.py
+```bash
+jupyter lab experiments/mnist/mnist_walkthrough.ipynb
 ```
+
+That notebook is intentionally pedagogical and mostly in-memory. It shows the
+MNIST study line by line rather than hiding the flow inside one high-level
+helper call.
+
+## Official Saved-Run Path
+
+For the canonical artifact-writing path, run the MNIST study module:
+
+```bash
+python -m experiments.mnist.run --download --device cpu
+```
+
+If you are running directly from a checkout that has not been installed in
+editable mode yet, use:
+
+```bash
+PYTHONPATH=src python -m experiments.mnist.run --download --device cpu
+```
+
+This writes a standard run directory under `tmp/mnist_study/` with:
+
+- saved config snapshots
+- checkpoints
+- training history
+- checkpoint replay memorization metrics
 
 ## Setup
 
@@ -90,32 +86,18 @@ For CPU-only Linux or Apple Silicon:
 python -m pip install -r requirements.txt
 ```
 
-If you are running directly from a checkout that has not been installed in
-editable mode yet, prefix local commands with `PYTHONPATH=src`.
+## Repo Roles
 
-## Live Code Surface
+- `experiments/` is where runnable paper studies now live.
+- `src/` stays study-agnostic and reusable.
+- `prototyping/gdfm_components.py` remains the fallback reference
+  implementation while canonical GDFM hardens in `src/gdfm/core.py`.
+- `archives/legacy_experiments_20260416.zip` and
+  `archives/legacy_reference_20260416.zip` preserve earlier live trees for
+  historical context only.
 
-There is intentionally no live first-party `experiments/` tree right now.
-
-The repo is in a tighter phase:
-- build and harden reusable code in `src/`
-- keep `prototyping/` as the scientific fallback
-- recover older context only from the zip snapshots in `archives/`
-
-## Safety And Reference Material
-
-- `prototyping/gdfm_components.py` remains the fallback reference implementation
-  while canonical GDFM hardens in `src/gdfm/core.py`.
-- `archives/experiments_20260416.zip` preserves the removed experiment tree.
-- `archives/reference_20260416.zip` preserves the removed reference tree.
-
-## Notes
-
-- `src/` is now the only live first-party code surface.
-- If functionality from the archived trees is needed again, bring it back into
-  `src/` deliberately instead of importing from old paths.
-- `baselines/` and `third_party/` stay separate from the canonical first-party
-  stack.
+If something from the legacy material is needed again, bring back the minimum
+required implementation deliberately instead of importing from archived paths.
 
 ## Citation
 
@@ -123,7 +105,7 @@ The repo is in a tighter phase:
 @article{aljaff2026equivalent,
   title={Equivalent in Principle, Unequal in Practice: How Target Parameterization
          Shapes Memorization and Generalization in Diffusion and Flow-Based Models},
-  author={Al-Jaff, Mohammad and Henter, Gustav Eje and Azizpour, Hossein 
+  author={Al-Jaff, Mohammad and Henter, Gustav Eje and Azizpour, Hossein
           and Kragic, Danica},
   journal={arXiv preprint},
   year={2026}

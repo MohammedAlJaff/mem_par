@@ -4,19 +4,26 @@ from pathlib import Path
 
 try:
     import torch
+    from mp_config import get_base_config
+    from mp_metrics import (
+        compute_f_mem,
+        compute_folder_metrics,
+        compute_memorization_metrics,
+        compute_nn_stats,
+    )
 except ModuleNotFoundError:
     torch = None
+    get_base_config = None
+    compute_f_mem = None
+    compute_folder_metrics = None
+    compute_memorization_metrics = None
+    compute_nn_stats = None
 
-from mp_config import get_base_config
-from mp_metrics import (
-    compute_f_mem,
-    compute_folder_metrics,
-    compute_memorization_metrics,
-    compute_nn_stats,
+
+@unittest.skipIf(
+    torch is None or get_base_config is None or compute_memorization_metrics is None,
+    "torch and the memorization metric stack are required",
 )
-
-
-@unittest.skipIf(torch is None, "torch is required")
 class TestMPMetrics(unittest.TestCase):
     def test_threshold_can_come_from_config(self):
         reference = torch.tensor(
