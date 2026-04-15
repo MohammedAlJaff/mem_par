@@ -12,6 +12,38 @@ except ModuleNotFoundError:
     torch = None
 
 
+def _data_dim(model):
+    config = getattr(model, "config", None)
+    value = getattr(config, "data_dim", None)
+    if value is not None:
+        return value
+
+    data = getattr(config, "data", None)
+    value = getattr(data, "data_dim", None)
+    if value is not None:
+        return value
+
+    return None
+
+
+def _denom_eps(model):
+    value = getattr(model, "safe_div_eps", None)
+    if value is not None:
+        return value
+
+    config = getattr(model, "config", None)
+    value = getattr(config, "safe_div_eps", None)
+    if value is not None:
+        return value
+
+    schedule = getattr(config, "schedule", None)
+    value = getattr(schedule, "denom_eps", None)
+    if value is not None:
+        return value
+
+    return 0.05
+
+
 def max_abs_err(a, b):
     if torch is None:
         raise RuntimeError("torch is required for GDFM sampler checks.")
@@ -25,7 +57,7 @@ def interior_time_mask(model, ref, t, margin=0.01):
     t_b = model._bcast(t, ref)
     a = model.a(t_b).flatten(1).amin(dim=1)
     b = model.b(t_b).flatten(1).amin(dim=1)
-    threshold = model.config.safe_div_eps + margin
+    threshold = float(_denom_eps(model)) + margin
     return (a >= threshold) & (b >= threshold)
 
 
@@ -35,7 +67,7 @@ def assert_external_sampler_matches_builtin(
     if torch is None:
         raise RuntimeError("torch is required for GDFM sampler checks.")
 
-    data_dim = getattr(model.config, "data_dim", None)
+    data_dim = _data_dim(model)
     if data_dim is None:
         raise AssertionError("Model config must expose data_dim for sampler tests.")
 
@@ -69,7 +101,7 @@ def assert_vp_probability_flow_matches_velocity(
     if torch is None:
         raise RuntimeError("torch is required for GDFM sampler checks.")
 
-    data_dim = getattr(model.config, "data_dim", None)
+    data_dim = _data_dim(model)
     if data_dim is None:
         raise AssertionError("Model config must expose data_dim for sampler tests.")
 
@@ -106,7 +138,7 @@ def assert_vp_reverse_sde_contract(model, sampler_module, batch_size=64, n_steps
     if torch is None:
         raise RuntimeError("torch is required for GDFM sampler checks.")
 
-    data_dim = getattr(model.config, "data_dim", None)
+    data_dim = _data_dim(model)
     if data_dim is None:
         raise AssertionError("Model config must expose data_dim for sampler tests.")
 

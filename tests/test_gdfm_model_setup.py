@@ -122,6 +122,7 @@ class TestGDFMModelSetup(unittest.TestCase):
     def test_canonical_nested_selects_unet(self):
         net = build_network(self.make_canonical_config(arch="unet"))
         self.assertEqual(net.__class__.__module__, "gdfm.networks.unet")
+        self.assertEqual(net.model.__class__.__module__, "gdfm.networks.small_unet")
 
     def test_canonical_nested_selects_jit(self):
         net = build_network(

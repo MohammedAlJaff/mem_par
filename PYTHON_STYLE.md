@@ -7,8 +7,7 @@ If this guide conflicts with older canonical code, this guide wins.
 
 ## Applies To
 
-- Canonical first-party Python that drives paper experiments, especially under
-  `experiments/`
+- Canonical first-party Python under `src/`
 - New shared helpers that support canonical experiments
 - First-party modules promoted from prototype status into canonical use
 
@@ -16,7 +15,7 @@ If this guide conflicts with older canonical code, this guide wins.
 
 - Vendored code under `baselines/*/vendor`
 - `third_party/`
-- Untouched exploratory or archival material in `reference/` and `reference/archive/`
+- Archived material preserved in `archives/`
 - Historical code that has not been touched yet
 
 ## Reference Exemplar
@@ -38,6 +37,8 @@ Use it as the reference for:
   Explain the object before the mechanism.
 - Write for a future researcher
   The reader should be able to recover the scientific idea from the code.
+- Prefer compact research prose
+  Short declarative comments beat architecture-flavored explanation.
 - Prefer local derivation over framework indirection
   Keep important algebra and conventions close to where they are used.
 - Prefer clarity over abstraction cleverness
@@ -52,6 +53,11 @@ Use it as the reference for:
   dense inline comments.
 - Docstrings should explain meaning, convention, and scientific role, not just
   restate the signature.
+- Prefer direct statements such as `Compute ...`, `Convert ...`, or
+  `Use ... so that ...`.
+- Avoid software-architecture phrasing such as `this module owns`,
+  `bridge between`, `canonical surface`, or `public API` unless the boundary
+  itself is scientifically important.
 - Important numerical decisions should be documented at the point of use.
 
 ## Naming And Notation
@@ -87,6 +93,8 @@ Use it as the reference for:
   drafts, notebooks, or external notes.
 - If a symbol is overloaded in the literature, the code should disambiguate it
   locally with comments or explicit naming.
+- Do not explain workflow if the local mathematical or numerical reason is the
+  real point. Explain the quantity, the convention, or the invariant first.
 
 ## Rollout Rule
 

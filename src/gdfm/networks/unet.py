@@ -1,17 +1,26 @@
+"""
+Bonnaire-style UNet adapter for image-space GDFM experiments.
+
+This module presents a stable `gdfm`-facing constructor and forward contract
+while delegating the heavy lifting to the local Bonnaire-style `SmallUNet`
+implementation in this package.
+"""
+
 import torch
 import torch.nn as nn
 
 from gdfm.networks.common import ensure_time_batch
+from gdfm.networks.small_unet import SmallUNet
 
 
-# ============================================================
+# =============================================================================
 # Bonnaire-style UNet adapter
-# ============================================================
+# =============================================================================
 
 
 class BonnaireUNet(nn.Module):
     """
-    Thin adapter over the repo's Bonnaire-style UNet implementation.
+    Thin adapter over the local Bonnaire-style UNet implementation.
 
     The canonical gdfm-facing surface is:
         image_size
@@ -23,9 +32,9 @@ class BonnaireUNet(nn.Module):
         dropout
         time_emb_dim
 
-    Internally, this maps to the current SmallUNet implementation used by the
-    image experiments. Keeping that mapping here lets model setup converge on a
-    single public constructor without rewriting the experiment stack yet.
+    Internally, this maps to `gdfm.networks.small_unet.SmallUNet`. The wrapper
+    keeps the public constructor stable while the internal architecture stays
+    local to `src/`.
     """
 
     def __init__(
@@ -40,12 +49,8 @@ class BonnaireUNet(nn.Module):
         time_emb_dim=None,
     ):
         """
-        Build the paper-facing UNet wrapper, then hand off to the existing
-        Bonnaire-style implementation that lives in the repo.
-
-        The important design decision here is that `gdfm` owns the *public*
-        constructor surface, while the older experiment stack can keep its own
-        internal argument names for now.
+        Build the paper-facing UNet wrapper, then hand off to the local
+        `SmallUNet` implementation.
         """
         super().__init__()
         if image_size <= 0:
@@ -56,8 +61,6 @@ class BonnaireUNet(nn.Module):
             raise ValueError(f"base_channels must be positive, got {base_channels}")
         if num_res_blocks < 1:
             raise ValueError(f"num_res_blocks must be >= 1, got {num_res_blocks}")
-
-        from experiments.natural_images.common.networks.unet import SmallUNet
 
         self.image_size = image_size
         self.image_channels = image_channels
@@ -115,3 +118,36 @@ class BonnaireUNet(nn.Module):
                 f"BonnaireUNet returned shape {tuple(out.shape)}, expected {tuple(z.shape)}"
             )
         return out
+
+
+if __name__ == "__main__":
+    from gdfm.core import print_forward_shapes, print_model_summary
+
+    torch.manual_seed(0)
+
+    print("BonnaireUNet example")
+
+    # Build the public UNet adapter, not the raw implementation, so the example
+    # checks the canonical `gdfm` constructor surface.
+    model = BonnaireUNet(
+        image_size=32,
+        image_channels=1,
+        base_channels=32,
+        channel_mult=(1, 2, 4, 4),
+        num_res_blocks=2,
+        attn_resolutions=(8,),
+        dropout=0.0,
+        time_emb_dim=32,
+    )
+    z = torch.randn(2, 1, 32, 32)
+    t = torch.linspace(0.1, 0.9, z.shape[0])
+
+    # One forward pass checks the image-shape contract before we inspect layers.
+    out = model(z, t)
+
+    # The summary shows both the adapter and the wrapped local SmallUNet.
+    print_model_summary(model)
+    print_forward_shapes(model, z, t)
+    print(f"wrapped model : {model.model.__class__.__module__}.{model.model.__class__.__name__}")
+    print(f"input shape   : {tuple(z.shape)}")
+    print(f"output shape  : {tuple(out.shape)}")

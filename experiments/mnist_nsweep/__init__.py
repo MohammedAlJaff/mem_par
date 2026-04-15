@@ -1,1 +1,0 @@
-"""MNIST n-sweep study."""

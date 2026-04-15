@@ -8,11 +8,7 @@ try:
 except ModuleNotFoundError:
     torch = None
 
-from experiments._shared.plot_helpers import plot_run
-from experiments.celeba32_grey.config import get_config as get_celeba_config
-from experiments.gmm_subspace.config import get_config as get_gmm_config
-from experiments.mnist_n4_diagonal.config import get_config as get_mnist_config
-from mp_config import clone_config
+from mp_config import clone_config, get_base_config
 from mp_metrics import compute_memorization_metrics, evaluate_run
 from mp_training import train_run
 
@@ -50,19 +46,93 @@ class FakeCelebA:
 
 
 @unittest.skipIf(torch is None, "torch is required")
-class TestExperimentPipeline(unittest.TestCase):
+class TestSrcPipeline(unittest.TestCase):
     def _run_pipeline(self, config, study_name, device="cpu"):
         with tempfile.TemporaryDirectory() as tmpdir:
             study_dir = Path(tmpdir) / study_name
             run_dir = train_run(config, study_dir, device=device)
             metrics = evaluate_run(run_dir, device=device)
-            figures_dir = plot_run(run_dir, study_dir=study_dir)
 
             self.assertTrue((run_dir / "artifacts" / "config.json").exists())
             self.assertTrue((run_dir / "metrics" / "train_history.json").exists())
             self.assertTrue((run_dir / "metrics" / "checkpoint_metrics.json").exists())
-            self.assertTrue((figures_dir / f"{run_dir.name}_metrics.png").exists())
             self.assertGreater(len(metrics), 0)
+
+    def make_gmm_config(self):
+        config = clone_config(get_base_config())
+        config.study.name = "gmm_smoke"
+        config.outputs.run_name = "gmm_smoke"
+        config.data.dataset = "gmm_subspace"
+        config.data.n_train = 8
+        config.data.n_eval = 8
+        config.data.data_dim = 16
+        config.data.intrinsic_dim = 4
+        config.data.n_clusters = 4
+        config.network.arch = "mlp"
+        config.network.hidden_dim = 32
+        config.network.n_layers = 2
+        config.network.time_emb_dim = 16
+        config.training.n_steps = 2
+        config.training.ckpt_every = 1
+        config.training.log_every = 1
+        config.training.batch_size = 4
+        config.evaluation.n_samples = 4
+        config.evaluation.sample_panel_count = 2
+        config.evaluation.chunk_size = 8
+        config.sampling.n_steps = 2
+        return config
+
+    def make_mnist_config(self):
+        config = clone_config(get_base_config())
+        config.study.name = "mnist_smoke"
+        config.outputs.run_name = "mnist_smoke"
+        config.data.dataset = "mnist"
+        config.data.root = "tmp/data"
+        config.data.download = False
+        config.data.n_train = 4
+        config.data.n_eval = 4
+        config.data.image_size = 28
+        config.data.image_channels = 1
+        config.data.flatten = True
+        config.data.data_dim = 28 * 28
+        config.network.arch = "mlp"
+        config.training.n_steps = 2
+        config.training.ckpt_every = 1
+        config.training.log_every = 1
+        config.training.batch_size = 4
+        config.evaluation.n_samples = 2
+        config.evaluation.sample_panel_count = 2
+        config.evaluation.chunk_size = 4
+        config.sampling.n_steps = 2
+        return config
+
+    def make_celeba_config(self):
+        config = clone_config(get_base_config())
+        config.study.name = "celeba_smoke"
+        config.outputs.run_name = "celeba_smoke"
+        config.data.dataset = "celeba32_grey"
+        config.data.root = "tmp/data"
+        config.data.download = False
+        config.data.reference_split = "valid"
+        config.data.n_train = 4
+        config.data.n_eval = 4
+        config.data.image_size = 32
+        config.data.image_channels = 1
+        config.network.arch = "unet"
+        config.network.base_channels = 8
+        config.network.channel_mult = (1, 2)
+        config.network.attn_resolutions = (8,)
+        config.network.num_res_blocks = 1
+        config.network.time_emb_dim = 32
+        config.training.n_steps = 1
+        config.training.ckpt_every = 1
+        config.training.log_every = 1
+        config.training.batch_size = 2
+        config.evaluation.n_samples = 2
+        config.evaluation.sample_panel_count = 2
+        config.evaluation.chunk_size = 4
+        config.sampling.n_steps = 2
+        return config
 
     def test_memorization_metric_prefers_copies(self):
         reference = torch.tensor([[0.0, 0.0], [1.0, 1.0], [3.0, 3.0]], dtype=torch.float32)
@@ -75,57 +145,16 @@ class TestExperimentPipeline(unittest.TestCase):
         self.assertGreaterEqual(copied_metrics["f_mem"], shifted_metrics["f_mem"])
         self.assertLessEqual(copied_metrics["mean_d1"], shifted_metrics["mean_d1"])
 
-    def test_gmm_study_smoke(self):
-        config = clone_config(get_gmm_config())
-        config.outputs.run_name = "gmm_smoke"
-        config.training.n_steps = 2
-        config.training.ckpt_every = 1
-        config.training.log_every = 1
-        config.training.batch_size = 4
-        config.data.n_train = 8
-        config.data.n_eval = 8
-        config.evaluation.n_samples = 4
-        config.evaluation.sample_panel_count = 2
-        config.evaluation.chunk_size = 8
-        config.sampling.n_steps = 2
-        self._run_pipeline(config, "gmm_subspace")
+    def test_gmm_runtime_smoke(self):
+        self._run_pipeline(self.make_gmm_config(), "gmm_subspace")
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_mnist_study_smoke(self):
-        config = clone_config(get_mnist_config())
-        config.outputs.run_name = "mnist_smoke"
-        config.training.n_steps = 2
-        config.training.ckpt_every = 1
-        config.training.log_every = 1
-        config.training.batch_size = 4
-        config.data.n_train = 4
-        config.data.n_eval = 4
-        config.evaluation.n_samples = 2
-        config.evaluation.sample_panel_count = 2
-        config.evaluation.chunk_size = 4
-        config.sampling.n_steps = 2
-        self._run_pipeline(config, "mnist_n4_diagonal")
+    def test_mnist_runtime_smoke(self):
+        self._run_pipeline(self.make_mnist_config(), "mnist_runtime")
 
     @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
-    def test_celeba_study_smoke(self):
-        config = clone_config(get_celeba_config())
-        config.outputs.run_name = "celeba_smoke"
-        config.network.base_channels = 8
-        config.network.channel_mult = (1, 2)
-        config.network.attn_resolutions = (8,)
-        config.network.num_res_blocks = 1
-        config.network.time_emb_dim = 32
-        config.training.n_steps = 1
-        config.training.ckpt_every = 1
-        config.training.log_every = 1
-        config.training.batch_size = 2
-        config.data.n_train = 4
-        config.data.n_eval = 4
-        config.evaluation.n_samples = 2
-        config.evaluation.sample_panel_count = 2
-        config.evaluation.chunk_size = 4
-        config.sampling.n_steps = 2
-        self._run_pipeline(config, "celeba32_grey")
+    def test_celeba_runtime_smoke(self):
+        self._run_pipeline(self.make_celeba_config(), "celeba_runtime")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,21 @@
+"""
+Canonical time-conditioned MLP backbone for synthetic studies.
+
+This module intentionally keeps the architecture simple: one learned time
+embedding branch, one plain feed-forward trunk, and a clear `[B, D] -> [B, D]`
+contract. It is the easiest backbone in the repo to reason about, which is
+why it serves as the default synthetic-data model.
+"""
+
 import torch
 import torch.nn as nn
 
 from gdfm.networks.common import TimeEmbeddingMLP, ensure_time_batch
 
 
-# ============================================================
-# Time-conditioned MLP
-# ============================================================
+# =============================================================================
+# Canonical synthetic-data backbone
+# =============================================================================
 
 
 class TimeCondMLP(nn.Module):
@@ -74,3 +83,25 @@ class TimeCondMLP(nn.Module):
 
         t_emb = self.time_embedding(t)
         return self.net(torch.cat([z, t_emb], dim=-1))
+
+
+if __name__ == "__main__":
+    from gdfm.core import print_forward_shapes, print_model_summary
+
+    torch.manual_seed(0)
+
+    print("TimeCondMLP example")
+
+    # Build the smallest direct MLP example used for flat `[B, D]` data.
+    model = TimeCondMLP(data_dim=8, hidden_dim=32, n_layers=2, time_emb_dim=16)
+    z = torch.randn(4, 8)
+    t = torch.linspace(0.1, 0.9, z.shape[0])
+
+    # One forward pass checks the flat-vector contract before we inspect layers.
+    out = model(z, t)
+
+    # The shared summary helpers make the time branch and MLP trunk explicit.
+    print_model_summary(model)
+    print_forward_shapes(model, z, t)
+    print(f"input shape  : {tuple(z.shape)}")
+    print(f"output shape : {tuple(out.shape)}")

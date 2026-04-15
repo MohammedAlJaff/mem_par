@@ -13,22 +13,13 @@ Short operational guide for agents and contributors working in this repo.
   loading, memorization metrics, artifact persistence, and the reusable
   train/evaluate skeleton.
 
-- `experiments/<study>/`
-  Canonical study surface. Each active study should stay thin and own
-  `config.py`, `train.py`, `evaluate.py`, `plot.py`, plus local `runs/` and
-  `figures/`.
-
-- `experiments/legacy/`
-  Preserved pre-reset experiment stack. Keep it readable, but do not treat it
-  as the source of truth for new first-party work.
-
-- `reference/`
-  Non-canonical walkthroughs, sanity checks, exploratory notebooks, and older
-  archived reference code.
-
 - `prototyping/`
   Transitional prototype material and fallback references. The cleaned
   `prototyping/gdfm_components.py` file remains the style and notation exemplar.
+
+- `archives/`
+  Zip snapshots of removed `experiments/` and `reference/` trees. Use these as
+  historical context only.
 
 - `baselines/` and `third_party/`
   External or vendored code. Treat as read-only unless explicitly asked.
@@ -37,24 +28,10 @@ Short operational guide for agents and contributors working in this repo.
 
 - Put model-intrinsic logic in `src/gdfm/`.
 - Put shared study infrastructure in the appropriate `src/mp_*` package.
-- Put experiment-specific logic in the owning `experiments/<study>/` folder.
-- Put pedagogy, sanity checks, and notebook exploration in `reference/`.
 - Keep fallback or transition code in `prototyping/`, not in canonical study
   code.
-
-## Canonical Experiment Contract
-
-Every active study should be understandable from its own folder:
-
-- `config.py` returns a `ConfigDict`
-- `train.py` is the training entrypoint
-- `evaluate.py` replays checkpoints and computes memorization metrics
-- `plot.py` turns saved metrics/artifacts into figures
-- `runs/` holds local run outputs
-- `figures/` holds study-level figures
-
-Active study code should reuse `src/` packages instead of rebuilding parallel
-infrastructure.
+- If you need something from the archived trees, copy the minimum needed logic
+  into `src/` and make it local there.
 
 ## GDFM Safety Rules
 
@@ -70,7 +47,7 @@ infrastructure.
 - Save the exact training data artifact for every run.
 - Save the exact `z_init` used for checkpoint replay.
 - Evaluate memorization against saved run artifacts, never against rebuilt data.
-- Keep outputs local to the owning experiment folder.
+- Keep outputs local to the caller's chosen run directory.
 
 ## Python Style
 
@@ -81,8 +58,7 @@ infrastructure.
 
 ## Do Not
 
-- Do not add new first-party experiment logic under `experiments/legacy/`.
-- Do not import canonical runtime code from `reference/archive/`.
+- Do not recreate a live dependency from `src/` into archived material.
 - Do not create vague catch-all modules such as `utils.py` unless there is a
   very clear, narrow purpose.
 - Do not edit vendored code under `baselines/*/vendor` or `third_party/`
@@ -91,7 +67,6 @@ infrastructure.
 
 ## Workflow
 
-1. Explore or teach ideas in `reference/` or `prototyping/`.
+1. Use `prototyping/` or the archives for context when needed.
 2. Promote stable model or infrastructure code into `src/`.
-3. Wire paper-facing study logic into `experiments/<study>/`.
-4. Keep the safety suite green before trusting the new canonical path.
+3. Keep the safety suite green before trusting the canonical path.

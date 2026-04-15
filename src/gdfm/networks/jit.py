@@ -1,3 +1,16 @@
+"""
+Wrapper around the vendored Li & He JiT backbone.
+
+This module's main job is translation:
+- from the canonical `gdfm` constructor surface to the vendor constructor
+- from the canonical unconditional `forward(z, t)` contract to the vendor's
+  label-conditioned `forward(z, t, y)` contract
+- from the vendor's CUDA-first assumptions to a CPU-safe local inspection path
+
+That makes JiT usable in the same model-setup and notebook workflows as the
+other `gdfm` backbones.
+"""
+
 import importlib
 import math
 import sys
@@ -157,9 +170,9 @@ def _load_vendor_module():
     return module
 
 
-# ============================================================
+# =============================================================================
 # Vendored JiT wrapper
-# ============================================================
+# =============================================================================
 
 
 class JiT(nn.Module):
@@ -314,3 +327,46 @@ class JiT(nn.Module):
         local image patches into its latent representation.
         """
         return self.hidden_dim / self.patch_dim
+
+
+if __name__ == "__main__":
+    from gdfm.core import print_forward_shapes, print_model_summary
+
+    torch.manual_seed(0)
+
+    print("JiT example")
+
+    # Build a small runnable JiT so we can inspect the unconditional wrapper
+    # and the wrapped vendor transformer side by side.
+    model = JiT(
+        image_size=16,
+        image_channels=3,
+        patch_size=4,
+        hidden_dim=64,
+        depth=2,
+        heads=4,
+        bottleneck_dim=16,
+        proj_dropout=0.0,
+        attn_dropout=0.0,
+        in_context_len=8,
+        in_context_start=1,
+    )
+    z = torch.randn(2, 3, 16, 16)
+    t = torch.linspace(0.1, 0.9, z.shape[0])
+
+    # One forward pass is enough to check the `[B, C, H, W] -> [B, C, H, W]`
+    # image contract before we print the model structure.
+    out = model(z, t)
+
+    # The summary tells us what wrapper we built and which vendor class sits
+    # underneath it. The shape trace shows the patch-embedding path directly.
+    print_model_summary(model)
+    print_forward_shapes(model, z, t)
+    print(f"wrapped model    : {model.model.__class__.__module__}.{model.model.__class__.__name__}")
+
+    # These scalar lines are the quickest checks of the patch geometry.
+    print(f"input shape      : {tuple(z.shape)}")
+    print(f"output shape     : {tuple(out.shape)}")
+    print(f"patch_dim        : {model.patch_dim}")
+    print(f"sequence_length  : {model.seq_length}")
+    print(f"bottleneck_ratio : {model.bottleneck_ratio:.3f}")

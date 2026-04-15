@@ -24,20 +24,8 @@ src/
   mp_artifacts/          run layout, config snapshots, checkpoints, tensors
   mp_training/           shared training loop scaffolding
 
-experiments/
-  mnist_n4_diagonal/     canonical MNIST proof-of-concept study
-  mnist_nsweep/          canonical MNIST training-set-size sweep
-  gmm_subspace/          canonical high-dimensional synthetic study
-  celeba32_grey/         canonical real-image study
-  legacy/                preserved pre-reset experiment stack
-
-reference/
-  walkthroughs/          pedagogical runnable scripts
-  sanity/                smoke checks and teaching notebooks
-  notebooks/             exploratory notebooks
-  archive/               older preserved reference code
-
 prototyping/             prototype fallback and transitional reference code
+archives/                zipped snapshots of removed experiments/reference trees
 baselines/               vendored comparison wrappers
 third_party/             preserved external code
 ```
@@ -54,39 +42,22 @@ third_party/             preserved external code
   Owns reusable but non-model-specific support code: configs, data, artifacts,
   memorization metrics, and training skeletons.
 
-- `experiments/<study>/`
-  Owns study-specific choices, entrypoints, and outputs.
-
-- `reference/`
-  Owns pedagogy, sanity checks, and exploratory context. Useful, but
-  non-canonical.
-
 - `prototyping/`
   Owns fallback and transition code. Keep it readable and stable while the
   canonical path hardens.
+
+- `archives/`
+  Owns preserved zip snapshots of the removed `experiments/` and `reference/`
+  trees. Treat them as history, not as live import surfaces.
 
 ---
 
 ## Active Entry Points
 
-Canonical study commands:
+There is intentionally no live first-party `experiments/` tree right now.
 
-```bash
-python -m experiments.mnist_n4_diagonal.train --help
-python -m experiments.mnist_n4_diagonal.evaluate --help
-python -m experiments.mnist_n4_diagonal.plot --help
-python -m experiments.mnist_nsweep.train --help
-python -m experiments.gmm_subspace.train --help
-python -m experiments.celeba32_grey.train --help
-```
-
-Reference material:
-
-```bash
-python reference/walkthroughs/01_primitives.py
-python reference/sanity/check_3x3_grid.py
-python reference/sanity/sanity_nn_stats.py
-```
+The active surface is the reusable code in `src/`, plus the fallback prototype
+surface in `prototyping/`.
 
 If a checkout has not been installed in editable mode yet, use `PYTHONPATH=src`
 for direct local runs.
@@ -117,28 +88,12 @@ belong to GDFM, not to the MLP, U-Net, or JiT modules.
 
 ---
 
-## Experiment Contract
-
-Each active experiment folder should stay thin and self-contained:
-
-- `config.py`
-- `train.py`
-- `evaluate.py`
-- `plot.py`
-- `runs/`
-- `figures/`
-
-Use `src/` packages for reusable logic. Do not grow a second parallel
-infrastructure inside the experiment folder.
-
----
-
 ## Data And Artifact Rules
 
 - Persist the exact training tensor or subset artifact for every run.
 - Persist the exact `z_init` used for checkpoint replay.
 - Post-hoc evaluation must operate on saved artifacts, not on rebuilt datasets.
-- Keep outputs inside the owning experiment folder.
+- Keep outputs inside the caller's chosen run directory.
 - Use `torch.utils.data.Dataset` and batched loading for real training paths.
 - Avoid training-time augmentation in canonical memorization studies unless the
   study is explicitly about augmentation.
@@ -159,11 +114,7 @@ infrastructure inside the experiment folder.
 
 ## Non-Canonical Areas
 
-- `reference/archive/` is preserved context, not the source of truth.
-- `experiments/legacy/` is preserved legacy infrastructure, not the source of
-  truth.
-- `experiments.synthetic` and `experiments.natural_images` are compatibility
-  shims for the archived stack.
+- `archives/` contains preserved context, not live code.
 - `baselines/*/vendor` and `third_party/` are read-only unless explicitly
   instructed otherwise.
 
@@ -171,13 +122,12 @@ infrastructure inside the experiment folder.
 
 ## Workflow
 
-1. Explore or explain ideas in `reference/` or `prototyping/`.
+1. Use `prototyping/` or `archives/` for context when needed.
 2. Promote stable reusable code into `src/gdfm/` or the relevant `src/mp_*`
    package.
-3. Expose paper-facing study logic in `experiments/<study>/`.
-4. Keep the prototype tests, sampler tests, model-setup tests, canonical GDFM
+3. Keep the prototype tests, sampler tests, model-setup tests, canonical GDFM
    tests, and parity tests green before trusting a migration step.
-5. Push only when explicitly asked.
+4. Push only when explicitly asked.
 
 ---
 

@@ -1,3 +1,10 @@
+"""
+Checkpoint-replay evaluation for first-party study runs.
+
+Reload a saved run, regenerate samples at each checkpoint, and compute the
+memorization curves.
+"""
+
 from pathlib import Path
 
 import torch
@@ -8,6 +15,20 @@ from mp_metrics.memorization import compute_memorization_metrics, compute_nn_sta
 
 
 def evaluate_run(run_dir, device="cpu"):
+    """
+    Replay every checkpoint in a saved run directory and collect metrics.
+
+    For each checkpoint we:
+        1. reload model weights
+        2. regenerate samples from the saved shared `z_init`
+        3. compare those samples against the saved training tensor
+        4. compare held-out reference samples against the same training tensor
+           as a baseline
+
+    On the final checkpoint we also save a small sample/nearest-neighbor panel
+    payload so later plotting code can show concrete examples instead of just
+    scalar curves.
+    """
     run_dir = Path(run_dir)
     config = load_config_snapshot(run_dir)
 
@@ -25,6 +46,8 @@ def evaluate_run(run_dir, device="cpu"):
         raise FileNotFoundError(f"No checkpoints found in {run_dir / 'checkpoints'}")
 
     for checkpoint_path in checkpoint_paths:
+        # Use the same saved `z_init` at every checkpoint so changes in the
+        # curve reflect the model, not evaluation randomness.
         state = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(state["model"])
         samples = model.sample(
@@ -46,6 +69,9 @@ def evaluate_run(run_dir, device="cpu"):
             chunk_size=int(config.evaluation.chunk_size),
             config=config,
         )
+
+        # Keep both generated-sample and held-out-reference metrics at the same
+        # checkpoint so later plots can compare them directly.
         record = {
             "step": int(state["step"]),
             "ratio_threshold": metrics["ratio_threshold"],
@@ -59,6 +85,8 @@ def evaluate_run(run_dir, device="cpu"):
         records.append(record)
 
         if checkpoint_path == checkpoint_paths[-1]:
+            # Save the final samples and their nearest neighbors for later
+            # panels.
             neighbor_stats = compute_nn_stats(
                 samples,
                 train_tensor,
@@ -76,3 +104,29 @@ def evaluate_run(run_dir, device="cpu"):
 
     save_json(run_dir / "metrics" / "checkpoint_metrics.json", records)
     return records
+
+
+if __name__ == "__main__":
+    print("mp_metrics.checkpoints example")
+
+    # `evaluate_run(...)` works on an already-finished run directory rather than
+    # on in-memory tensors. The example below shows the expected call pattern.
+    print("Usage:")
+    print("  from mp_metrics import evaluate_run")
+    print("  records = evaluate_run(run_dir, device='cpu')")
+    print("")
+
+    # These artifacts are the replay inputs. They fix the data tensors and
+    # shared `z_init` so checkpoint comparisons use the same starting point.
+    print("Expected artifacts under run_dir/artifacts:")
+    print("  - config.json")
+    print("  - train_tensor.pt")
+    print("  - reference_tensor.pt")
+    print("  - z_init.pt")
+    print("")
+
+    # These checkpoints are the states that will be replayed and scored.
+    print("Expected checkpoints under run_dir/checkpoints:")
+    print("  - step_000000.pt")
+    print("  - step_000050.pt")
+    print("  - ...")

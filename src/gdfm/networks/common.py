@@ -1,3 +1,16 @@
+"""
+Shared time-conditioning utilities for GDFM backbones.
+
+This module owns the pieces that every backbone needs before it can do any
+model-specific work:
+- validating the shared `[B]` time-vector contract
+- turning scalar times into sinusoidal features
+- learning a small post-processing map on top of those fixed features
+
+Keeping these helpers together makes the MLP, UNet, and JiT paths read more
+uniformly.
+"""
+
 import math
 
 import torch
@@ -80,3 +93,25 @@ class TimeEmbeddingMLP(nn.Module):
         """
         emb = sinusoidal_time_embedding(t, self.time_emb_dim)
         return self.net(emb)
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    print("gdfm.networks.common example")
+
+    # Build one reference batch and one time vector to inspect the shared
+    # time-embedding utilities used by the backbones.
+    ref = torch.randn(3, 5)
+    t = torch.linspace(0.1, 0.9, ref.shape[0])
+
+    # First validate the `[B]` time contract, then compare fixed sinusoidal
+    # features with the learned MLP time embedding.
+    ensure_time_batch(t, ref, "demo")
+    sinusoidal = sinusoidal_time_embedding(t, time_emb_dim=8)
+    mlp = TimeEmbeddingMLP(time_emb_dim=8, out_dim=16)
+    learned = mlp(t)
+
+    # The output shapes are the main sanity check for these small helpers.
+    print(f"sinusoidal_time_embedding : {tuple(sinusoidal.shape)}")
+    print(f"TimeEmbeddingMLP(t)       : {tuple(learned.shape)}")

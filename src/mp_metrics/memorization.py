@@ -1,3 +1,17 @@
+"""
+Canonical memorization metrics for first-party studies.
+
+This module owns two closely related interfaces:
+- direct tensor-vs-tensor metrics for notebooks, sanity scripts, and loaded
+  checkpoint outputs
+- folder-vs-folder metrics for already-saved tensors or images on disk
+
+The shared idea is always the same:
+    1. compute first- and second-nearest-neighbor distances
+    2. form the ratio `r = d1 / d2`
+    3. declare a sample memorized when `r < threshold`
+"""
+
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +24,9 @@ import torch
 
 
 def _flatten_batch(tensor):
+    """
+    Convert any batch-shaped tensor into `[B, D]` for distance computation.
+    """
     if tensor.dim() == 2:
         return tensor
     return tensor.flatten(1)
@@ -139,6 +156,13 @@ def compute_memorization_metrics(
 
 
 def _load_tensor_payload(path):
+    """
+    Load a tensor collection from a `.pt` or `.pth` payload.
+
+    We accept either a raw tensor or a small dict containing a tensor under one
+    of a few conventional keys so sanity scripts do not all have to serialize
+    data in exactly the same way.
+    """
     payload = torch.load(path, map_location="cpu")
 
     if torch.is_tensor(payload):
@@ -157,6 +181,13 @@ def _load_tensor_payload(path):
 
 
 def _load_image_payload(path):
+    """
+    Load one image file into a tensor without applying study-specific transforms.
+
+    Folder-level memorization checks are meant to be lightweight and explicit,
+    so this helper only performs the minimal conversion from image file to a
+    channel-first tensor.
+    """
     try:
         from PIL import Image
     except ModuleNotFoundError as exc:
@@ -178,6 +209,13 @@ def _load_image_payload(path):
 
 
 def _normalize_loaded_tensor(tensor, source_path):
+    """
+    Ensure that loaded tensors carry an explicit batch dimension.
+
+    A single image file naturally loads as `[C, H, W]`, while a saved tensor
+    batch may already be `[B, ...]`. We normalize both cases so later code can
+    concatenate collections without guessing which shape convention it got.
+    """
     if tensor.dim() == 1:
         return tensor.unsqueeze(0)
     if tensor.dim() == 3 and source_path.suffix.lower() in {
@@ -193,6 +231,13 @@ def _normalize_loaded_tensor(tensor, source_path):
 
 
 def _load_collection(path):
+    """
+    Load either one file or an entire directory tree into a batch tensor.
+
+    Supported sources:
+        - tensor files: `.pt`, `.pth`
+        - image files: `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tif`, `.tiff`
+    """
     path = Path(path)
 
     if not path.exists():
@@ -260,3 +305,30 @@ def compute_folder_metrics(
     metrics["samples_path"] = str(Path(samples_path))
     metrics["reference_path"] = str(Path(reference_path))
     return metrics
+
+
+if __name__ == "__main__":
+    torch.manual_seed(0)
+
+    print("mp_metrics.memorization example")
+
+    # Treat `reference` as the training set and `samples` as nearby generations.
+    reference = torch.randn(16, 8)
+    samples = reference[:6] + 0.05 * torch.randn(6, 8)
+
+    # Compute nearest-neighbor statistics first, then the thresholded summary.
+    stats = compute_nn_stats(samples, reference)
+    f_mem = compute_f_mem(stats["r"], threshold=0.5)
+    metrics = compute_memorization_metrics(
+        samples,
+        reference,
+        ratio_threshold=0.5,
+    )
+
+    # These prints are the basic sanity checks: ratio tensor shape, neighbor
+    # indices, and the final memorization summary values.
+    print(f"r shape              : {tuple(stats['r'].shape)}")
+    print(f"nn indices shape     : {tuple(stats['indices'].shape)}")
+    print(f"f_mem                : {f_mem:.6f}")
+    print(f"metric keys          : {sorted(metrics.keys())}")
+    print(f"mean_nn_ratio        : {metrics['mean_nn_ratio']:.6f}")

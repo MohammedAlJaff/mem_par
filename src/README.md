@@ -1,6 +1,7 @@
 # src
 
 This folder is the canonical home for reusable first-party code.
+It is also the only live first-party code surface in the repo.
 
 ## Packages
 
@@ -29,5 +30,6 @@ This folder is the canonical home for reusable first-party code.
 
 `src/` should stay reusable and study-agnostic.
 
-Study-specific scientific choices, sweeps, and figure narratives belong under
-`experiments/`, not here.
+If functionality from the archived trees is needed again, bring the minimum
+needed implementation into `src/` deliberately. Do not recreate imports from
+archived paths.
