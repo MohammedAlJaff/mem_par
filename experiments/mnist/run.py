@@ -93,9 +93,8 @@ def build_mnist_config(
     config.training.seed = seed
     config.training.n_steps = n_steps
     config.training.batch_size = batch_size
-    config.training.optimizer = "sgd"
-    config.training.lr = 1.0e-2
-    config.training.momentum = 0.95
+    config.training.optimizer = "adam"
+    config.training.lr = 1.0e-3
     config.training.ckpt_every = ckpt_every
     config.training.log_every = max(1, min(500, ckpt_every // 2))
 

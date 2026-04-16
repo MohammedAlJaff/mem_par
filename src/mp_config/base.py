@@ -90,7 +90,7 @@ def get_base_config():
     training.seed = 0
     training.n_steps = 200
     training.batch_size = 64
-    training.lr = 3.0e-4
+    training.lr = 1.0e-3
     training.weight_decay = 0.0
     training.optimizer = "adam"
     training.momentum = 0.9
