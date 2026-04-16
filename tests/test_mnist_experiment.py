@@ -45,6 +45,7 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             eval_samples=2,
             run_name="mnist_runner_smoke",
         )
+        config.tracking.console.enabled = False
 
         with tempfile.TemporaryDirectory() as tmpdir:
             study_dir = Path(tmpdir) / "mnist_study"
@@ -61,6 +62,10 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             self.assertTrue((run_dir / "status.json").exists())
             self.assertTrue((run_dir / "figures").exists())
             self.assertTrue((run_dir / "logs" / "events.jsonl").exists())
+            self.assertTrue((run_dir / "logs" / "attempt.log").exists())
+            self.assertTrue((run_dir / "figures" / "training_loss_vs_step.png").exists())
+            self.assertTrue((run_dir / "figures" / "f_mem_vs_tau.png").exists())
+            self.assertTrue((run_dir / "figures" / "nn_ratio_vs_tau.png").exists())
             self.assertGreater(len(metrics), 0)
             self.assertIn("f_mem", metrics[-1])
             self.assertIn("std_nn_ratio", metrics[-1])
@@ -85,10 +90,32 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             self.assertEqual(data_meta["reference_class_counts"], {str(i): 2 for i in range(10)})
             self.assertTrue(data_meta["balanced_train_classes"])
             self.assertTrue(data_meta["balanced_reference_classes"])
+            self.assertIn("progress", status)
+            self.assertIn("evaluation_progress", status)
+            self.assertIn("latest_metrics", status)
+            self.assertIn("last_checkpoint", status)
+            self.assertIn("wandb", status)
+            self.assertFalse(status["wandb"]["enabled"])
+            self.assertIn("training_loss_vs_step", status["generated_figures"])
+            self.assertIn("f_mem_vs_tau", status["generated_figures"])
+            self.assertIn("nn_ratio_vs_tau", status["generated_figures"])
             self.assertIn("training_wall_time_sec", run_summary)
             self.assertIn("training_seconds_per_step", run_summary)
+            self.assertIn("evaluation_wall_time_sec", run_summary)
+            self.assertIn("generated_figures", run_summary)
             self.assertGreaterEqual(run_summary["training_wall_time_sec"], 0.0)
             self.assertGreaterEqual(run_summary["training_seconds_per_step"], 0.0)
+            events = [
+                loads(line)
+                for line in (run_dir / "logs" / "events.jsonl").read_text().splitlines()
+            ]
+            event_types = {event.get("event_type") for event in events}
+            self.assertIn("training_summary", event_types)
+            self.assertIn("evaluation_summary", event_types)
+            self.assertIn("figure_saved", event_types)
+            attempt_log = (run_dir / "logs" / "attempt.log").read_text()
+            self.assertIn("training complete", attempt_log)
+            self.assertIn("checkpoint replay complete", attempt_log)
             self.assertEqual(find_latest_attempt_dir(study_dir, run_id, 7), run_dir)
             self.assertEqual(find_latest_completed_attempt_dir(study_dir, run_id, 7), run_dir)
 

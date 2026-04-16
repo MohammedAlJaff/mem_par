@@ -23,10 +23,16 @@ the reusable kernel those studies build on top of.
   checkpoint replay.
 
 - `mp_artifacts/`
-  Run layout, config snapshots, checkpoints, tensors, and JSON artifacts.
+  Experiment/run/seed/attempt layout, config snapshots, checkpoints, tensors,
+  JSON artifacts, status files, and attempt logs.
 
 - `mp_training/`
   Shared training-loop scaffolding and optimizer setup.
+
+- `mp_tracking.py`
+  Shared observability glue for console summaries, `logs/attempt.log`,
+  structured events, figure registration, live `status.json` progress, and
+  optional offline-first W&B logging.
 
 ## Boundary
 

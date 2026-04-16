@@ -9,6 +9,8 @@ their work consistently.
 """
 
 from mp_artifacts.artifacts import (
+    append_attempt_event,
+    append_attempt_log,
     create_run_layout,
     find_latest_attempt_dir,
     find_latest_completed_attempt_dir,
@@ -16,10 +18,12 @@ from mp_artifacts.artifacts import (
     get_run_dir,
     get_seed_dir,
     list_checkpoint_paths,
+    load_attempt_status,
     load_config_snapshot,
     load_json,
     make_run_id,
     make_seed_id,
+    patch_attempt_status,
     resolve_attempt_dir,
     resolve_run_dir,
     save_checkpoint,
@@ -30,6 +34,8 @@ from mp_artifacts.artifacts import (
 )
 
 __all__ = [
+    "append_attempt_event",
+    "append_attempt_log",
     "create_run_layout",
     "find_latest_attempt_dir",
     "find_latest_completed_attempt_dir",
@@ -37,10 +43,12 @@ __all__ = [
     "get_run_dir",
     "get_seed_dir",
     "list_checkpoint_paths",
+    "load_attempt_status",
     "load_config_snapshot",
     "load_json",
     "make_run_id",
     "make_seed_id",
+    "patch_attempt_status",
     "resolve_attempt_dir",
     "resolve_run_dir",
     "save_checkpoint",

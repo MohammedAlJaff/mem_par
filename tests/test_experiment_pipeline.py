@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from json import loads
 from pathlib import Path
 from unittest import mock
 
@@ -65,6 +66,16 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertTrue((run_dir / "metrics" / "checkpoint_metrics.json").exists())
             self.assertTrue((run_dir / "status.json").exists())
             self.assertTrue((run_dir / "logs" / "events.jsonl").exists())
+            self.assertTrue((run_dir / "logs" / "attempt.log").exists())
+            self.assertTrue((run_dir / "figures" / "training_loss_vs_step.png").exists())
+            self.assertTrue((run_dir / "figures" / "f_mem_vs_tau.png").exists())
+            self.assertTrue((run_dir / "figures" / "nn_ratio_vs_tau.png").exists())
+            status = loads((run_dir / "status.json").read_text())
+            self.assertEqual(status["state"], "completed")
+            self.assertIn("progress", status)
+            self.assertIn("evaluation_progress", status)
+            self.assertIn("latest_metrics", status)
+            self.assertIn("training_loss_vs_step", status["generated_figures"])
             self.assertGreater(len(metrics), 0)
 
     def make_gmm_config(self):
@@ -84,6 +95,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.n_steps = 2
         config.training.ckpt_every = 1
         config.training.log_every = 1
+        config.tracking.console.enabled = False
         config.training.batch_size = 4
         config.evaluation.n_samples = 4
         config.evaluation.sample_panel_count = 2
@@ -108,6 +120,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.n_steps = 2
         config.training.ckpt_every = 1
         config.training.log_every = 1
+        config.tracking.console.enabled = False
         config.training.batch_size = 4
         config.evaluation.n_samples = 2
         config.evaluation.sample_panel_count = 2
@@ -136,6 +149,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.n_steps = 1
         config.training.ckpt_every = 1
         config.training.log_every = 1
+        config.tracking.console.enabled = False
         config.training.batch_size = 2
         config.evaluation.n_samples = 2
         config.evaluation.sample_panel_count = 2

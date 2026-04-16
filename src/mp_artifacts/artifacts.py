@@ -78,6 +78,7 @@ def _run_signature_payload(config):
     payload.get("study", {}).pop("description", None)
     payload.get("data", {}).pop("root", None)
     payload.get("data", {}).pop("download", None)
+    payload.pop("tracking", None)
 
     return payload
 
@@ -113,6 +114,7 @@ def _attempt_paths(attempt_dir):
         "logs_dir": attempt_dir / "logs",
         "status_path": attempt_dir / "status.json",
         "events_log_path": attempt_dir / "logs" / "events.jsonl",
+        "attempt_log_path": attempt_dir / "logs" / "attempt.log",
         "config_path": attempt_dir / "artifacts" / "config.json",
         "run_summary_path": attempt_dir / "artifacts" / "run_summary.json",
         "data_meta_path": attempt_dir / "artifacts" / "data_meta.json",
@@ -277,6 +279,58 @@ def _append_event_log(attempt_dir, payload):
     with events_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload))
         handle.write("\n")
+
+
+def load_attempt_status(attempt_dir):
+    """
+    Load the live `status.json` payload for one attempt directory.
+    """
+    return load_json(_attempt_paths(attempt_dir)["status_path"])
+
+
+def patch_attempt_status(attempt_dir, **fields):
+    """
+    Update attempt status fields without implying a lifecycle state transition.
+    """
+    attempt_dir = Path(attempt_dir)
+    status_path = _attempt_paths(attempt_dir)["status_path"]
+    status = load_json(status_path)
+    now = _iso_now()
+
+    status.update(fields)
+    status["updated_at"] = now
+    if status.get("state") in TERMINAL_ATTEMPT_STATES and status.get("finished_at") is None:
+        status["finished_at"] = now
+
+    save_json(status_path, status)
+    _sync_status_into_manifests(attempt_dir, status)
+    return status
+
+
+def append_attempt_event(attempt_dir, event_type, **fields):
+    """
+    Append one structured event record under `logs/events.jsonl`.
+    """
+    payload = {
+        "timestamp": _iso_now(),
+        "event_type": str(event_type),
+    }
+    payload.update(fields)
+    _append_event_log(attempt_dir, payload)
+    return payload
+
+
+def append_attempt_log(attempt_dir, line, *, timestamp=None):
+    """
+    Append one human-readable line to `logs/attempt.log`.
+    """
+    paths = _attempt_paths(attempt_dir)
+    log_path = paths["attempt_log_path"]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = timestamp or _iso_now()
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{prefix}] {line}\n")
+    return log_path
 
 
 def _register_attempt_in_manifests(experiment_dir, config, run_id, seed, attempt_dir, now):
@@ -461,6 +515,7 @@ def create_run_layout(experiment_dir, config):
 
     status = {
         "state": "created",
+        "current_stage": "created",
         "experiment_id": _slug(config.study.name) or "experiment",
         "experiment_name": str(config.study.name),
         "run_id": run_id,
@@ -480,11 +535,29 @@ def create_run_layout(experiment_dir, config):
         "logs_dir": str(paths["logs_dir"].resolve()),
         "status_path": str(paths["status_path"].resolve()),
         "events_log_path": str(paths["events_log_path"].resolve()),
+        "attempt_log_path": str(paths["attempt_log_path"].resolve()),
         "config_path": str(paths["config_path"].resolve()),
         "run_summary_path": str(paths["run_summary_path"].resolve()),
         "data_meta_path": str(paths["data_meta_path"].resolve()),
         "train_history_path": str(paths["train_history_path"].resolve()),
         "checkpoint_metrics_path": str(paths["checkpoint_metrics_path"].resolve()),
+        "progress": {},
+        "latest_metrics": {},
+        "last_checkpoint": None,
+        "evaluation_progress": {},
+        "generated_figures": {},
+        "wandb": {
+            "enabled": False,
+            "active": False,
+            "mode": None,
+            "run_id": None,
+            "run_name": None,
+            "run_path": None,
+            "run_url": None,
+            "dir": None,
+            "warning": None,
+        },
+        "warnings": [],
         "last_error": None,
     }
     save_json(paths["status_path"], status)
@@ -492,6 +565,7 @@ def create_run_layout(experiment_dir, config):
         attempt_dir,
         {
             "timestamp": now,
+            "event_type": "state_transition",
             "state": "created",
             "attempt_id": attempt_id,
         },
@@ -509,6 +583,7 @@ def update_attempt_status(attempt_dir, state, **fields):
     now = _iso_now()
 
     status["state"] = state
+    status["current_stage"] = state
     status["updated_at"] = now
     if state in TERMINAL_ATTEMPT_STATES:
         status["finished_at"] = now
@@ -519,6 +594,7 @@ def update_attempt_status(attempt_dir, state, **fields):
         attempt_dir,
         {
             "timestamp": now,
+            "event_type": "state_transition",
             "state": state,
             "attempt_id": status["attempt_id"],
             "last_error": status.get("last_error"),

@@ -70,6 +70,16 @@ class TestArtifactLayout(unittest.TestCase):
                 first_attempt.name,
             )
 
+    def test_tracking_settings_do_not_change_run_identity(self):
+        config = self.make_config()
+        tracked = self.make_config()
+        tracked.tracking.wandb.enabled = True
+        tracked.tracking.wandb.mode = "offline"
+        tracked.tracking.console.summary_every_steps = 123
+        tracked.tracking.console.summary_every_seconds = 7.5
+
+        self.assertEqual(make_run_id(config), make_run_id(tracked))
+
 
 if __name__ == "__main__":
     unittest.main()

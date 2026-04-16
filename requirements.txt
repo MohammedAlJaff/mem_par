@@ -35,6 +35,7 @@ gdown>=5.2.0
 einops>=0.8.0
 timm>=0.9.12
 tensorboard>=2.10.0
+wandb>=0.16.0
 opencv-python>=4.11.0.86
 
 # Baseline compatibility

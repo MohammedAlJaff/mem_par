@@ -29,8 +29,8 @@ The notebook now acts as a checkpoint-replay prototype:
 - it writes a real attempt directory with saved labels, indices, tensors,
   checkpoints, manifests, and run summaries
 - it replays every checkpoint into memorization metrics and plots the curves
-- it stores the notebook-generated figures inside that attempt's `figures/`
-  directory
+- it surfaces the attempt-local `status.json`, `logs/attempt.log`, replay
+  metrics, and core-generated scalar figures
 
 For a quick smoke pass, launch Jupyter with `MEMPAR_FAST_NOTEBOOK=1`.
 
@@ -52,3 +52,41 @@ PYTHONPATH=src python -m experiments.mnist.run --download --device cpu
 The default study output goes under `tmp/mnist_study/`, which is already
 ignored by git. Under that root, each hyperparameter run gets its own
 seed-specific attempt directories rather than one flat run folder.
+
+Useful operator flags:
+
+```bash
+PYTHONPATH=src python -m experiments.mnist.run \
+  --download \
+  --device cuda \
+  --summary-every-steps 500 \
+  --summary-every-seconds 60
+```
+
+Optional offline W&B tracking:
+
+```bash
+PYTHONPATH=src python -m experiments.mnist.run \
+  --download \
+  --device cuda \
+  --wandb \
+  --wandb-mode offline \
+  --wandb-project mem_par
+```
+
+W&B is disabled by default. When enabled, the local W&B directory is inside the
+attempt under `logs/wandb/`, so cluster runs remain self-contained and can be
+synced later.
+
+Each completed attempt should contain:
+
+- `status.json`
+- `logs/events.jsonl`
+- `logs/attempt.log`
+- `artifacts/config.json`
+- `artifacts/run_summary.json`
+- `metrics/train_history.json`
+- `metrics/checkpoint_metrics.json`
+- `figures/training_loss_vs_step.png`
+- `figures/f_mem_vs_tau.png`
+- `figures/nn_ratio_vs_tau.png`

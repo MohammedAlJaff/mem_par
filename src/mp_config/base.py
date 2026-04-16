@@ -112,6 +112,25 @@ def get_base_config():
     outputs = config.outputs = ConfigDict()
     outputs.run_name = "run"
 
+    tracking = config.tracking = ConfigDict()
+
+    tracking_console = tracking.console = ConfigDict()
+    tracking_console.enabled = True
+    tracking_console.summary_every_steps = int(training.log_every)
+    tracking_console.summary_every_seconds = 60.0
+    tracking_console.stage_banners = True
+    tracking_console.tee_to_attempt_log = True
+
+    tracking_wandb = tracking.wandb = ConfigDict()
+    tracking_wandb.enabled = False
+    tracking_wandb.mode = "offline"
+    tracking_wandb.project = "mem_par"
+    tracking_wandb.entity = ""
+    tracking_wandb.dir = "logs/wandb"
+    tracking_wandb.tags = []
+    tracking_wandb.notes = ""
+    tracking_wandb.strict = False
+
     return config
 
 

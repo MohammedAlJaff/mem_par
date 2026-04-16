@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from mp_artifacts import load_config_snapshot
+from mp_artifacts import load_attempt_status, load_config_snapshot, load_json
 from mp_config import clone_config, get_base_config
 from mp_metrics import evaluate_run
 from mp_training import train_run
@@ -38,6 +38,13 @@ def build_mnist_config(
     run_name: str = "mnist_checkpoint_replay",
     balance_train_classes: bool = True,
     balance_reference_classes: bool = True,
+    summary_every_steps: int | None = None,
+    summary_every_seconds: float | None = None,
+    wandb_enabled: bool = False,
+    wandb_mode: str = "offline",
+    wandb_project: str = "mem_par",
+    wandb_entity: str = "",
+    wandb_notes: str = "",
 ):
     """
     Build the canonical config for the live MNIST study.
@@ -91,6 +98,18 @@ def build_mnist_config(
     config.training.momentum = 0.95
     config.training.ckpt_every = ckpt_every
     config.training.log_every = max(1, min(500, ckpt_every // 2))
+
+    if summary_every_steps is None:
+        summary_every_steps = config.training.log_every
+    if summary_every_seconds is None:
+        summary_every_seconds = 60.0
+    config.tracking.console.summary_every_steps = int(summary_every_steps)
+    config.tracking.console.summary_every_seconds = float(summary_every_seconds)
+    config.tracking.wandb.enabled = bool(wandb_enabled)
+    config.tracking.wandb.mode = str(wandb_mode)
+    config.tracking.wandb.project = str(wandb_project)
+    config.tracking.wandb.entity = str(wandb_entity)
+    config.tracking.wandb.notes = str(wandb_notes)
 
     config.evaluation.n_samples = eval_samples
     config.evaluation.batch_size = batch_size
@@ -181,7 +200,78 @@ def parse_args():
         default=None,
         help="Existing attempt directory to replay/evaluate instead of launching a new run.",
     )
+    parser.add_argument(
+        "--summary-every-steps",
+        type=int,
+        default=None,
+        help="Emit console/attempt-log summaries at least this often in training steps.",
+    )
+    parser.add_argument(
+        "--summary-every-seconds",
+        type=float,
+        default=None,
+        help="Emit console/attempt-log summaries at least this often in wall-clock seconds.",
+    )
+    parser.add_argument(
+        "--wandb",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable optional Weights & Biases tracking for this attempt.",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("offline", "online"),
+        default="offline",
+        help="W&B mode. Offline is recommended for cluster jobs that sync later.",
+    )
+    parser.add_argument("--wandb-project", default="mem_par", help="W&B project name.")
+    parser.add_argument("--wandb-entity", default="", help="Optional W&B entity/team.")
+    parser.add_argument("--wandb-notes", default="", help="Optional W&B run notes.")
     return parser.parse_args()
+
+
+def _print_final_summary(args, config, run_dir, metrics):
+    """
+    Print the operator-facing summary after one MNIST attempt.
+    """
+    final_record = metrics[-1]
+    status = load_attempt_status(run_dir)
+    run_summary_path = run_dir / "artifacts" / "run_summary.json"
+    run_summary = load_json(run_summary_path) if run_summary_path.exists() else {}
+    figures = status.get("generated_figures") or run_summary.get("generated_figures") or {}
+    wandb = status.get("wandb") or {}
+
+    print("experiments.mnist.run")
+    print(f"experiment          : {status.get('experiment_name')}")
+    print(f"run_id              : {status.get('run_id')}")
+    print(f"seed_id             : {status.get('seed_id')}")
+    print(f"attempt_id          : {status.get('attempt_id')}")
+    print(f"attempt_dir         : {run_dir}")
+    print(f"status.json         : {run_dir / 'status.json'}")
+    print(f"attempt.log         : {run_dir / 'logs' / 'attempt.log'}")
+    print(f"run_summary.json    : {run_summary_path}")
+    print(f"checkpoint_metrics  : {run_dir / 'metrics' / 'checkpoint_metrics.json'}")
+    print(f"prediction/loss     : {config.framework.prediction_space}/{config.framework.loss_space}")
+    print(f"n_train / n_eval    : {config.data.n_train} / {config.data.n_eval}")
+    print(f"steps / ckpt_every  : {config.training.n_steps} / {config.training.ckpt_every}")
+    print(f"sample steps        : {config.sampling.n_steps}")
+    print(f"final checkpoint    : {final_record['step']}")
+    print(f"final f_mem         : {final_record['f_mem']:.4f}")
+    print(f"baseline f_mem      : {final_record['baseline_f_mem']:.4f}")
+    if figures:
+        print("figures             :")
+        for name, path in sorted(figures.items()):
+            print(f"  {name}: {path}")
+    if wandb.get("enabled"):
+        print(f"wandb mode          : {wandb.get('mode')}")
+        print(f"wandb run id        : {wandb.get('run_id')}")
+        print(f"wandb dir           : {wandb.get('dir')}")
+        if wandb.get("run_url"):
+            print(f"wandb url           : {wandb.get('run_url')}")
+        if wandb.get("warning"):
+            print(f"wandb warning       : {wandb.get('warning')}")
+    if args.attempt_dir is not None:
+        print("replay source       : existing attempt")
 
 
 def main():
@@ -210,6 +300,13 @@ def main():
             run_name=args.run_name,
             balance_train_classes=args.balance_train_classes,
             balance_reference_classes=args.balance_reference_classes,
+            summary_every_steps=args.summary_every_steps,
+            summary_every_seconds=args.summary_every_seconds,
+            wandb_enabled=args.wandb,
+            wandb_mode=args.wandb_mode,
+            wandb_project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
+            wandb_notes=args.wandb_notes,
         )
 
         run_dir, metrics = run_mnist_study(
@@ -217,18 +314,7 @@ def main():
             device=args.device,
             config=config,
         )
-    final_record = metrics[-1]
-
-    print("experiments.mnist.run")
-    print(f"study_dir           : {Path(args.study_dir)}")
-    print(f"run_dir             : {run_dir}")
-    print(f"prediction/loss     : {args.pred_space}/{args.loss_space}")
-    print(f"n_train / n_eval    : {config.data.n_train} / {config.data.n_eval}")
-    print(f"steps / ckpt_every  : {config.training.n_steps} / {config.training.ckpt_every}")
-    print(f"sample steps        : {config.sampling.n_steps}")
-    print(f"final checkpoint    : {final_record['step']}")
-    print(f"final f_mem         : {final_record['f_mem']:.4f}")
-    print(f"baseline f_mem      : {final_record['baseline_f_mem']:.4f}")
+    _print_final_summary(args, config, run_dir, metrics)
 
 
 if __name__ == "__main__":
