@@ -78,6 +78,8 @@ def get_base_config():
     data.image_size = 0
     data.image_channels = 0
     data.flatten = False
+    data.balance_train_classes = False
+    data.balance_reference_classes = False
     data.n_clusters = 10
     data.sigma_z = 0.5
     data.sigma_eta = 1.0e-3
@@ -94,6 +96,7 @@ def get_base_config():
     training.momentum = 0.9
     training.ckpt_every = 50
     training.log_every = 10
+    training.show_progress = True
 
     evaluation = config.evaluation = ConfigDict()
     evaluation.n_samples = 64

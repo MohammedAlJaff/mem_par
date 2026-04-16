@@ -11,9 +11,12 @@ This file contains the reusable training loop:
 It deliberately avoids study-specific sweep logic or plotting decisions.
 """
 
+import sys
+import time
 from pathlib import Path
 
 import torch
+from tqdm.auto import tqdm
 
 from gdfm import GDFM
 from mp_artifacts import (
@@ -22,8 +25,34 @@ from mp_artifacts import (
     save_config_snapshot,
     save_json,
     save_tensor,
+    update_attempt_status,
 )
 from mp_data import build_data_bundle
+
+
+def _running_in_notebook():
+    """
+    Detect whether the current Python process is running inside IPython/Jupyter.
+    """
+    try:
+        from IPython import get_ipython
+    except ModuleNotFoundError:
+        return False
+
+    shell = get_ipython()
+    if shell is None:
+        return False
+    return shell.__class__.__name__ in {"ZMQInteractiveShell", "TerminalInteractiveShell"}
+
+
+def _should_show_progress(config):
+    """
+    Show tqdm progress in notebooks and interactive terminals, but stay quiet in
+    non-interactive test and batch contexts unless explicitly overridden later.
+    """
+    if not bool(getattr(config.training, "show_progress", True)):
+        return False
+    return _running_in_notebook() or sys.stderr.isatty()
 
 
 def _build_optimizer(config, model):
@@ -86,98 +115,160 @@ def train_run(config, study_dir, device="cpu"):
         6. write compact run summaries for later inspection
     """
     study_dir = Path(study_dir)
+    run_start = time.perf_counter()
     run_dir = create_run_layout(study_dir, config)
-    data_bundle = build_data_bundle(config)
+    try:
+        data_bundle = build_data_bundle(config)
 
-    # ---------------------------------------------------------------------
-    # Save the exact tensors and metadata needed for later checkpoint replay.
-    # ---------------------------------------------------------------------
-    train_tensor = data_bundle["train"].cpu()
-    reference_tensor = data_bundle["reference"].cpu()
-    z_init = _make_z_init(config, train_tensor)
+        # -----------------------------------------------------------------
+        # Save the exact tensors and metadata needed for later replay.
+        # -----------------------------------------------------------------
+        train_tensor = data_bundle["train"].cpu()
+        reference_tensor = data_bundle["reference"].cpu()
+        z_init = _make_z_init(config, train_tensor)
 
-    save_config_snapshot(run_dir, config)
-    save_tensor(run_dir / "artifacts" / "train_tensor.pt", train_tensor)
-    save_tensor(run_dir / "artifacts" / "reference_tensor.pt", reference_tensor)
-    save_tensor(run_dir / "artifacts" / "z_init.pt", z_init)
+        save_config_snapshot(run_dir, config)
+        save_tensor(run_dir / "artifacts" / "train_tensor.pt", train_tensor)
+        save_tensor(run_dir / "artifacts" / "reference_tensor.pt", reference_tensor)
+        save_tensor(run_dir / "artifacts" / "z_init.pt", z_init)
 
-    if data_bundle.get("train_labels") is not None:
-        save_tensor(run_dir / "artifacts" / "train_labels.pt", data_bundle["train_labels"])
-    if data_bundle.get("reference_labels") is not None:
-        save_tensor(
-            run_dir / "artifacts" / "reference_labels.pt",
-            data_bundle["reference_labels"],
-        )
-    if data_bundle.get("train_indices") is not None:
-        save_tensor(run_dir / "artifacts" / "train_indices.pt", data_bundle["train_indices"])
-    if data_bundle.get("reference_indices") is not None:
-        save_tensor(
-            run_dir / "artifacts" / "reference_indices.pt",
-            data_bundle["reference_indices"],
-        )
-    if data_bundle.get("geometry") is not None:
-        save_tensor(run_dir / "artifacts" / "geometry.pt", data_bundle["geometry"])
+        if data_bundle.get("train_labels") is not None:
+            save_tensor(
+                run_dir / "artifacts" / "train_labels.pt",
+                data_bundle["train_labels"],
+            )
+        if data_bundle.get("reference_labels") is not None:
+            save_tensor(
+                run_dir / "artifacts" / "reference_labels.pt",
+                data_bundle["reference_labels"],
+            )
+        if data_bundle.get("train_indices") is not None:
+            save_tensor(
+                run_dir / "artifacts" / "train_indices.pt",
+                data_bundle["train_indices"],
+            )
+        if data_bundle.get("reference_indices") is not None:
+            save_tensor(
+                run_dir / "artifacts" / "reference_indices.pt",
+                data_bundle["reference_indices"],
+            )
+        if data_bundle.get("geometry") is not None:
+            save_tensor(run_dir / "artifacts" / "geometry.pt", data_bundle["geometry"])
 
-    save_json(
-        run_dir / "artifacts" / "data_meta.json",
-        {
+        data_meta = {
+            "dataset": str(config.data.dataset),
+            "data_root": str(config.data.root),
+            "download": bool(config.data.download),
             "display_shape": data_bundle.get("display_shape"),
             "train_shape": list(train_tensor.shape),
             "reference_shape": list(reference_tensor.shape),
-        },
-    )
+            "train_class_counts": data_bundle.get("train_class_counts"),
+            "reference_class_counts": data_bundle.get("reference_class_counts"),
+            "balanced_train_classes": data_bundle.get("balanced_train_classes"),
+            "balanced_reference_classes": data_bundle.get("balanced_reference_classes"),
+            "train_split": data_bundle.get("train_split"),
+            "reference_split": data_bundle.get("reference_split")
+            or getattr(config.data, "reference_split", None),
+        }
+        save_json(run_dir / "artifacts" / "data_meta.json", data_meta)
+        update_attempt_status(
+            run_dir,
+            "data_prepared",
+            data_meta_path=str((run_dir / "artifacts" / "data_meta.json").resolve()),
+        )
 
-    model = GDFM(config).to(device)
-    optimizer = _build_optimizer(config, model)
-    generator = torch.Generator().manual_seed(int(config.training.seed))
+        model = GDFM(config).to(device)
+        optimizer = _build_optimizer(config, model)
+        generator = torch.Generator().manual_seed(int(config.training.seed))
 
-    # ---------------------------------------------------------------------
-    # Training loop
-    # ---------------------------------------------------------------------
-    history = []
-    save_checkpoint(run_dir, 0, model, optimizer)
+        # -------------------------------------------------------------
+        # Training loop
+        # -------------------------------------------------------------
+        history = []
+        save_checkpoint(run_dir, 0, model, optimizer)
+        train_start = time.perf_counter()
+        update_attempt_status(run_dir, "training")
+        progress = tqdm(
+            range(1, int(config.training.n_steps) + 1),
+            desc=f"train:{config.outputs.run_name}",
+            unit="step",
+            disable=not _should_show_progress(config),
+            dynamic_ncols=True,
+        )
 
-    for step in range(1, int(config.training.n_steps) + 1):
-        batch = _sample_batch(
-            train_tensor,
-            min(int(config.training.batch_size), train_tensor.shape[0]),
-            generator,
-        ).to(device)
+        try:
+            for step in progress:
+                batch = _sample_batch(
+                    train_tensor,
+                    min(int(config.training.batch_size), train_tensor.shape[0]),
+                    generator,
+                ).to(device)
 
-        optimizer.zero_grad(set_to_none=True)
-        loss = model.compute_loss(batch)
-        loss.backward()
-        optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                loss = model.compute_loss(batch)
+                loss.backward()
+                optimizer.step()
 
-        if (
-            step == 1
-            or step % int(config.training.log_every) == 0
-            or step == int(config.training.n_steps)
-        ):
-            history.append({"step": int(step), "loss": float(loss.item())})
+                if (
+                    step == 1
+                    or step % int(config.training.log_every) == 0
+                    or step == int(config.training.n_steps)
+                ):
+                    loss_value = float(loss.item())
+                    history.append({"step": int(step), "loss": loss_value})
+                    if not progress.disable:
+                        progress.set_postfix(loss=f"{loss_value:.4f}", refresh=False)
 
-        if (
-            step % int(config.training.ckpt_every) == 0
-            or step == int(config.training.n_steps)
-        ):
-            save_checkpoint(run_dir, step, model, optimizer)
+                if (
+                    step % int(config.training.ckpt_every) == 0
+                    or step == int(config.training.n_steps)
+                ):
+                    save_checkpoint(run_dir, step, model, optimizer)
+        finally:
+            progress.close()
 
-    # ---------------------------------------------------------------------
-    # Final compact summaries
-    # ---------------------------------------------------------------------
-    save_json(run_dir / "metrics" / "train_history.json", history)
-    save_json(
-        run_dir / "artifacts" / "run_summary.json",
-        {
+        training_wall_time_sec = time.perf_counter() - train_start
+        total_wall_time_sec = time.perf_counter() - run_start
+        n_steps = int(config.training.n_steps)
+
+        # -------------------------------------------------------------
+        # Final compact summaries
+        # -------------------------------------------------------------
+        save_json(run_dir / "metrics" / "train_history.json", history)
+        run_summary = {
             "study": config.study.name,
             "run_dir": str(run_dir),
-            "n_steps": int(config.training.n_steps),
+            "experiment_dir": str(study_dir.resolve()),
+            "run_id": run_dir.parents[3].name,
+            "seed_id": run_dir.parents[1].name,
+            "attempt_id": run_dir.name,
+            "seed": int(config.training.seed),
+            "n_steps": n_steps,
             "n_train": int(config.data.n_train),
             "n_eval": int(config.data.n_eval),
             "optimizer": str(config.training.optimizer),
-        },
-    )
-    return run_dir
+            "training_wall_time_sec": training_wall_time_sec,
+            "training_seconds_per_step": (
+                training_wall_time_sec / n_steps if n_steps > 0 else 0.0
+            ),
+            "total_wall_time_sec": total_wall_time_sec,
+            "figures_dir": str((run_dir / "figures").resolve()),
+            "logs_dir": str((run_dir / "logs").resolve()),
+        }
+        save_json(run_dir / "artifacts" / "run_summary.json", run_summary)
+        update_attempt_status(
+            run_dir,
+            "trained",
+            run_summary_path=str((run_dir / "artifacts" / "run_summary.json").resolve()),
+            train_history_path=str((run_dir / "metrics" / "train_history.json").resolve()),
+        )
+        return run_dir
+    except KeyboardInterrupt as exc:
+        update_attempt_status(run_dir, "aborted", last_error=f"{type(exc).__name__}: {exc}")
+        raise
+    except Exception as exc:
+        update_attempt_status(run_dir, "failed", last_error=f"{type(exc).__name__}: {exc}")
+        raise
 
 
 if __name__ == "__main__":

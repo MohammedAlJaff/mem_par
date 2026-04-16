@@ -7,12 +7,13 @@ repo.
 
 - `mnist_walkthrough.ipynb`
   The primary reviewer path. It is written as an interactive, line-by-line
-  walkthrough rather than a thin wrapper around hidden helper functions.
+  walkthrough, but it now launches the real saved-run train/eval path and then
+  reads the written artifacts back from disk.
 
 - `python -m experiments.mnist.run`
   The official saved-run path. This is the artifact-writing route that uses the
-  stable `src/` kernel to create a run directory, checkpoints, and replay
-  metrics.
+  stable `src/` kernel to create an experiment/run/seed/attempt directory,
+  checkpoints, manifests, status metadata, and replay metrics.
 
 ## Notebook-First Usage
 
@@ -22,8 +23,16 @@ Open the notebook from the repo root:
 jupyter lab experiments/mnist/mnist_walkthrough.ipynb
 ```
 
-The notebook is intentionally in-memory by default. It demonstrates the study
-step by step without requiring a canonical run directory.
+The notebook now acts as a checkpoint-replay prototype:
+
+- it builds balanced train and reference subsets explicitly
+- it writes a real attempt directory with saved labels, indices, tensors,
+  checkpoints, manifests, and run summaries
+- it replays every checkpoint into memorization metrics and plots the curves
+- it stores the notebook-generated figures inside that attempt's `figures/`
+  directory
+
+For a quick smoke pass, launch Jupyter with `MEMPAR_FAST_NOTEBOOK=1`.
 
 ## Official Saved-Run Usage
 
@@ -41,4 +50,5 @@ PYTHONPATH=src python -m experiments.mnist.run --download --device cpu
 ```
 
 The default study output goes under `tmp/mnist_study/`, which is already
-ignored by git.
+ignored by git. Under that root, each hyperparameter run gets its own
+seed-specific attempt directories rather than one flat run folder.

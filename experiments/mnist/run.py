@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from mp_artifacts import load_config_snapshot
 from mp_config import clone_config, get_base_config
 from mp_metrics import evaluate_run
 from mp_training import train_run
@@ -25,27 +26,37 @@ def build_mnist_config(
     seed: int = 0,
     root: str = "tmp/data",
     download: bool = True,
-    n_train: int = 64,
-    n_eval: int = 128,
+    n_train: int = 100,
+    n_eval: int | None = None,
     prediction_space: str = "v",
     loss_space: str = "v",
-    n_steps: int = 200,
+    n_steps: int = 30_000,
+    ckpt_every: int = 2_000,
     sampling_steps: int = 24,
-    batch_size: int = 16,
-    eval_samples: int = 16,
-    run_name: str = "mnist_live",
+    batch_size: int | None = None,
+    eval_samples: int | None = None,
+    run_name: str = "mnist_checkpoint_replay",
+    balance_train_classes: bool = True,
+    balance_reference_classes: bool = True,
 ):
     """
     Build the canonical config for the live MNIST study.
 
-    The defaults deliberately stay small enough for a reviewer-friendly first
-    run, while still exercising the full artifact-writing path.
+    The defaults now mirror the checkpoint-replay prototype used in the paper
+    notebook: a real saved run with balanced MNIST subsets, repeated
+    checkpointing, and replayable memorization curves.
     """
     config = clone_config(get_base_config())
+    if n_eval is None:
+        n_eval = n_train
+    if batch_size is None:
+        batch_size = min(512, n_train)
+    if eval_samples is None:
+        eval_samples = min(128, n_eval)
 
     config.study.name = "mnist"
     config.study.description = (
-        "Live MNIST paper-study surface for the notebook-first repo workflow."
+        "Live MNIST checkpoint-replay prototype for the notebook-first paper workflow."
     )
 
     config.framework.family = "fm"
@@ -61,25 +72,30 @@ def build_mnist_config(
     config.data.image_channels = 1
     config.data.flatten = False
     config.data.data_dim = 32 * 32
+    config.data.balance_train_classes = balance_train_classes
+    config.data.balance_reference_classes = balance_reference_classes
 
     config.network.arch = "unet"
-    config.network.base_channels = 32
-    config.network.channel_mult = (1, 2, 2)
-    config.network.attn_resolutions = (8,)
-    config.network.num_res_blocks = 1
-    config.network.dropout = 0.0
-    config.network.time_emb_dim = 32
+    config.network.base_channels = 128
+    config.network.channel_mult = (1, 2, 4)
+    config.network.attn_resolutions = (16, 8)
+    config.network.num_res_blocks = 2
+    config.network.dropout = 0.1
+    config.network.time_emb_dim = None
 
     config.training.seed = seed
     config.training.n_steps = n_steps
     config.training.batch_size = batch_size
-    config.training.ckpt_every = max(1, n_steps // 4)
-    config.training.log_every = max(1, n_steps // 10)
+    config.training.optimizer = "sgd"
+    config.training.lr = 1.0e-2
+    config.training.momentum = 0.95
+    config.training.ckpt_every = ckpt_every
+    config.training.log_every = max(1, min(500, ckpt_every // 2))
 
     config.evaluation.n_samples = eval_samples
     config.evaluation.batch_size = batch_size
     config.evaluation.sample_panel_count = min(8, eval_samples)
-    config.evaluation.chunk_size = max(32, eval_samples, n_eval)
+    config.evaluation.chunk_size = max(128, eval_samples, n_eval)
 
     config.sampling.method = "heun"
     config.sampling.n_steps = sampling_steps
@@ -113,7 +129,7 @@ def parse_args():
     parser.add_argument(
         "--study-dir",
         default="tmp/mnist_study",
-        help="Study directory that will receive runs/ and figures/.",
+        help="Experiment root directory that will receive runs/<run_id>/seeds/<seed>/attempts/...",
     )
     parser.add_argument(
         "--root",
@@ -122,13 +138,14 @@ def parse_args():
     )
     parser.add_argument("--device", default="cpu", help="Training/eval device.")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--n-train", type=int, default=64)
-    parser.add_argument("--n-eval", type=int, default=128)
-    parser.add_argument("--n-steps", type=int, default=200)
+    parser.add_argument("--n-train", type=int, default=100)
+    parser.add_argument("--n-eval", type=int, default=None)
+    parser.add_argument("--n-steps", type=int, default=30_000)
+    parser.add_argument("--ckpt-every", type=int, default=2_000)
     parser.add_argument("--sampling-steps", type=int, default=24)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--eval-samples", type=int, default=16)
-    parser.add_argument("--run-name", default="mnist_live")
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--eval-samples", type=int, default=None)
+    parser.add_argument("--run-name", default="mnist_checkpoint_replay")
     parser.add_argument(
         "--pred-space",
         choices=("x", "eps", "v"),
@@ -147,6 +164,23 @@ def parse_args():
         default=True,
         help="Whether torchvision may download MNIST if it is missing.",
     )
+    parser.add_argument(
+        "--balance-train-classes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to enforce exact class balance in the training subset.",
+    )
+    parser.add_argument(
+        "--balance-reference-classes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to enforce exact class balance in the held-out reference subset.",
+    )
+    parser.add_argument(
+        "--attempt-dir",
+        default=None,
+        help="Existing attempt directory to replay/evaluate instead of launching a new run.",
+    )
     return parser.parse_args()
 
 
@@ -155,34 +189,43 @@ def main():
     Build the config, run the study, and print a compact summary.
     """
     args = parse_args()
-    config = build_mnist_config(
-        seed=args.seed,
-        root=args.root,
-        download=args.download,
-        n_train=args.n_train,
-        n_eval=args.n_eval,
-        prediction_space=args.pred_space,
-        loss_space=args.loss_space,
-        n_steps=args.n_steps,
-        sampling_steps=args.sampling_steps,
-        batch_size=args.batch_size,
-        eval_samples=args.eval_samples,
-        run_name=args.run_name,
-    )
+    if args.attempt_dir is not None:
+        run_dir = Path(args.attempt_dir)
+        metrics = evaluate_run(run_dir, device=args.device)
+        config = load_config_snapshot(run_dir)
+    else:
+        config = build_mnist_config(
+            seed=args.seed,
+            root=args.root,
+            download=args.download,
+            n_train=args.n_train,
+            n_eval=args.n_eval,
+            prediction_space=args.pred_space,
+            loss_space=args.loss_space,
+            n_steps=args.n_steps,
+            ckpt_every=args.ckpt_every,
+            sampling_steps=args.sampling_steps,
+            batch_size=args.batch_size,
+            eval_samples=args.eval_samples,
+            run_name=args.run_name,
+            balance_train_classes=args.balance_train_classes,
+            balance_reference_classes=args.balance_reference_classes,
+        )
 
-    run_dir, metrics = run_mnist_study(
-        args.study_dir,
-        device=args.device,
-        config=config,
-    )
+        run_dir, metrics = run_mnist_study(
+            args.study_dir,
+            device=args.device,
+            config=config,
+        )
     final_record = metrics[-1]
 
     print("experiments.mnist.run")
     print(f"study_dir           : {Path(args.study_dir)}")
     print(f"run_dir             : {run_dir}")
     print(f"prediction/loss     : {args.pred_space}/{args.loss_space}")
-    print(f"n_train / n_eval    : {args.n_train} / {args.n_eval}")
-    print(f"steps / sample steps: {args.n_steps} / {args.sampling_steps}")
+    print(f"n_train / n_eval    : {config.data.n_train} / {config.data.n_eval}")
+    print(f"steps / ckpt_every  : {config.training.n_steps} / {config.training.ckpt_every}")
+    print(f"sample steps        : {config.sampling.n_steps}")
     print(f"final checkpoint    : {final_record['step']}")
     print(f"final f_mem         : {final_record['f_mem']:.4f}")
     print(f"baseline f_mem      : {final_record['baseline_f_mem']:.4f}")

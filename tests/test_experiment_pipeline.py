@@ -63,6 +63,8 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertTrue((run_dir / "artifacts" / "config.json").exists())
             self.assertTrue((run_dir / "metrics" / "train_history.json").exists())
             self.assertTrue((run_dir / "metrics" / "checkpoint_metrics.json").exists())
+            self.assertTrue((run_dir / "status.json").exists())
+            self.assertTrue((run_dir / "logs" / "events.jsonl").exists())
             self.assertGreater(len(metrics), 0)
 
     def make_gmm_config(self):

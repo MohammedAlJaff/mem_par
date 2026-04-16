@@ -14,6 +14,8 @@ from torchvision import datasets
 
 from mp_data.common import maybe_flatten, seeded_indices
 
+MNIST_NUM_CLASSES = 10
+
 
 def _maybe_resize_images(tensor, config):
     """
@@ -40,6 +42,61 @@ def _maybe_resize_images(tensor, config):
     )
 
 
+def _require_divisible_by_class_count(count, split_name, num_classes=MNIST_NUM_CLASSES):
+    """
+    Require that a balanced subset can allocate the same count to every class.
+    """
+    if count % num_classes != 0:
+        raise ValueError(
+            f"Balanced {split_name} selection requires count divisible by "
+            f"{num_classes}, got {count}"
+        )
+    return count // num_classes
+
+
+def _balanced_seeded_indices(targets, count, seed, split_name):
+    """
+    Draw an equal number of examples from every MNIST class.
+
+    The returned indices are shuffled after per-class sampling so the saved
+    subset remains class balanced without being grouped by label order.
+    """
+    per_class = _require_divisible_by_class_count(count, split_name)
+    generator = torch.Generator().manual_seed(int(seed))
+    selected = []
+
+    for class_id in range(MNIST_NUM_CLASSES):
+        class_indices = torch.nonzero(targets == class_id, as_tuple=False).flatten()
+        if class_indices.numel() < per_class:
+            raise ValueError(
+                f"Balanced {split_name} selection requested {per_class} examples "
+                f"for class {class_id}, but only {class_indices.numel()} are available."
+            )
+        perm = torch.randperm(class_indices.numel(), generator=generator)[:per_class]
+        selected.append(class_indices[perm])
+
+    indices = torch.cat(selected)
+    shuffle = torch.randperm(indices.numel(), generator=generator)
+    return indices[shuffle]
+
+
+def _select_indices(targets, count, seed, balance_classes, split_name):
+    """
+    Pick deterministic MNIST subset indices, optionally enforcing class balance.
+    """
+    if balance_classes:
+        return _balanced_seeded_indices(targets, count, seed, split_name)
+    return seeded_indices(len(targets), count, seed)
+
+
+def _class_count_summary(labels, num_classes=MNIST_NUM_CLASSES):
+    """
+    Convert label counts into a JSON-friendly `{class_id: count}` dict.
+    """
+    counts = torch.bincount(labels.to(torch.int64), minlength=num_classes)
+    return {str(class_id): int(counts[class_id].item()) for class_id in range(num_classes)}
+
+
 def load_mnist_bundle(config):
     """
     Return a deterministic MNIST train/reference bundle plus labels and indices.
@@ -58,11 +115,22 @@ def load_mnist_bundle(config):
     train_set = datasets.MNIST(root=root, train=True, download=download)
     test_set = datasets.MNIST(root=root, train=False, download=download)
 
-    train_indices = seeded_indices(
-        len(train_set.data), int(config.data.n_train), int(config.training.seed)
+    balance_train = bool(getattr(config.data, "balance_train_classes", False))
+    balance_reference = bool(getattr(config.data, "balance_reference_classes", False))
+
+    train_indices = _select_indices(
+        train_set.targets,
+        int(config.data.n_train),
+        int(config.training.seed),
+        balance_train,
+        "training subset",
     )
-    reference_indices = seeded_indices(
-        len(test_set.data), int(config.data.n_eval), int(config.training.seed) + 1
+    reference_indices = _select_indices(
+        test_set.targets,
+        int(config.data.n_eval),
+        int(config.training.seed) + 1,
+        balance_reference,
+        "reference subset",
     )
 
     train_tensor = (
@@ -82,10 +150,16 @@ def load_mnist_bundle(config):
     return {
         "train": train_tensor.contiguous(),
         "train_labels": train_labels,
+        "train_class_counts": _class_count_summary(train_labels),
+        "balanced_train_classes": balance_train,
         "reference": reference_tensor.contiguous(),
         "reference_labels": reference_labels,
+        "reference_class_counts": _class_count_summary(reference_labels),
+        "balanced_reference_classes": balance_reference,
         "train_indices": train_indices,
         "reference_indices": reference_indices,
+        "train_split": "train",
+        "reference_split": "test",
         "display_shape": (
             int(config.data.image_channels),
             int(config.data.image_size),

@@ -61,6 +61,8 @@ class TestMPMetrics(unittest.TestCase):
         self.assertEqual(metrics["n_samples"], 2)
         self.assertEqual(metrics["n_reference"], 3)
         self.assertGreaterEqual(metrics["f_mem"], 0.5)
+        self.assertIn("std_nn_ratio", metrics)
+        self.assertGreaterEqual(metrics["std_nn_ratio"], 0.0)
 
     def test_folder_metrics_match_tensor_metrics_for_pt_batches(self):
         reference = torch.tensor(
@@ -97,6 +99,7 @@ class TestMPMetrics(unittest.TestCase):
 
         self.assertAlmostEqual(folder["f_mem"], direct["f_mem"], places=6)
         self.assertAlmostEqual(folder["mean_nn_ratio"], direct["mean_nn_ratio"], places=6)
+        self.assertAlmostEqual(folder["std_nn_ratio"], direct["std_nn_ratio"], places=6)
         self.assertAlmostEqual(folder["mean_d1"], direct["mean_d1"], places=6)
         self.assertAlmostEqual(folder["mean_d2"], direct["mean_d2"], places=6)
 

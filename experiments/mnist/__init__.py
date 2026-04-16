@@ -3,7 +3,7 @@ Live MNIST study surface.
 
 This package keeps two complementary entrypoints side by side:
 
-- `mnist_walkthrough.ipynb` for the pedagogical, in-memory walkthrough
+- `mnist_walkthrough.ipynb` for the pedagogical checkpoint-replay walkthrough
 - `run.py` for the official artifact-writing path
 """
 

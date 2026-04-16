@@ -29,9 +29,10 @@ Start there if you want the reviewer-facing walkthrough:
 jupyter lab experiments/mnist/mnist_walkthrough.ipynb
 ```
 
-That notebook is intentionally pedagogical and mostly in-memory. It shows the
-MNIST study line by line rather than hiding the flow inside one high-level
-helper call.
+That notebook is intentionally pedagogical, but it is no longer just an
+in-memory demo. It now builds the balanced MNIST subsets line by line, launches
+the real saved-run training and checkpoint replay path, and then reads the
+written artifacts back from disk for plotting and inspection.
 
 ## Official Saved-Run Path
 
@@ -48,9 +49,11 @@ editable mode yet, use:
 PYTHONPATH=src python -m experiments.mnist.run --download --device cpu
 ```
 
-This writes a standard run directory under `tmp/mnist_study/` with:
+This writes a full experiment/run/seed/attempt artifact tree under
+`tmp/mnist_study/` with:
 
 - saved config snapshots
+- experiment/run/seed manifests and per-attempt status metadata
 - checkpoints
 - training history
 - checkpoint replay memorization metrics

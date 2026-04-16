@@ -145,6 +145,7 @@ def compute_memorization_metrics(
         "n_reference": int(reference.shape[0]),
         "f_mem": compute_f_mem(ratios, threshold=threshold),
         "mean_nn_ratio": float(ratios.mean().item()),
+        "std_nn_ratio": float(ratios.std(unbiased=False).item()),
         "mean_d1": float(stats["d1"].mean().item()),
         "mean_d2": float(stats["d2"].mean().item()),
     }
