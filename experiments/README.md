@@ -13,3 +13,5 @@ The primary live study today is:
 
 - `mnist/`
   notebook-first walkthrough plus the saved-run runner for official artifacts
+- `synthetic/`
+  data-specific sanity notebooks for GMM/subspace synthetic datasets

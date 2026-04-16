@@ -7,6 +7,6 @@ appropriate dataset-specific loader and returns tensors plus the metadata
 needed for later replay and evaluation.
 """
 
-from mp_data.common import build_data_bundle
+from mp_data.common import build_data_bundle, validate_data_bundle
 
-__all__ = ["build_data_bundle"]
+__all__ = ["build_data_bundle", "validate_data_bundle"]

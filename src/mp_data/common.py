@@ -13,6 +13,8 @@ Canonical bundle contract:
     reference_labels:   optional labels aligned with `reference`
     train_indices:      optional source indices for deterministic replay
     reference_indices:  optional source indices for deterministic replay
+    train_source_id:    stable identifier for the training source split/corpus
+    reference_source_id: stable identifier for the held-out source split/corpus
     display_shape:      optional original image shape for plotting utilities
     geometry:           optional dataset-specific structure such as GMM basis
 """
@@ -40,6 +42,89 @@ def maybe_flatten(tensor, config):
     return tensor
 
 
+def _indices_to_set(indices):
+    """
+    Convert a tensor/list of source indices into a Python set of integers.
+    """
+    if indices is None:
+        return None
+    if torch.is_tensor(indices):
+        return {int(item) for item in indices.detach().cpu().flatten().tolist()}
+    return {int(item) for item in indices}
+
+
+def _validate_no_identical_full_tensors(bundle):
+    """
+    Fail loudly if train and reference tensors are exactly the same tensor batch.
+    """
+    train = bundle["train"]
+    reference = bundle["reference"]
+    if train.shape == reference.shape and torch.equal(train, reference):
+        raise ValueError(
+            "Data leakage guard failed: train and reference tensors are exactly equal."
+        )
+
+
+def validate_data_bundle(bundle, config):
+    """
+    Validate that train/reference roles and source identities cannot leak.
+
+    The strict default is intentional: a held-out reference set should come from
+    a different source split/corpus unless a study explicitly opts into using
+    disjoint indices from the same source via
+    `config.data.allow_same_source_reference = True`.
+    """
+    for key in ("train", "reference", "train_source_id", "reference_source_id"):
+        if key not in bundle:
+            raise ValueError(f"Data bundle is missing required leakage-guard key: {key}")
+
+    _validate_no_identical_full_tensors(bundle)
+
+    train_source_id = str(bundle["train_source_id"])
+    reference_source_id = str(bundle["reference_source_id"])
+    same_source = train_source_id == reference_source_id
+    overlap_count = None
+    allow_same_source = bool(getattr(config.data, "allow_same_source_reference", False))
+
+    if same_source:
+        train_indices = _indices_to_set(bundle.get("train_indices"))
+        reference_indices = _indices_to_set(bundle.get("reference_indices"))
+        if train_indices is None or reference_indices is None:
+            raise ValueError(
+                "Data leakage guard failed: train/reference share a source but "
+                "source indices are missing, so disjointness cannot be verified."
+            )
+        overlap = train_indices.intersection(reference_indices)
+        overlap_count = len(overlap)
+        if overlap_count:
+            examples = sorted(overlap)[:10]
+            raise ValueError(
+                "Data leakage guard failed: train/reference source indices overlap "
+                f"for source {train_source_id!r}. overlap_count={overlap_count}, "
+                f"examples={examples}"
+            )
+        if not allow_same_source:
+            raise ValueError(
+                "Data leakage guard failed: train and reference use the same source "
+                f"{train_source_id!r}. Use a true held-out split, or set "
+                "config.data.allow_same_source_reference=True only for an explicitly "
+                "disjoint same-corpus holdout."
+            )
+
+    validation = {
+        "train_source_id": train_source_id,
+        "reference_source_id": reference_source_id,
+        "train_role": str(bundle.get("train_role", "train")),
+        "reference_role": str(bundle.get("reference_role", "heldout_reference")),
+        "same_source": same_source,
+        "same_source_allowed": allow_same_source,
+        "overlap_checked": same_source,
+        "overlap_count": overlap_count,
+    }
+    bundle["data_validation"] = validation
+    return bundle
+
+
 def build_data_bundle(config):
     """
     Dispatch from `config.data.dataset` to the corresponding canonical loader.
@@ -52,17 +137,19 @@ def build_data_bundle(config):
     if dataset_name == "mnist":
         from mp_data.mnist import load_mnist_bundle
 
-        return load_mnist_bundle(config)
-    if dataset_name == "gmm_subspace":
+        bundle = load_mnist_bundle(config)
+    elif dataset_name == "gmm_subspace":
         from mp_data.gmm import load_gmm_subspace_bundle
 
-        return load_gmm_subspace_bundle(config)
-    if dataset_name == "celeba32_grey":
+        bundle = load_gmm_subspace_bundle(config)
+    elif dataset_name == "celeba32_grey":
         from mp_data.celeba32 import load_celeba32_bundle
 
-        return load_celeba32_bundle(config)
+        bundle = load_celeba32_bundle(config)
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
 
-    raise ValueError(f"Unknown dataset: {dataset_name}")
+    return validate_data_bundle(bundle, config)
 
 
 if __name__ == "__main__":

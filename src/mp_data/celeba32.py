@@ -94,6 +94,12 @@ def load_celeba32_bundle(config):
         "reference_labels": reference_labels,
         "train_indices": train_indices,
         "reference_indices": reference_indices,
+        "train_role": "train",
+        "reference_role": "heldout_reference",
+        "train_source_id": "torchvision_celeba:train",
+        "reference_source_id": f"torchvision_celeba:{config.data.reference_split}",
+        "train_split": "train",
+        "reference_split": str(config.data.reference_split),
         "display_shape": (
             int(config.data.image_channels),
             int(config.data.image_size),

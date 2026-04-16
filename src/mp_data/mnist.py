@@ -158,6 +158,10 @@ def load_mnist_bundle(config):
         "balanced_reference_classes": balance_reference,
         "train_indices": train_indices,
         "reference_indices": reference_indices,
+        "train_role": "train",
+        "reference_role": "heldout_reference",
+        "train_source_id": "torchvision_mnist:train",
+        "reference_source_id": "torchvision_mnist:test",
         "train_split": "train",
         "reference_split": "test",
         "display_shape": (

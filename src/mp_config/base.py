@@ -80,6 +80,7 @@ def get_base_config():
     data.flatten = False
     data.balance_train_classes = False
     data.balance_reference_classes = False
+    data.allow_same_source_reference = False
     data.n_clusters = 10
     data.sigma_z = 0.5
     data.sigma_eta = 1.0e-3

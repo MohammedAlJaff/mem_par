@@ -34,6 +34,16 @@ in-memory demo. It now builds the balanced MNIST subsets line by line, launches
 the real saved-run training and checkpoint replay path, and then reads the
 written artifacts back from disk for plotting and inspection.
 
+For synthetic data sanity checks before training, use:
+
+```bash
+jupyter lab experiments/synthetic/gmm_data_sanity.ipynb
+```
+
+That notebook checks the canonical GMM/subspace generator in three data-only
+settings: a true 2D GMM, a projected high-dimensional GMM, and a fixed `d/D`
+sweep where intrinsic dimension increases with ambient dimension.
+
 ## Official Saved-Run Path
 
 For the canonical artifact-writing path, run the MNIST study module:

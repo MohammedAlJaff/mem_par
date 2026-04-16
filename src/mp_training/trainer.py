@@ -177,6 +177,11 @@ def train_run(config, study_dir, device="cpu"):
             "train_split": data_bundle.get("train_split"),
             "reference_split": data_bundle.get("reference_split")
             or getattr(config.data, "reference_split", None),
+            "train_role": data_bundle.get("train_role"),
+            "reference_role": data_bundle.get("reference_role"),
+            "train_source_id": data_bundle.get("train_source_id"),
+            "reference_source_id": data_bundle.get("reference_source_id"),
+            "data_validation": data_bundle.get("data_validation"),
         }
         save_json(run_dir / "artifacts" / "data_meta.json", data_meta)
         tracker.stage(

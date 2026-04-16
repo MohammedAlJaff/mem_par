@@ -53,6 +53,10 @@ class TestMNISTLoader(unittest.TestCase):
         self.assertEqual(bundle["reference_labels"].shape[0], 20)
         self.assertEqual(bundle["train_indices"].shape[0], 20)
         self.assertEqual(bundle["reference_indices"].shape[0], 20)
+        self.assertEqual(bundle["train_source_id"], "torchvision_mnist:train")
+        self.assertEqual(bundle["reference_source_id"], "torchvision_mnist:test")
+        self.assertEqual(bundle["train_role"], "train")
+        self.assertEqual(bundle["reference_role"], "heldout_reference")
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_balanced_selection_requires_divisibility_by_ten(self):

@@ -79,6 +79,12 @@ def load_gmm_subspace_bundle(config):
         "train_labels": train_labels,
         "reference": reference_tensor,
         "reference_labels": reference_labels,
+        "train_role": "train",
+        "reference_role": "heldout_reference",
+        "train_source_id": f"gmm_subspace:seed:{int(config.training.seed)}",
+        "reference_source_id": f"gmm_subspace:seed:{int(config.training.seed) + 1}",
+        "train_split": "synthetic_train_seed",
+        "reference_split": "synthetic_reference_seed",
         "geometry": {
             "basis": basis,
             "means": means,
