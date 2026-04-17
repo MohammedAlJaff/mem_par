@@ -1,5 +1,5 @@
 """
-One-file Berzelius runner for a projected GMM GDFM/MLP training run.
+Prototype runner for controlled projected-GMM GDFM/MLP training.
 
 This script intentionally keeps the whole run visible in `main()`: make a
 known GMM in intrinsic coordinates, optionally project it into a larger ambient
@@ -9,7 +9,6 @@ and write local artifacts.
 
 import argparse
 import json
-import math
 import sys
 import time
 from datetime import datetime
@@ -20,7 +19,7 @@ from pathlib import Path
 # Local Source Path
 # -----------------------------------------------------------------------------
 
-# Find the repo root from this file, then put `src/` first on sys.path.
+# Find the repo root from this file, then make local imports predictable.
 HERE = Path(__file__).resolve()
 REPO_ROOT = None
 for CANDIDATE in (HERE, *HERE.parents):
@@ -31,8 +30,47 @@ if REPO_ROOT is None:
     raise RuntimeError("Could not find repo root from {}".format(HERE))
 
 SRC_ROOT = REPO_ROOT / "src"
-if str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+for PATH in (REPO_ROOT, SRC_ROOT):
+    if str(PATH) not in sys.path:
+        sys.path.insert(0, str(PATH))
+
+
+# -----------------------------------------------------------------------------
+# Synthetic Metrics
+# -----------------------------------------------------------------------------
+
+from prototyping.metrics_synthetic_controlled import (
+    memorization_metrics_in_spaces,
+    oracle_gmm_metrics,
+    project_to_subspace,
+)
+
+
+def wandb_status_payload(args, wandb_dir, run=None, *, active=False, warning=None):
+    """
+    Keep enough W&B metadata on disk to find the run from a shell later.
+    """
+    return {
+        "enabled": bool(args.wandb),
+        "active": bool(active),
+        "finished": False,
+        "mode": str(args.wandb_mode),
+        "project": str(args.wandb_project),
+        "entity": args.wandb_entity.strip() or None,
+        "run_id": getattr(run, "id", None) if run is not None else None,
+        "run_name": getattr(run, "name", None) if run is not None else None,
+        "run_path": getattr(run, "path", None) if run is not None else None,
+        "run_url": getattr(run, "url", None) if run is not None else None,
+        "dir": str(wandb_dir.resolve()),
+        "warning": warning,
+    }
+
+
+def wandb_scalar_payload(payload):
+    """
+    W&B accepts many values, but filtering None keeps singular-case metrics clean.
+    """
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 # -----------------------------------------------------------------------------
@@ -47,8 +85,8 @@ def main():
 
     # Basic run knobs.
     parser.add_argument("--device", default="cuda", help="cuda, cuda:0, cpu, auto, ...")
-    parser.add_argument("--out-dir", default="tmp/berzelius_proto")
-    parser.add_argument("--run-name", default="gdfm_2d_mlp")
+    parser.add_argument("--out-dir", default="tmp/runner_proto_synthetic_projected_gmm")
+    parser.add_argument("--run-name", default="synthetic_projected_gmm_mlp")
     parser.add_argument("--seed", type=int, default=0)
 
     # Projected GMM data knobs.
@@ -91,6 +129,10 @@ def main():
     parser.add_argument("--wandb-mode", choices=("offline", "online"), default="offline")
     parser.add_argument("--wandb-project", default="mem_par")
     parser.add_argument("--wandb-entity", default="")
+    parser.add_argument("--wandb-name", default="", help="Optional W&B run name. Defaults to the output folder name.")
+    parser.add_argument("--wandb-group", default="", help="Optional W&B group for comparing related runs.")
+    parser.add_argument("--wandb-tags", default="", help="Comma-separated W&B tags.")
+    parser.add_argument("--wandb-notes", default="", help="Optional W&B notes.")
     parser.add_argument("--wandb-strict", action="store_true")
     args = parser.parse_args()
 
@@ -100,7 +142,6 @@ def main():
         from gdfm import GDFM
         from mp_config import config_to_dict, get_base_config
         from mp_data import build_data_bundle
-        from mp_metrics import compute_memorization_metrics
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "Missing dependency: {}\nCurrent Python: {}\nActivate the project environment first.".format(
@@ -188,7 +229,7 @@ def main():
 
     # Use the repo's normal config shape, but keep all choices visible here.
     config = get_base_config()
-    config.study.name = "berzelius_proto"
+    config.study.name = "runner_proto_synthetic_projected_gmm"
     config.study.description = "Plain projected-GMM GDFM MLP runner."
     config.outputs.run_name = args.run_name
 
@@ -351,12 +392,14 @@ def main():
     latent_means = data_bundle["geometry"]["means"].contiguous()
     ambient_means = latent_means @ basis.T
 
-    train_latent = train_tensor @ basis
-    reference_latent = reference_tensor @ basis
-    train_projected = train_latent @ basis.T
-    reference_projected = reference_latent @ basis.T
-    train_residual = train_tensor - train_projected
-    reference_residual = reference_tensor - reference_projected
+    train_parts = project_to_subspace(train_tensor, basis)
+    reference_parts = project_to_subspace(reference_tensor, basis)
+    train_latent = train_parts["latent"]
+    reference_latent = reference_parts["latent"]
+    train_projected = train_parts["projected"]
+    reference_projected = reference_parts["projected"]
+    train_residual = train_parts["residual"]
+    reference_residual = reference_parts["residual"]
 
     z_eval = torch.randn(args.eval_samples, args.data_dim, generator=generator)
     sliced_generator = torch.Generator().manual_seed(int(args.seed) + 1009)
@@ -408,83 +451,22 @@ def main():
     baseline_count = min(args.eval_samples, reference_tensor.shape[0])
     baseline_tensor = reference_tensor[:baseline_count]
     baseline_latent = reference_latent[:baseline_count]
-    baseline_projected = baseline_latent @ basis.T
-    baseline_residual = baseline_tensor - baseline_projected
-
-    latent_var = float(args.sigma_z) ** 2 + float(args.sigma_eta) ** 2
-    residual_dim = int(args.data_dim - args.intrinsic_dim)
+    baseline_residual = project_to_subspace(baseline_tensor, basis)["residual"]
     uniform_component_weight = 1.0 / float(args.n_clusters)
-    log_uniform_component_weight = -math.log(float(args.n_clusters))
-    oracle_latent_mean = latent_means.mean(dim=0)
-    centered_latent_means = latent_means - oracle_latent_mean
-    oracle_latent_cov = centered_latent_means.T @ centered_latent_means / float(args.n_clusters)
-    oracle_latent_cov = oracle_latent_cov + latent_var * torch.eye(args.intrinsic_dim)
 
-    baseline_latent_delta = baseline_latent[:, None, :] - latent_means[None, :, :]
-    baseline_latent_sq = baseline_latent_delta.pow(2).sum(dim=2)
-    baseline_log_components = (
-        -0.5 * (baseline_latent_sq / latent_var + args.intrinsic_dim * math.log(2.0 * math.pi * latent_var))
-        + log_uniform_component_weight
+    baseline_oracle_metrics = oracle_gmm_metrics(
+        baseline_tensor,
+        basis,
+        latent_means,
+        args.sigma_z,
+        args.sigma_eta,
+        baseline_latent,
+        sliced_directions,
     )
-    baseline_log_density = torch.logsumexp(baseline_log_components, dim=1)
-    baseline_latent_nll_values = -baseline_log_density
-    baseline_log_responsibilities = baseline_log_components - baseline_log_density[:, None]
-    baseline_component_probs = baseline_log_responsibilities.exp().mean(dim=0)
-    baseline_residual_norm_sq = baseline_residual.pow(2).sum(dim=1)
-    if args.sigma_eta > 0.0:
-        if residual_dim > 0:
-            baseline_residual_nll_values = 0.5 * (
-                baseline_residual_norm_sq / (float(args.sigma_eta) ** 2)
-                + residual_dim * math.log(2.0 * math.pi * float(args.sigma_eta) ** 2)
-            )
-        else:
-            baseline_residual_nll_values = torch.zeros_like(baseline_latent_nll_values)
-        baseline_full_nll_mean = float((baseline_latent_nll_values + baseline_residual_nll_values).mean().item())
-    else:
-        baseline_full_nll_mean = None
-
-    baseline_centered = baseline_latent - baseline_latent.mean(dim=0, keepdim=True)
-    baseline_cov = baseline_centered.T @ baseline_centered / float(max(1, baseline_latent.shape[0]))
-    oracle_eigvals, oracle_eigvecs = torch.linalg.eigh(oracle_latent_cov)
-    oracle_sqrt = oracle_eigvecs @ torch.diag(oracle_eigvals.clamp(min=0.0).sqrt()) @ oracle_eigvecs.T
-    baseline_middle = oracle_sqrt @ baseline_cov @ oracle_sqrt
-    baseline_middle = 0.5 * (baseline_middle + baseline_middle.T)
-    baseline_middle_eigvals = torch.linalg.eigvalsh(baseline_middle).clamp(min=0.0)
-    baseline_frechet = (
-        (baseline_latent.mean(dim=0) - oracle_latent_mean).pow(2).sum()
-        + torch.trace(baseline_cov)
-        + torch.trace(oracle_latent_cov)
-        - 2.0 * baseline_middle_eigvals.sqrt().sum()
-    )
-    baseline_reference_proj = baseline_latent @ sliced_directions.T
-    baseline_sorted_reference_proj, _ = torch.sort(baseline_reference_proj, dim=0)
-    baseline_oracle_metrics = {
-        "oracle_latent_nll_mean": float(baseline_latent_nll_values.mean().item()),
-        "oracle_latent_nll_std": float(baseline_latent_nll_values.std(unbiased=False).item()),
-        "oracle_full_nll_mean": baseline_full_nll_mean,
-        "off_subspace_energy_fraction": float(
-            baseline_residual.pow(2).sum().item() / baseline_tensor.pow(2).sum().clamp(min=1.0e-12).item()
-        ),
-        "latent_frechet_distance_to_oracle": float(max(0.0, baseline_frechet.item())),
-        "latent_sliced_w2": 0.0,
-        "component_weight_l1": float((baseline_component_probs - uniform_component_weight).abs().sum().item()),
-        "component_weight_kl": float(
-            (
-                baseline_component_probs.clamp(min=1.0e-12)
-                * (baseline_component_probs.clamp(min=1.0e-12).log() - math.log(uniform_component_weight))
-            ).sum().item()
-        ),
-        "component_probs": [float(value) for value in baseline_component_probs.tolist()],
-        "residual_norm_mean": float(baseline_residual.norm(dim=1).mean().item()),
-    }
-    baseline_mem_ambient = compute_memorization_metrics(
+    baseline_mem = memorization_metrics_in_spaces(
         baseline_tensor,
         train_tensor,
-        chunk_size=args.chunk_size,
-        config=config,
-    )
-    baseline_mem_latent = compute_memorization_metrics(
-        baseline_latent,
+        basis,
         train_latent,
         chunk_size=args.chunk_size,
         config=config,
@@ -515,7 +497,11 @@ def main():
 
     wandb_run = None
     wandb_module = None
+    wandb_tags = [tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()]
+    wandb_metadata = wandb_status_payload(args, wandb_dir, active=False)
     if args.wandb:
+        print("")
+        print("----- W&B -----")
         try:
             import wandb
 
@@ -525,11 +511,24 @@ def main():
                 entity=args.wandb_entity.strip() or None,
                 mode=args.wandb_mode,
                 dir=str(wandb_dir),
-                name=run_dir.name,
+                name=args.wandb_name.strip() or run_dir.name,
+                group=args.wandb_group.strip() or None,
+                tags=wandb_tags,
+                notes=args.wandb_notes.strip() or None,
                 config=config_payload,
             )
+            wandb_metadata = wandb_status_payload(args, wandb_dir, wandb_run, active=True)
+            print("wandb mode       : {}".format(wandb_metadata["mode"]))
+            print("wandb project    : {}".format(wandb_metadata["project"]))
+            if wandb_metadata["run_url"]:
+                print("wandb url        : {}".format(wandb_metadata["run_url"]))
+            else:
+                print("wandb local dir  : {}".format(wandb_metadata["dir"]))
+            if args.wandb_mode == "offline":
+                print("wandb sync       : wandb sync {}".format(wandb_metadata["dir"]))
         except Exception as exc:
             message = "W&B init failed: {}: {}".format(type(exc).__name__, exc)
+            wandb_metadata = wandb_status_payload(args, wandb_dir, active=False, warning=message)
             if args.wandb_strict:
                 raise
             print(message)
@@ -542,6 +541,7 @@ def main():
         "started_at": timestamp,
         "device": str(device),
         "gmm": gmm_params,
+        "wandb": wandb_metadata,
         "wandb_enabled": bool(args.wandb),
         "wandb_active": wandb_run is not None,
     }
@@ -595,104 +595,38 @@ def main():
                     device=device,
                 ).cpu()
 
-            generated = compute_memorization_metrics(
+            generated = memorization_metrics_in_spaces(
                 samples,
                 train_tensor,
-                chunk_size=args.chunk_size,
-                config=config,
-            )
-            samples_latent = samples @ basis
-            samples_projected = samples_latent @ basis.T
-            samples_residual = samples - samples_projected
-            generated_latent = compute_memorization_metrics(
-                samples_latent,
+                basis,
                 train_latent,
                 chunk_size=args.chunk_size,
                 config=config,
             )
-
-            samples_latent_delta = samples_latent[:, None, :] - latent_means[None, :, :]
-            samples_latent_sq = samples_latent_delta.pow(2).sum(dim=2)
-            samples_log_components = (
-                -0.5 * (
-                    samples_latent_sq / latent_var
-                    + args.intrinsic_dim * math.log(2.0 * math.pi * latent_var)
-                )
-                + log_uniform_component_weight
+            samples_oracle_metrics = oracle_gmm_metrics(
+                samples,
+                basis,
+                latent_means,
+                args.sigma_z,
+                args.sigma_eta,
+                baseline_latent,
+                sliced_directions,
             )
-            samples_log_density = torch.logsumexp(samples_log_components, dim=1)
-            samples_latent_nll_values = -samples_log_density
-            samples_log_responsibilities = samples_log_components - samples_log_density[:, None]
-            samples_component_probs = samples_log_responsibilities.exp().mean(dim=0)
-            samples_residual_norm_sq = samples_residual.pow(2).sum(dim=1)
-            if args.sigma_eta > 0.0:
-                if residual_dim > 0:
-                    samples_residual_nll_values = 0.5 * (
-                        samples_residual_norm_sq / (float(args.sigma_eta) ** 2)
-                        + residual_dim * math.log(2.0 * math.pi * float(args.sigma_eta) ** 2)
-                    )
-                else:
-                    samples_residual_nll_values = torch.zeros_like(samples_latent_nll_values)
-                samples_full_nll_mean = float((samples_latent_nll_values + samples_residual_nll_values).mean().item())
-            else:
-                samples_full_nll_mean = None
-
-            samples_centered = samples_latent - samples_latent.mean(dim=0, keepdim=True)
-            samples_cov = samples_centered.T @ samples_centered / float(max(1, samples_latent.shape[0]))
-            samples_middle = oracle_sqrt @ samples_cov @ oracle_sqrt
-            samples_middle = 0.5 * (samples_middle + samples_middle.T)
-            samples_middle_eigvals = torch.linalg.eigvalsh(samples_middle).clamp(min=0.0)
-            samples_frechet = (
-                (samples_latent.mean(dim=0) - oracle_latent_mean).pow(2).sum()
-                + torch.trace(samples_cov)
-                + torch.trace(oracle_latent_cov)
-                - 2.0 * samples_middle_eigvals.sqrt().sum()
-            )
-            samples_proj = samples_latent @ sliced_directions.T
-            samples_sorted_proj, _ = torch.sort(samples_proj, dim=0)
-            projection_count = min(samples_sorted_proj.shape[0], baseline_sorted_reference_proj.shape[0])
-            latent_sliced_w2 = float(
-                (samples_sorted_proj[:projection_count] - baseline_sorted_reference_proj[:projection_count])
-                .pow(2)
-                .mean()
-                .item()
-            )
-            samples_oracle_metrics = {
-                "oracle_latent_nll_mean": float(samples_latent_nll_values.mean().item()),
-                "oracle_latent_nll_std": float(samples_latent_nll_values.std(unbiased=False).item()),
-                "oracle_full_nll_mean": samples_full_nll_mean,
-                "off_subspace_energy_fraction": float(
-                    samples_residual.pow(2).sum().item() / samples.pow(2).sum().clamp(min=1.0e-12).item()
-                ),
-                "latent_frechet_distance_to_oracle": float(max(0.0, samples_frechet.item())),
-                "latent_sliced_w2": latent_sliced_w2,
-                "component_weight_l1": float(
-                    (samples_component_probs - uniform_component_weight).abs().sum().item()
-                ),
-                "component_weight_kl": float(
-                    (
-                        samples_component_probs.clamp(min=1.0e-12)
-                        * (samples_component_probs.clamp(min=1.0e-12).log() - math.log(uniform_component_weight))
-                    ).sum().item()
-                ),
-                "component_probs": [float(value) for value in samples_component_probs.tolist()],
-                "residual_norm_mean": float(samples_residual.norm(dim=1).mean().item()),
-            }
 
             record = {
                 "step": int(step),
-                "ambient_f_mem": generated["f_mem"],
-                "ambient_mean_nn_ratio": generated["mean_nn_ratio"],
-                "ambient_std_nn_ratio": generated["std_nn_ratio"],
-                "latent_f_mem": generated_latent["f_mem"],
-                "latent_mean_nn_ratio": generated_latent["mean_nn_ratio"],
-                "latent_std_nn_ratio": generated_latent["std_nn_ratio"],
-                "baseline_ambient_f_mem": baseline_mem_ambient["f_mem"],
-                "baseline_ambient_mean_nn_ratio": baseline_mem_ambient["mean_nn_ratio"],
-                "baseline_ambient_std_nn_ratio": baseline_mem_ambient["std_nn_ratio"],
-                "baseline_latent_f_mem": baseline_mem_latent["f_mem"],
-                "baseline_latent_mean_nn_ratio": baseline_mem_latent["mean_nn_ratio"],
-                "baseline_latent_std_nn_ratio": baseline_mem_latent["std_nn_ratio"],
+                "ambient_f_mem": generated["ambient_f_mem"],
+                "ambient_mean_nn_ratio": generated["ambient_mean_nn_ratio"],
+                "ambient_std_nn_ratio": generated["ambient_std_nn_ratio"],
+                "latent_f_mem": generated["latent_f_mem"],
+                "latent_mean_nn_ratio": generated["latent_mean_nn_ratio"],
+                "latent_std_nn_ratio": generated["latent_std_nn_ratio"],
+                "baseline_ambient_f_mem": baseline_mem["ambient_f_mem"],
+                "baseline_ambient_mean_nn_ratio": baseline_mem["ambient_mean_nn_ratio"],
+                "baseline_ambient_std_nn_ratio": baseline_mem["ambient_std_nn_ratio"],
+                "baseline_latent_f_mem": baseline_mem["latent_f_mem"],
+                "baseline_latent_mean_nn_ratio": baseline_mem["latent_mean_nn_ratio"],
+                "baseline_latent_std_nn_ratio": baseline_mem["latent_std_nn_ratio"],
                 "oracle_latent_nll_mean": samples_oracle_metrics["oracle_latent_nll_mean"],
                 "oracle_latent_nll_std": samples_oracle_metrics["oracle_latent_nll_std"],
                 "oracle_full_nll_mean": samples_oracle_metrics["oracle_full_nll_mean"],
@@ -713,12 +647,12 @@ def main():
                 "baseline_component_weight_kl": baseline_oracle_metrics["component_weight_kl"],
                 "baseline_component_probs": baseline_oracle_metrics["component_probs"],
                 # Backward-compatible aliases for the simple plots and W&B panels.
-                "f_mem": generated["f_mem"],
-                "mean_nn_ratio": generated["mean_nn_ratio"],
-                "std_nn_ratio": generated["std_nn_ratio"],
-                "baseline_f_mem": baseline_mem_ambient["f_mem"],
-                "baseline_mean_nn_ratio": baseline_mem_ambient["mean_nn_ratio"],
-                "baseline_std_nn_ratio": baseline_mem_ambient["std_nn_ratio"],
+                "f_mem": generated["ambient_f_mem"],
+                "mean_nn_ratio": generated["ambient_mean_nn_ratio"],
+                "std_nn_ratio": generated["ambient_std_nn_ratio"],
+                "baseline_f_mem": baseline_mem["ambient_f_mem"],
+                "baseline_mean_nn_ratio": baseline_mem["ambient_mean_nn_ratio"],
+                "baseline_std_nn_ratio": baseline_mem["ambient_std_nn_ratio"],
             }
             metric_records.append(record)
             with metric_records_jsonl_path.open("a", encoding="utf-8") as handle:
@@ -735,24 +669,26 @@ def main():
             )
             if wandb_run is not None:
                 wandb_run.log(
-                    {
-                        "eval/f_mem": record["f_mem"],
-                        "eval/mean_nn_ratio": record["mean_nn_ratio"],
-                        "eval/std_nn_ratio": record["std_nn_ratio"],
-                        "eval/baseline_f_mem": record["baseline_f_mem"],
-                        "eval/baseline_mean_nn_ratio": record["baseline_mean_nn_ratio"],
-                        "eval/baseline_std_nn_ratio": record["baseline_std_nn_ratio"],
-                        "eval/latent_f_mem": record["latent_f_mem"],
-                        "eval/latent_mean_nn_ratio": record["latent_mean_nn_ratio"],
-                        "eval/latent_std_nn_ratio": record["latent_std_nn_ratio"],
-                        "eval/oracle_latent_nll_mean": record["oracle_latent_nll_mean"],
-                        "eval/oracle_full_nll_mean": record["oracle_full_nll_mean"],
-                        "eval/off_subspace_energy_fraction": record["off_subspace_energy_fraction"],
-                        "eval/latent_frechet_distance_to_oracle": record["latent_frechet_distance_to_oracle"],
-                        "eval/latent_sliced_w2": record["latent_sliced_w2"],
-                        "eval/component_weight_l1": record["component_weight_l1"],
-                        "eval/component_weight_kl": record["component_weight_kl"],
-                    },
+                    wandb_scalar_payload(
+                        {
+                            "eval/f_mem": record["f_mem"],
+                            "eval/mean_nn_ratio": record["mean_nn_ratio"],
+                            "eval/std_nn_ratio": record["std_nn_ratio"],
+                            "eval/baseline_f_mem": record["baseline_f_mem"],
+                            "eval/baseline_mean_nn_ratio": record["baseline_mean_nn_ratio"],
+                            "eval/baseline_std_nn_ratio": record["baseline_std_nn_ratio"],
+                            "eval/latent_f_mem": record["latent_f_mem"],
+                            "eval/latent_mean_nn_ratio": record["latent_mean_nn_ratio"],
+                            "eval/latent_std_nn_ratio": record["latent_std_nn_ratio"],
+                            "eval/oracle_latent_nll_mean": record["oracle_latent_nll_mean"],
+                            "eval/oracle_full_nll_mean": record["oracle_full_nll_mean"],
+                            "eval/off_subspace_energy_fraction": record["off_subspace_energy_fraction"],
+                            "eval/latent_frechet_distance_to_oracle": record["latent_frechet_distance_to_oracle"],
+                            "eval/latent_sliced_w2": record["latent_sliced_w2"],
+                            "eval/component_weight_l1": record["component_weight_l1"],
+                            "eval/component_weight_kl": record["component_weight_kl"],
+                        }
+                    ),
                     step=step,
                 )
             model.train()
@@ -782,10 +718,11 @@ def main():
             device=device,
         ).cpu()
 
-    final_samples_latent = final_samples @ basis
-    final_samples_projected = final_samples_latent @ basis.T
-    final_samples_residual = final_samples - final_samples_projected
-    final_samples_residual_norm = final_samples_residual.norm(dim=1)
+    final_sample_parts = project_to_subspace(final_samples, basis)
+    final_samples_latent = final_sample_parts["latent"]
+    final_samples_projected = final_sample_parts["projected"]
+    final_samples_residual = final_sample_parts["residual"]
+    final_samples_residual_norm = final_sample_parts["residual_norm"]
 
     torch.save(final_samples, metrics_dir / "final_samples.pt")
     torch.save(final_samples, metrics_dir / "final_samples_ambient.pt")
@@ -1321,6 +1258,8 @@ def main():
             "final_loss": train_history[-1]["loss"] if train_history else None,
             "final_metrics": final_metrics,
             "figures": figure_paths,
+            "wandb": wandb_metadata,
+            "wandb_active": wandb_run is not None,
         }
     )
     status_path.write_text(json.dumps(status, indent=2))
@@ -1330,6 +1269,7 @@ def main():
         "config": config_payload,
         "final_loss": train_history[-1]["loss"] if train_history else None,
         "final_metrics": final_metrics,
+        "wandb": wandb_metadata,
         "paths": {
             "status": str(status_path),
             "train_history": str(train_history_path),
@@ -1364,27 +1304,37 @@ def main():
                 elif suffix in (".png", ".jpg", ".jpeg"):
                     image_payload["figures/{}".format(name)] = wandb_module.Image(path)
         wandb_run.log(
-            {
-                "final/loss": summary["final_loss"],
-                "final/f_mem": final_metrics.get("f_mem"),
-                "final/mean_nn_ratio": final_metrics.get("mean_nn_ratio"),
-                "final/std_nn_ratio": final_metrics.get("std_nn_ratio"),
-                "final/latent_f_mem": final_metrics.get("latent_f_mem"),
-                "final/latent_mean_nn_ratio": final_metrics.get("latent_mean_nn_ratio"),
-                "final/oracle_latent_nll_mean": final_metrics.get("oracle_latent_nll_mean"),
-                "final/oracle_full_nll_mean": final_metrics.get("oracle_full_nll_mean"),
-                "final/off_subspace_energy_fraction": final_metrics.get("off_subspace_energy_fraction"),
-                "final/latent_frechet_distance_to_oracle": final_metrics.get(
-                    "latent_frechet_distance_to_oracle"
-                ),
-                "final/latent_sliced_w2": final_metrics.get("latent_sliced_w2"),
-                "final/component_weight_l1": final_metrics.get("component_weight_l1"),
-                "final/component_weight_kl": final_metrics.get("component_weight_kl"),
-                **image_payload,
-            },
+            wandb_scalar_payload(
+                {
+                    "final/loss": summary["final_loss"],
+                    "final/f_mem": final_metrics.get("f_mem"),
+                    "final/mean_nn_ratio": final_metrics.get("mean_nn_ratio"),
+                    "final/std_nn_ratio": final_metrics.get("std_nn_ratio"),
+                    "final/latent_f_mem": final_metrics.get("latent_f_mem"),
+                    "final/latent_mean_nn_ratio": final_metrics.get("latent_mean_nn_ratio"),
+                    "final/oracle_latent_nll_mean": final_metrics.get("oracle_latent_nll_mean"),
+                    "final/oracle_full_nll_mean": final_metrics.get("oracle_full_nll_mean"),
+                    "final/off_subspace_energy_fraction": final_metrics.get("off_subspace_energy_fraction"),
+                    "final/latent_frechet_distance_to_oracle": final_metrics.get(
+                        "latent_frechet_distance_to_oracle"
+                    ),
+                    "final/latent_sliced_w2": final_metrics.get("latent_sliced_w2"),
+                    "final/component_weight_l1": final_metrics.get("component_weight_l1"),
+                    "final/component_weight_kl": final_metrics.get("component_weight_kl"),
+                    **image_payload,
+                }
+            ),
             step=args.n_steps,
         )
         wandb_run.finish()
+        wandb_metadata = dict(wandb_metadata)
+        wandb_metadata["active"] = False
+        wandb_metadata["finished"] = True
+        status["wandb"] = wandb_metadata
+        status["wandb_active"] = False
+        summary["wandb"] = wandb_metadata
+        status_path.write_text(json.dumps(status, indent=2))
+        (artifacts_dir / "run_summary.json").write_text(json.dumps(summary, indent=2))
 
     print("")
     print("----- done -----")
@@ -1400,6 +1350,11 @@ def main():
     print("final_loss       : {}".format(summary["final_loss"]))
     print("final_metrics    : {}".format(final_metrics))
     print("figure_files     : {}".format(figure_paths))
+    if wandb_metadata["enabled"]:
+        print("wandb_url        : {}".format(wandb_metadata["run_url"] or "not available"))
+        print("wandb_dir        : {}".format(wandb_metadata["dir"]))
+        if wandb_metadata["mode"] == "offline":
+            print("wandb_sync       : wandb sync {}".format(wandb_metadata["dir"]))
 
 
 if __name__ == "__main__":
