@@ -146,6 +146,18 @@ def build_data_bundle(config):
         from mp_data.celeba32 import load_celeba32_bundle
 
         bundle = load_celeba32_bundle(config)
+    elif dataset_name == "flowers102":
+        from mp_data.image_collections import load_flowers102_bundle
+
+        bundle = load_flowers102_bundle(config)
+    elif dataset_name == "afhq_v2":
+        from mp_data.image_collections import load_afhq_v2_bundle
+
+        bundle = load_afhq_v2_bundle(config)
+    elif dataset_name == "ffhq128":
+        from mp_data.image_collections import load_ffhq128_bundle
+
+        bundle = load_ffhq128_bundle(config)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 

@@ -43,7 +43,7 @@ def _resolve_ratio_threshold(ratio_threshold=None, config=None):
 
     This keeps the threshold explicit and controllable whether we are:
         - comparing tensors directly in a notebook
-        - replaying checkpoints from a run directory
+        - evaluating checkpoints from a run directory
         - comparing one folder of saved samples against another
     """
     if ratio_threshold is not None:
@@ -133,7 +133,7 @@ def compute_memorization_metrics(
     Use this when both datasets already live in memory as tensors, for example:
         - notebook cells
         - sanity scripts
-        - checkpoint replay after loading saved tensors
+        - checkpoint evaluation after loading saved tensors
     """
     threshold = _resolve_ratio_threshold(ratio_threshold, config=config)
     stats = compute_nn_stats(samples, reference, chunk_size=chunk_size)

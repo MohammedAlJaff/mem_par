@@ -7,7 +7,7 @@ canonical `src/` pipeline:
 
 1. build a study config
 2. run `train_run(...)`
-3. replay checkpoints with `evaluate_run(...)`
+3. evaluate checkpoints with `evaluate_run(...)`
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ def build_mnist_config(
     n_steps: int = 30_000,
     ckpt_every: int = 2_000,
     sampling_steps: int = 24,
+    batch_cap: int | None = None,
     batch_size: int | None = None,
     eval_samples: int | None = None,
     run_name: str = "mnist_checkpoint_replay",
@@ -49,21 +50,23 @@ def build_mnist_config(
     """
     Build the canonical config for the live MNIST study.
 
-    The defaults now mirror the checkpoint-replay prototype used in the paper
+    The defaults now mirror the checkpoint-evaluation prototype used in the paper
     notebook: a real saved run with balanced MNIST subsets, repeated
-    checkpointing, and replayable memorization curves.
+    checkpointing, and saved memorization curves.
     """
     config = clone_config(get_base_config())
     if n_eval is None:
         n_eval = n_train
-    if batch_size is None:
-        batch_size = min(512, n_train)
+    if batch_cap is None:
+        batch_cap = batch_size
+    if batch_cap is None:
+        batch_cap = min(512, n_train)
     if eval_samples is None:
         eval_samples = min(128, n_eval)
 
     config.study.name = "mnist"
     config.study.description = (
-        "Live MNIST checkpoint-replay prototype for the notebook-first paper workflow."
+        "Live MNIST checkpoint-evaluation prototype for the notebook-first paper workflow."
     )
 
     config.framework.family = "fm"
@@ -92,7 +95,8 @@ def build_mnist_config(
 
     config.training.seed = seed
     config.training.n_steps = n_steps
-    config.training.batch_size = batch_size
+    config.training.batch_cap = batch_cap
+    config.training.batch_size = batch_cap
     config.training.optimizer = "adam"
     config.training.lr = 1.0e-3
     config.training.ckpt_every = ckpt_every
@@ -111,7 +115,7 @@ def build_mnist_config(
     config.tracking.wandb.notes = str(wandb_notes)
 
     config.evaluation.n_samples = eval_samples
-    config.evaluation.batch_size = batch_size
+    config.evaluation.batch_size = batch_cap
     config.evaluation.sample_panel_count = min(8, eval_samples)
     config.evaluation.chunk_size = max(128, eval_samples, n_eval)
 
@@ -161,7 +165,18 @@ def parse_args():
     parser.add_argument("--n-steps", type=int, default=30_000)
     parser.add_argument("--ckpt-every", type=int, default=2_000)
     parser.add_argument("--sampling-steps", type=int, default=24)
-    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument(
+        "--batch-cap",
+        type=int,
+        default=None,
+        help="Maximum training batch size. Preferred name for N sweeps.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Legacy alias for --batch-cap.",
+    )
     parser.add_argument("--eval-samples", type=int, default=None)
     parser.add_argument("--run-name", default="mnist_checkpoint_replay")
     parser.add_argument(
@@ -236,7 +251,9 @@ def _print_final_summary(args, config, run_dir, metrics):
     final_record = metrics[-1]
     status = load_attempt_status(run_dir)
     run_summary_path = run_dir / "artifacts" / "run_summary.json"
+    data_meta_path = run_dir / "artifacts" / "data_meta.json"
     run_summary = load_json(run_summary_path) if run_summary_path.exists() else {}
+    data_meta = load_json(data_meta_path) if data_meta_path.exists() else {}
     figures = status.get("generated_figures") or run_summary.get("generated_figures") or {}
     wandb = status.get("wandb") or {}
 
@@ -252,6 +269,13 @@ def _print_final_summary(args, config, run_dir, metrics):
     print(f"checkpoint_metrics  : {run_dir / 'metrics' / 'checkpoint_metrics.json'}")
     print(f"prediction/loss     : {config.framework.prediction_space}/{config.framework.loss_space}")
     print(f"n_train / n_eval    : {config.data.n_train} / {config.data.n_eval}")
+    batching = status.get("batching") or data_meta.get("batching") or {}
+    if batching:
+        print(
+            "batch cap / eff    : "
+            f"{batching.get('batch_cap')} / {batching.get('effective_batch_size')}"
+        )
+        print(f"drop_last          : {batching.get('drop_last')}")
     print(f"steps / ckpt_every  : {config.training.n_steps} / {config.training.ckpt_every}")
     print(f"sample steps        : {config.sampling.n_steps}")
     print(f"final checkpoint    : {final_record['step']}")
@@ -294,6 +318,7 @@ def main():
             n_steps=args.n_steps,
             ckpt_every=args.ckpt_every,
             sampling_steps=args.sampling_steps,
+            batch_cap=args.batch_cap,
             batch_size=args.batch_size,
             eval_samples=args.eval_samples,
             run_name=args.run_name,

@@ -9,6 +9,7 @@ try:
     from mp_config import clone_config, get_base_config
     from mp_metrics import compute_memorization_metrics, evaluate_run
     from mp_training import train_run
+    from mp_training.trainer import _batching_metadata
 except ModuleNotFoundError:
     torch = None
     clone_config = None
@@ -16,6 +17,7 @@ except ModuleNotFoundError:
     compute_memorization_metrics = None
     evaluate_run = None
     train_run = None
+    _batching_metadata = None
 
 
 class FakeMNIST:
@@ -71,10 +73,19 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertTrue((run_dir / "figures" / "f_mem_vs_tau.png").exists())
             self.assertTrue((run_dir / "figures" / "nn_ratio_vs_tau.png").exists())
             status = loads((run_dir / "status.json").read_text())
+            data_meta = loads((run_dir / "artifacts" / "data_meta.json").read_text())
+            run_summary = loads((run_dir / "artifacts" / "run_summary.json").read_text())
+            train_history = loads((run_dir / "metrics" / "train_history.json").read_text())
             self.assertEqual(status["state"], "completed")
             self.assertIn("progress", status)
             self.assertIn("evaluation_progress", status)
             self.assertIn("latest_metrics", status)
+            self.assertIn("batching", status)
+            self.assertIn("batching", data_meta)
+            self.assertIn("batching", run_summary)
+            self.assertEqual(status["batching"], data_meta["batching"])
+            self.assertEqual(run_summary["batching"], data_meta["batching"])
+            self.assertEqual(train_history[-1]["step"], int(config.training.n_steps))
             self.assertIn("training_loss_vs_step", status["generated_figures"])
             self.assertGreater(len(metrics), 0)
 
@@ -96,6 +107,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
+        config.training.batch_cap = 4
         config.training.batch_size = 4
         config.evaluation.n_samples = 4
         config.evaluation.sample_panel_count = 2
@@ -121,6 +133,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
+        config.training.batch_cap = 4
         config.training.batch_size = 4
         config.evaluation.n_samples = 2
         config.evaluation.sample_panel_count = 2
@@ -150,6 +163,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
+        config.training.batch_cap = 2
         config.training.batch_size = 2
         config.evaluation.n_samples = 2
         config.evaluation.sample_panel_count = 2
@@ -167,6 +181,34 @@ class TestSrcPipeline(unittest.TestCase):
 
         self.assertGreaterEqual(copied_metrics["f_mem"], shifted_metrics["f_mem"])
         self.assertLessEqual(copied_metrics["mean_d1"], shifted_metrics["mean_d1"])
+
+    def test_batching_metadata_small_equal_and_large_n(self):
+        config = clone_config(get_base_config())
+        config.training.n_steps = 7
+        config.training.batch_cap = 4
+        config.training.batch_size = 4
+
+        small = _batching_metadata(config, torch.zeros(3, 2))
+        self.assertEqual(small["batch_cap"], 4)
+        self.assertEqual(small["effective_batch_size"], 3)
+        self.assertFalse(small["drop_last"])
+        self.assertEqual(small["steps_per_epoch"], 1)
+        self.assertEqual(small["examples_per_epoch"], 3)
+        self.assertEqual(small["dropped_per_epoch"], 0)
+        self.assertEqual(small["n_steps"], 7)
+
+        equal = _batching_metadata(config, torch.zeros(4, 2))
+        self.assertEqual(equal["effective_batch_size"], 4)
+        self.assertFalse(equal["drop_last"])
+        self.assertEqual(equal["steps_per_epoch"], 1)
+        self.assertEqual(equal["dropped_per_epoch"], 0)
+
+        large = _batching_metadata(config, torch.zeros(10, 2))
+        self.assertEqual(large["effective_batch_size"], 4)
+        self.assertTrue(large["drop_last"])
+        self.assertEqual(large["steps_per_epoch"], 2)
+        self.assertEqual(large["examples_per_epoch"], 8)
+        self.assertEqual(large["dropped_per_epoch"], 2)
 
     def test_gmm_runtime_smoke(self):
         self._run_pipeline(self.make_gmm_config(), "gmm_subspace")

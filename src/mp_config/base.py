@@ -70,7 +70,10 @@ def get_base_config():
     data = config.data = ConfigDict()
     data.dataset = "gmm_subspace"
     data.root = "tmp/data"
+    data.dataset_subdir = ""
     data.download = False
+    data.train_split = "train"
+    data.resize_size = 0
     data.n_train = 256
     data.n_eval = 256
     data.data_dim = 256
@@ -90,6 +93,7 @@ def get_base_config():
     training = config.training = ConfigDict()
     training.seed = 0
     training.n_steps = 200
+    training.batch_cap = 64
     training.batch_size = 64
     training.lr = 1.0e-3
     training.weight_decay = 0.0

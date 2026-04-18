@@ -76,6 +76,7 @@ def get_default_config():
     # ---- training ----
     training = config.training = ConfigDict()
     training.n_steps = 5000
+    training.batch_cap = 256
     training.batch_size = 256
     training.lr = 3e-4
     training.weight_decay = 1e-4

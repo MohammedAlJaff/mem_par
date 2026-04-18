@@ -1,5 +1,5 @@
 """
-Checkpoint-replay evaluation for first-party study runs.
+Checkpoint evaluation for first-party study runs.
 
 Reload a saved run, regenerate samples at each checkpoint, and compute the
 memorization curves.
@@ -26,7 +26,7 @@ from mp_tracking import AttemptTracker
 
 def _validate_saved_holdout_metadata(run_dir):
     """
-    Re-check saved train/reference source metadata before checkpoint replay.
+    Re-check saved train/reference source metadata before checkpoint evaluation.
     """
     run_dir = Path(run_dir)
     data_meta_path = run_dir / "artifacts" / "data_meta.json"
@@ -92,7 +92,7 @@ def _validate_saved_tensor_identity(train_tensor, reference_tensor):
 
 def _save_checkpoint_metric_figures(records, figures_dir):
     """
-    Save the standard checkpoint-replay scalar figures for one attempt.
+    Save the standard checkpoint-evaluation scalar figures for one attempt.
     """
     if not records:
         return {}
@@ -166,7 +166,7 @@ def _save_checkpoint_metric_figures(records, figures_dir):
 
 def evaluate_run(run_dir, device="cpu"):
     """
-    Replay every checkpoint in a saved run directory and collect metrics.
+    Evaluate every checkpoint in a saved run directory and collect metrics.
 
     For each checkpoint we:
         1. reload model weights
@@ -184,7 +184,7 @@ def evaluate_run(run_dir, device="cpu"):
     try:
         config = load_config_snapshot(run_dir)
         tracker = AttemptTracker(config, run_dir)
-        tracker.stage("evaluating", message=f"checkpoint replay started device={device}")
+        tracker.stage("evaluating", message=f"checkpoint evaluation started device={device}")
         _validate_saved_holdout_metadata(run_dir)
 
         train_tensor = torch.load(
@@ -332,7 +332,7 @@ def evaluate_run(run_dir, device="cpu"):
         tracker.stage(
             "completed",
             message=(
-                "checkpoint replay complete "
+                "checkpoint evaluation complete "
                 f"checkpoints={len(records)} "
                 f"wall_time={evaluation_wall_time_sec:.2f}s"
             ),
@@ -373,7 +373,7 @@ if __name__ == "__main__":
     print("  records = evaluate_run(run_dir, device='cpu')")
     print("")
 
-    # These artifacts are the replay inputs. They fix the data tensors and
+    # These artifacts are the evaluation inputs. They fix the data tensors and
     # shared `z_init` so checkpoint comparisons use the same starting point.
     print("Expected artifacts under run_dir/artifacts:")
     print("  - config.json")
@@ -382,7 +382,7 @@ if __name__ == "__main__":
     print("  - z_init.pt")
     print("")
 
-    # These checkpoints are the states that will be replayed and scored.
+    # These checkpoints are the states that will be evaluated and scored.
     print("Expected checkpoints under run_dir/checkpoints:")
     print("  - step_000000.pt")
     print("  - step_000050.pt")

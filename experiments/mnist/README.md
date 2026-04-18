@@ -13,7 +13,7 @@ repo.
 - `python -m experiments.mnist.run`
   The official saved-run path. This is the artifact-writing route that uses the
   stable `src/` kernel to create an experiment/run/seed/attempt directory,
-  checkpoints, manifests, status metadata, and replay metrics.
+  checkpoints, manifests, status metadata, and checkpoint evaluation metrics.
 
 ## Notebook-First Usage
 
@@ -23,12 +23,12 @@ Open the notebook from the repo root:
 jupyter lab experiments/mnist/mnist_walkthrough.ipynb
 ```
 
-The notebook now acts as a checkpoint-replay prototype:
+The notebook now acts as a checkpoint-evaluation prototype:
 
 - it builds balanced train and reference subsets explicitly
 - it writes a real attempt directory with saved labels, indices, tensors,
   checkpoints, manifests, and run summaries
-- it replays every checkpoint into memorization metrics and plots the curves
+- it evaluates every checkpoint into memorization metrics and plots the curves
 - it surfaces the attempt-local `status.json`, `logs/attempt.log`, replay
   metrics, and core-generated scalar figures
 
@@ -59,6 +59,7 @@ Useful operator flags:
 PYTHONPATH=src python -m experiments.mnist.run \
   --download \
   --device cuda \
+  --batch-cap 512 \
   --summary-every-steps 500 \
   --summary-every-seconds 60
 ```
@@ -85,6 +86,7 @@ Each completed attempt should contain:
 - `logs/attempt.log`
 - `artifacts/config.json`
 - `artifacts/run_summary.json`
+- `artifacts/data_meta.json`
 - `metrics/train_history.json`
 - `metrics/checkpoint_metrics.json`
 - `figures/training_loss_vs_step.png`

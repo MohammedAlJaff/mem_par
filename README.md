@@ -31,7 +31,7 @@ jupyter lab experiments/mnist/mnist_walkthrough.ipynb
 
 That notebook is intentionally pedagogical, but it is no longer just an
 in-memory demo. It now builds the balanced MNIST subsets line by line, launches
-the real saved-run training and checkpoint replay path, and then reads the
+the real saved-run training and checkpoint evaluation path, and then reads the
 written artifacts back from disk for plotting and inspection.
 
 For synthetic data sanity checks before training, use:
@@ -66,7 +66,8 @@ This writes a full experiment/run/seed/attempt artifact tree under
 - experiment/run/seed manifests and per-attempt status metadata
 - checkpoints
 - training history
-- checkpoint replay memorization metrics
+- checkpoint evaluation memorization metrics
+- batching metadata for the selected `N` and `training.batch_cap`
 - readable `logs/attempt.log` output for SLURM/debugging
 - scalar figures under the attempt-local `figures/` directory
 

@@ -17,10 +17,10 @@ the reusable kernel those studies build on top of.
   Canonical dataset loaders and deterministic subset logic.
 
 - `mp_metrics/`
-  Memorization metrics and checkpoint replay evaluation.
+  Memorization metrics and checkpoint evaluation.
   The canonical `f_mem` threshold lives at `config.evaluation.ratio_threshold`
   and is respected by direct tensor metrics, folder-based metrics, and
-  checkpoint replay.
+  checkpoint evaluation.
 
 - `mp_artifacts/`
   Experiment/run/seed/attempt layout, config snapshots, checkpoints, tensors,

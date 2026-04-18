@@ -153,6 +153,12 @@ def _load_vendor_module():
         sys.path.insert(0, vendor_root)
 
     try:
+        try:
+            import torch._dynamo
+
+            torch._dynamo.config.suppress_errors = True
+        except Exception:
+            pass
         module = importlib.import_module("model_jit")
     except Exception as exc:
         raise ImportError(

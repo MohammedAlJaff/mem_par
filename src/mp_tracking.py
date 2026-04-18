@@ -247,6 +247,10 @@ class AttemptTracker:
         project = str(getattr(self._wandb_config, "project", "mem_par"))
         entity = str(getattr(self._wandb_config, "entity", "")).strip() or None
         notes = str(getattr(self._wandb_config, "notes", "")).strip() or None
+        configured_name = str(getattr(self._wandb_config, "name", "")).strip()
+        configured_group = str(getattr(self._wandb_config, "group", "")).strip()
+        run_name = configured_name or self.status["attempt_id"]
+        run_group = configured_group or self.status["run_id"]
         wandb_dir = self.attempt_dir / str(getattr(self._wandb_config, "dir", "logs/wandb"))
         wandb_dir.mkdir(parents=True, exist_ok=True)
 
@@ -260,8 +264,8 @@ class AttemptTracker:
                 mode=mode,
                 id=run_id,
                 resume="allow",
-                name=self.status["attempt_id"],
-                group=self.status["run_id"],
+                name=run_name,
+                group=run_group,
                 job_type=self.config.study.name,
                 notes=notes,
                 tags=self._wandb_tags(),
@@ -277,20 +281,35 @@ class AttemptTracker:
                 project=project,
                 entity=entity,
                 run_id=getattr(run, "id", run_id),
-                run_name=getattr(run, "name", self.status["attempt_id"]),
+                run_name=getattr(run, "name", run_name),
                 run_path=self._normalize_run_path(run),
                 run_url=getattr(run, "url", None),
                 dir=str(wandb_dir.resolve()),
                 warning=None,
             )
             self._patch_status(wandb=metadata)
-            self._record_event(
-                "wandb_initialized",
-                mode=mode,
-                project=project,
-                entity=entity,
-                wandb_run_id=metadata["run_id"],
-                wandb_run_name=metadata["run_name"],
+            wandb_target = (
+                metadata.get("run_url")
+                or metadata.get("run_path")
+                or metadata["run_id"]
+            )
+            self._emit(
+                (
+                    "wandb active "
+                    f"mode={mode} "
+                    f"project={project} "
+                    f"name={metadata['run_name']} "
+                    f"target={wandb_target}"
+                ),
+                event_type="wandb_initialized",
+                event_fields={
+                    "mode": mode,
+                    "project": project,
+                    "entity": entity,
+                    "wandb_run_id": metadata["run_id"],
+                    "wandb_run_name": metadata["run_name"],
+                    "wandb_target": wandb_target,
+                },
             )
         except Exception as exc:
             metadata = self._status_wandb_payload(
@@ -429,7 +448,7 @@ class AttemptTracker:
 
     def evaluation_progress(self, *, checkpoint_index, total_checkpoints, record, elapsed_sec, force=False):
         """
-        Update replay progress snapshots and emit periodic checkpoint summaries.
+        Update checkpoint-evaluation progress snapshots and emit summaries.
         """
         steps_per_checkpoint = (
             float(checkpoint_index) / elapsed_sec if elapsed_sec > 0 else None

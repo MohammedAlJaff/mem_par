@@ -31,6 +31,18 @@ class FakeMNIST:
     "torch and the live MNIST experiment runner are required",
 )
 class TestMNISTExperimentRunner(unittest.TestCase):
+    def test_batch_size_alias_fills_batch_cap(self):
+        config = build_mnist_config(
+            download=False,
+            n_train=8,
+            n_eval=8,
+            batch_size=3,
+            run_name="mnist_alias",
+        )
+        self.assertEqual(config.training.batch_cap, 3)
+        self.assertEqual(config.training.batch_size, 3)
+        self.assertEqual(config.evaluation.batch_size, 3)
+
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_saved_run_path_writes_artifacts_and_metrics(self):
         config = build_mnist_config(
@@ -41,6 +53,7 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             n_steps=2,
             ckpt_every=1,
             sampling_steps=2,
+            batch_cap=2,
             batch_size=2,
             eval_samples=2,
             run_name="mnist_runner_smoke",
@@ -78,6 +91,7 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             status = loads((run_dir / "status.json").read_text())
             data_meta = loads((run_dir / "artifacts" / "data_meta.json").read_text())
             run_summary = loads((run_dir / "artifacts" / "run_summary.json").read_text())
+            train_history = loads((run_dir / "metrics" / "train_history.json").read_text())
 
             self.assertEqual(run_dir.parents[3].name, run_id)
             self.assertEqual(run_dir.parents[1].name, "seed_0007")
@@ -100,6 +114,12 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             self.assertIn("last_checkpoint", status)
             self.assertIn("wandb", status)
             self.assertFalse(status["wandb"]["enabled"])
+            self.assertEqual(status["batching"]["batch_cap"], 2)
+            self.assertEqual(status["batching"]["effective_batch_size"], 2)
+            self.assertTrue(status["batching"]["drop_last"])
+            self.assertEqual(status["batching"], data_meta["batching"])
+            self.assertEqual(run_summary["batching"], data_meta["batching"])
+            self.assertEqual(train_history[-1]["step"], 2)
             self.assertIn("training_loss_vs_step", status["generated_figures"])
             self.assertIn("f_mem_vs_tau", status["generated_figures"])
             self.assertIn("nn_ratio_vs_tau", status["generated_figures"])
@@ -119,7 +139,7 @@ class TestMNISTExperimentRunner(unittest.TestCase):
             self.assertIn("figure_saved", event_types)
             attempt_log = (run_dir / "logs" / "attempt.log").read_text()
             self.assertIn("training complete", attempt_log)
-            self.assertIn("checkpoint replay complete", attempt_log)
+            self.assertIn("checkpoint evaluation complete", attempt_log)
             self.assertEqual(find_latest_attempt_dir(study_dir, run_id, 7), run_dir)
             self.assertEqual(find_latest_completed_attempt_dir(study_dir, run_id, 7), run_dir)
 

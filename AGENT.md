@@ -45,9 +45,16 @@ Short operational guide for agents and contributors working in this repo.
 ## Artifact Rules
 
 - Save the exact training data artifact for every run.
-- Save the exact `z_init` used for checkpoint replay.
+- Save the exact `z_init` used for checkpoint evaluation.
 - Evaluate memorization against saved run artifacts, never against rebuilt data.
 - Keep outputs local to the caller's chosen run directory.
+
+## Environment
+
+- Before running project-dependent Python commands, load and activate the
+  project environment with `module load Mambaforge` and
+  `mamba activate mem_param_env`.
+- The bare system Python is not the project environment.
 
 ## Python Style
 
