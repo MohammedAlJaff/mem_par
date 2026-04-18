@@ -8,9 +8,12 @@ This loader intentionally keeps the data path simple:
 - optionally flatten the images when a vector-valued backbone is requested
 """
 
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torchvision import datasets
+from torchvision.datasets.mnist import read_image_file, read_label_file
 
 from mp_data.common import maybe_flatten, seeded_indices
 
@@ -89,6 +92,31 @@ def _select_indices(targets, count, seed, balance_classes, split_name):
     return seeded_indices(len(targets), count, seed)
 
 
+def _raw_mnist_paths(root, train):
+    raw_dir = Path(root) / "MNIST" / "raw"
+    if train:
+        return raw_dir / "train-images-idx3-ubyte", raw_dir / "train-labels-idx1-ubyte"
+    return raw_dir / "t10k-images-idx3-ubyte", raw_dir / "t10k-labels-idx1-ubyte"
+
+
+def _load_raw_mnist_split(root, train):
+    image_path, label_path = _raw_mnist_paths(root, train)
+    missing = [str(path) for path in (image_path, label_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError(", ".join(missing))
+    return read_image_file(str(image_path)), read_label_file(str(label_path))
+
+
+def _load_mnist_split(root, train, download):
+    try:
+        dataset = datasets.MNIST(root=root, train=train, download=download)
+        return dataset.data, dataset.targets
+    except RuntimeError:
+        if download:
+            raise
+        return _load_raw_mnist_split(root, train)
+
+
 def _class_count_summary(labels, num_classes=MNIST_NUM_CLASSES):
     """
     Convert label counts into a JSON-friendly `{class_id: count}` dict.
@@ -112,21 +140,22 @@ def load_mnist_bundle(config):
     root = config.data.root
     download = bool(config.data.download)
 
-    train_set = datasets.MNIST(root=root, train=True, download=download)
-    test_set = datasets.MNIST(root=root, train=False, download=download)
+    # Moved caches often keep raw IDX files without torchvision's processed cache.
+    train_data, train_targets = _load_mnist_split(root, train=True, download=download)
+    test_data, test_targets = _load_mnist_split(root, train=False, download=download)
 
     balance_train = bool(getattr(config.data, "balance_train_classes", False))
     balance_reference = bool(getattr(config.data, "balance_reference_classes", False))
 
     train_indices = _select_indices(
-        train_set.targets,
+        train_targets,
         int(config.data.n_train),
         int(config.training.seed),
         balance_train,
         "training subset",
     )
     reference_indices = _select_indices(
-        test_set.targets,
+        test_targets,
         int(config.data.n_eval),
         int(config.training.seed) + 1,
         balance_reference,
@@ -134,13 +163,13 @@ def load_mnist_bundle(config):
     )
 
     train_tensor = (
-        train_set.data[train_indices].float().div(127.5).sub(1.0).unsqueeze(1)
+        train_data[train_indices].float().div(127.5).sub(1.0).unsqueeze(1)
     )
     reference_tensor = (
-        test_set.data[reference_indices].float().div(127.5).sub(1.0).unsqueeze(1)
+        test_data[reference_indices].float().div(127.5).sub(1.0).unsqueeze(1)
     )
-    train_labels = train_set.targets[train_indices].clone()
-    reference_labels = test_set.targets[reference_indices].clone()
+    train_labels = train_targets[train_indices].clone()
+    reference_labels = test_targets[reference_indices].clone()
 
     train_tensor = _maybe_resize_images(train_tensor, config)
     reference_tensor = _maybe_resize_images(reference_tensor, config)
@@ -182,7 +211,7 @@ if __name__ == "__main__":
     # Build the smallest MNIST config that still shows the loader contract.
     config = get_base_config()
     config.data.dataset = "mnist"
-    config.data.root = "tmp/data"
+    config.data.root = "data"
     config.data.n_train = 8
     config.data.n_eval = 6
     config.data.image_size = 32

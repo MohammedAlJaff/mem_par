@@ -120,7 +120,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.study.name = "mnist_smoke"
         config.outputs.run_name = "mnist_smoke"
         config.data.dataset = "mnist"
-        config.data.root = "tmp/data"
+        config.data.root = "data"
         config.data.download = False
         config.data.n_train = 4
         config.data.n_eval = 4
@@ -146,7 +146,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.study.name = "celeba_smoke"
         config.outputs.run_name = "celeba_smoke"
         config.data.dataset = "celeba32_grey"
-        config.data.root = "tmp/data"
+        config.data.root = "data"
         config.data.download = False
         config.data.reference_split = "valid"
         config.data.n_train = 4

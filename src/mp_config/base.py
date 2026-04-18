@@ -69,7 +69,7 @@ def get_base_config():
 
     data = config.data = ConfigDict()
     data.dataset = "gmm_subspace"
-    data.root = "tmp/data"
+    data.root = "data"
     data.dataset_subdir = ""
     data.download = False
     data.train_split = "train"

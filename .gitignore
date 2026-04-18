@@ -10,6 +10,7 @@
 output/
 outputs/
 tmp/
+data/
 
 # Note: vendored third-party code (baselines/*/vendor/, third_party/*/)
 # is tracked and included in the repo for reproducibility
@@ -47,6 +48,7 @@ build/
 
 # Data downloads (large, regenerable)
 tmp/data/
+data/
 tmp/jupyter-notebook/
 
 # Checkpoints and model weights (large, regenerable)

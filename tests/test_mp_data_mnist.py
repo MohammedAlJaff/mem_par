@@ -29,7 +29,7 @@ class TestMNISTLoader(unittest.TestCase):
     def make_config(self):
         config = clone_config(get_base_config())
         config.data.dataset = "mnist"
-        config.data.root = "tmp/data"
+        config.data.root = "data"
         config.data.download = False
         config.data.n_train = 20
         config.data.n_eval = 20

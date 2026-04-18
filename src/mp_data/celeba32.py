@@ -118,7 +118,7 @@ if __name__ == "__main__":
     # Build a tiny grayscale CelebA32 config with the same fields a real run uses.
     config = get_base_config()
     config.data.dataset = "celeba32_grey"
-    config.data.root = "tmp/data"
+    config.data.root = "data"
     config.data.n_train = 4
     config.data.n_eval = 4
     config.data.image_size = 32

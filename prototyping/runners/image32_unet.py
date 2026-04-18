@@ -84,7 +84,7 @@ def default_knobs():
         "batch_cap": 64,
         "eval_samples": 64,
         "sampling_steps": 24,
-        "root": "tmp/data",
+        "root": "data",
         "dataset_subdir": None,
         "download": False,
         "train_split": "train",
@@ -240,7 +240,7 @@ def run_one_update(model, train_tensor, config, device):
     )
 
     optimizer = torch.optim.Adam(
-        model.parameters(),
+        model.parameterfs(),
         lr=float(config.training.lr),
         weight_decay=float(config.training.weight_decay),
     )
