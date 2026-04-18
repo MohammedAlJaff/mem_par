@@ -1,29 +1,28 @@
 import json
+import contextlib
+import io
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 try:
     import torch
+    from mp_data import build_data_bundle
     from prototyping.runners import (
-        celeba32_jit,
-        celeba32_unet,
-        mnist_unet,
+        image32_unet,
         synthetic_mlp,
     )
 except ModuleNotFoundError:
     torch = None
-    celeba32_jit = None
-    celeba32_unet = None
-    mnist_unet = None
+    build_data_bundle = None
+    image32_unet = None
     synthetic_mlp = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE_RUNNERS = (
-    ("mnist_unet", mnist_unet, "mnist", "unet"),
-    ("celeba32_unet", celeba32_unet, "celeba32_grey", "unet"),
-    ("celeba32_jit", celeba32_jit, "celeba32_grey", "jit"),
+    ("image32_unet", image32_unet, "celeba32_grey", "unet"),
 )
 
 
@@ -56,6 +55,55 @@ class FakeCelebA:
         image = torch.linspace(-1.0, 1.0, 32 * 32).view(1, 32, 32)
         image = torch.roll(image, shifts=index % 5, dims=-1)
         return image, index % 5
+
+
+def manual_projected_gmm(args):
+    geometry_generator = torch.Generator().manual_seed(int(args.geometry_seed))
+    basis, _ = torch.linalg.qr(
+        torch.randn(args.data_dim, args.intrinsic_dim, generator=geometry_generator)
+    )
+    basis = basis[:, : args.intrinsic_dim]
+    means = torch.randn(args.n_clusters, args.intrinsic_dim, generator=geometry_generator)
+
+    train_generator = torch.Generator().manual_seed(int(args.seed))
+    train_labels = torch.randint(args.n_clusters, (args.n_train,), generator=train_generator)
+    train_latent = means[train_labels] + args.sigma_z * torch.randn(
+        args.n_train,
+        args.intrinsic_dim,
+        generator=train_generator,
+    )
+    train = train_latent @ basis.T
+    train = train + args.sigma_eta * torch.randn(
+        args.n_train,
+        args.data_dim,
+        generator=train_generator,
+    )
+
+    reference_generator = torch.Generator().manual_seed(int(args.seed) + 1)
+    reference_labels = torch.randint(
+        args.n_clusters,
+        (args.n_reference,),
+        generator=reference_generator,
+    )
+    reference_latent = means[reference_labels] + args.sigma_z * torch.randn(
+        args.n_reference,
+        args.intrinsic_dim,
+        generator=reference_generator,
+    )
+    reference = reference_latent @ basis.T
+    reference = reference + args.sigma_eta * torch.randn(
+        args.n_reference,
+        args.data_dim,
+        generator=reference_generator,
+    )
+    return {
+        "train": train.contiguous(),
+        "reference": reference.contiguous(),
+        "train_labels": train_labels,
+        "reference_labels": reference_labels,
+        "basis": basis.contiguous(),
+        "means": means.contiguous(),
+    }
 
 
 @unittest.skipIf(torch is None, "torch and prototype runner dependencies are required")
@@ -92,10 +140,10 @@ class TestProtoRunners(unittest.TestCase):
                 knobs = module.default_knobs()
                 knobs.update(
                     {
-                        "pred_space": space,
+                        "prediction_space": space,
                         "loss_space": space,
-                        "n_train": 10 if name == "mnist_unet" else 4,
-                        "n_eval": 10 if name == "mnist_unet" else 4,
+                        "n_train": 4,
+                        "n_eval": 4,
                         "n_steps": 2,
                         "ckpt_every": 1,
                     }
@@ -104,81 +152,98 @@ class TestProtoRunners(unittest.TestCase):
                 self.assertEqual(config.framework.prediction_space, space)
                 self.assertEqual(config.framework.loss_space, space)
 
-    def test_synthetic_runner_is_direct_old_style(self):
+    def test_release_clean_flags_are_removed(self):
+        removed = [
+            (synthetic_mlp, ["--batch-size", "5"]),
+            (synthetic_mlp, ["--validate-only"]),
+            (synthetic_mlp, ["--data-source", "both"]),
+            (synthetic_mlp, ["--pred-space", "eps"]),
+        ]
+        for _, module, _, _ in RECIPE_RUNNERS:
+            removed.extend(
+                [
+                    (module, ["--batch-size", "3"]),
+                    (module, ["--validate-only"]),
+                    (module, ["--pred-space", "eps"]),
+                    (module, ["--study-dir", "tmp/old"]),
+                ]
+            )
+        for module, argv in removed:
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    module.parse_args(argv)
+
+    def test_synthetic_accepts_release_clean_public_flags(self):
+        args = synthetic_mlp.parse_args(
+            [
+                "--prediction-space",
+                "eps",
+                "--loss-space",
+                "eps",
+                "--n-reference",
+                "11",
+                "--out-dir",
+                "tmp/alias_check",
+            ]
+        )
+        self.assertEqual(args.prediction_space, "eps")
+        self.assertEqual(args.loss_space, "eps")
+        self.assertEqual(args.n_reference, 11)
+        self.assertEqual(args.out_dir, "tmp/alias_check")
+
+    def test_synthetic_runner_keeps_infrastructure_out_of_main_file(self):
         text = Path(synthetic_mlp.__file__).read_text()
         self.assertIn("def main(argv=None):", text)
-        self.assertIn("----- training -----", text)
+        self.assertIn("collect_metric_record", text)
         self.assertIn("metrics_along_training.json", text)
-        self.assertIn("wandb.init", text)
+        self.assertNotIn("json.dumps", text)
+        self.assertNotIn("wandb.init", text)
+        self.assertNotIn("plt.subplots", text)
         self.assertNotIn("from mp_training import train_run", text)
         self.assertNotIn("from mp_metrics import evaluate_run", text)
 
-    def test_synthetic_validate_only_includes_equivalence_and_oracle_metrics(self):
-        result = synthetic_mlp.main(
+    def test_image32_runner_is_the_only_image_recipe_surface(self):
+        text = Path(image32_unet.__file__).read_text()
+        self.assertIn("metrics_image32", text)
+        self.assertNotIn("mnist_unet", text)
+        self.assertNotIn("celeba32_unet", text)
+        self.assertNotIn("celeba32_jit", text)
+
+    def test_manual_gmm_equations_match_canonical_builder(self):
+        args = synthetic_mlp.parse_args(
             [
-                "--validate-only",
                 "--device",
                 "cpu",
                 "--n-train",
                 "8",
                 "--n-reference",
                 "12",
-                "--batch-size",
+                "--batch-cap",
                 "4",
-                "--eval-samples",
-                "4",
-                "--sampling-steps",
-                "2",
                 "--data-dim",
                 "8",
                 "--intrinsic-dim",
                 "2",
                 "--n-clusters",
                 "3",
-                "--hidden-dim",
-                "16",
-                "--n-layers",
-                "2",
-                "--time-emb-dim",
-                "16",
-                "--sliced-w2-projections",
-                "8",
-                "--n-steps",
-                "2",
-                "--metric-every",
-                "1",
-                "--ckpt-every",
-                "1",
             ]
         )
-
-        self.assertEqual(result["mode"], "validate_only")
-        self.assertGreater(result["one_update"]["loss"], 0.0)
-        self.assertTrue(result["manual_vs_canonical"]["all_equal"])
-        self.assertIn("oracle_latent_nll_mean", result["metrics"])
-        self.assertIn("ambient_f_mem", result["metrics"])
-        self.assertEqual(result["batching"]["batch_cap"], 4)
-        self.assertEqual(result["batching"]["effective_batch_size"], 4)
-        self.assertTrue(result["batching"]["drop_last"])
-
-    def test_synthetic_accepts_parameterization_spaces(self):
-        for space in ("x", "eps", "v"):
-            args = synthetic_mlp.parse_args(
-                [
-                    "--prediction-space",
-                    space,
-                    "--loss-space",
-                    space,
-                ]
-            )
-            self.assertEqual(args.prediction_space, space)
-            self.assertEqual(args.loss_space, space)
+        config, _ = synthetic_mlp.build_config(args, batch_size=4)
+        canonical = build_data_bundle(config)
+        manual = manual_projected_gmm(args)
+        self.assertTrue(torch.equal(manual["train"], canonical["train"]))
+        self.assertTrue(torch.equal(manual["reference"], canonical["reference"]))
+        self.assertTrue(torch.equal(manual["train_labels"], canonical["train_labels"]))
+        self.assertTrue(torch.equal(manual["reference_labels"], canonical["reference_labels"]))
+        self.assertTrue(torch.equal(manual["basis"], canonical["geometry"]["basis"]))
+        self.assertTrue(torch.equal(manual["means"], canonical["geometry"]["means"]))
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_mnist_unet_recipe_steps_use_fake_dataset(self):
-        knobs = mnist_unet.default_knobs()
+    def test_image32_unet_recipe_steps_use_fake_mnist_dataset(self):
+        knobs = image32_unet.default_knobs()
         knobs.update(
             {
+                "dataset": "mnist",
                 "n_train": 10,
                 "n_eval": 10,
                 "n_steps": 2,
@@ -195,21 +260,22 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = mnist_unet.build_config(knobs)
-        self.assertEqual(config.training.batch_cap, 2)
-        data = mnist_unet.build_data(config)
-        model = mnist_unet.build_model(config, "cpu")
-        update = mnist_unet.run_one_update(model, data["train"], config, "cpu")
-        metrics = mnist_unet.inspect_metrics(config, data, model, "cpu")
+        config = image32_unet.build_config(knobs)
+        data = image32_unet.build_data(config)
+        model = image32_unet.build_model(config, "cpu")
+        update = image32_unet.run_one_update(model, data["train"], config, "cpu")
+        metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [10, 1, 16, 16])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
         self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
+        self.assertIn("random_t_loss", metrics["loss_eval"])
+        self.assertIn("loss_t_0_1", metrics["loss_eval"])
 
     @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
-    def test_celeba_unet_recipe_steps_use_fake_dataset(self):
-        knobs = celeba32_unet.default_knobs()
+    def test_image32_unet_recipe_steps_use_fake_celeba_dataset(self):
+        knobs = image32_unet.default_knobs()
         knobs.update(
             {
                 "n_train": 4,
@@ -227,81 +293,70 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = celeba32_unet.build_config(knobs)
-        self.assertEqual(config.training.batch_cap, 2)
-        data = celeba32_unet.build_data(config)
-        model = celeba32_unet.build_model(config, "cpu")
-        update = celeba32_unet.run_one_update(model, data["train"], config, "cpu")
-        metrics = celeba32_unet.inspect_metrics(config, data, model, "cpu")
+        config = image32_unet.build_config(knobs)
+        data = image32_unet.build_data(config)
+        model = image32_unet.build_model(config, "cpu")
+        update = image32_unet.run_one_update(model, data["train"], config, "cpu")
+        metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [4, 1, 32, 32])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
         self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
 
-    @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
-    def test_celeba_jit_recipe_steps_use_fake_dataset(self):
-        knobs = celeba32_jit.default_knobs()
-        knobs.update(
-            {
-                "n_train": 2,
-                "n_eval": 2,
-                "n_steps": 2,
-                "ckpt_every": 1,
-                "batch_cap": 1,
-                "eval_samples": 1,
-                "sampling_steps": 2,
-                "image_size": 32,
-                "patch_size": 4,
-                "hidden_dim": 32,
-                "depth": 2,
-                "heads": 4,
-                "bottleneck_dim": 16,
-                "download": False,
-            }
-        )
-        config = celeba32_jit.build_config(knobs)
-        self.assertEqual(config.training.batch_cap, 1)
-        data = celeba32_jit.build_data(config)
-        model = celeba32_jit.build_model(config, "cpu")
-        update = celeba32_jit.run_one_update(model, data["train"], config, "cpu")
-        metrics = celeba32_jit.inspect_metrics(config, data, model, "cpu")
-
-        self.assertEqual(list(data["train"].shape), [2, 1, 32, 32])
-        self.assertEqual(model.net.__class__.__name__, "JiT")
-        self.assertGreater(update["loss"], 0.0)
-        self.assertIn("f_mem", metrics["reference_memory"])
-
-    def test_gmm_compatibility_aliases_parse(self):
-        args = synthetic_mlp.parse_args(
-            [
-                "--pred-space",
-                "eps",
-                "--loss-space",
-                "eps",
-                "--n-reference",
-                "11",
-                "--out-dir",
-                "tmp/alias_check",
-            ]
-        )
-        self.assertEqual(args.prediction_space, "eps")
-        self.assertEqual(args.loss_space, "eps")
-        self.assertEqual(args.n_reference, 11)
-        self.assertEqual(args.out_dir, "tmp/alias_check")
-
-    def test_batch_size_aliases_fill_batch_cap(self):
-        synthetic_args = synthetic_mlp.parse_args(["--batch-size", "5"])
-        self.assertEqual(synthetic_args.batch_cap, 5)
-
-        for _, module, _, _ in RECIPE_RUNNERS:
-            args = module.parse_args(["--batch-size", "3"])
-            self.assertEqual(args.batch_cap, 3)
-            knobs = module.default_knobs()
-            knobs.update(vars(args))
-            config = module.build_config(knobs)
-            self.assertEqual(config.training.batch_cap, 3)
-            self.assertEqual(config.training.batch_size, 3)
+    def test_synthetic_tiny_full_run_writes_release_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = synthetic_mlp.main(
+                    [
+                        "--device",
+                        "cpu",
+                        "--out-dir",
+                        tmpdir,
+                        "--run-name",
+                        "tiny_synth",
+                        "--n-train",
+                        "8",
+                        "--n-reference",
+                        "12",
+                        "--batch-cap",
+                        "4",
+                        "--eval-samples",
+                        "4",
+                        "--sampling-steps",
+                        "2",
+                        "--data-dim",
+                        "8",
+                        "--intrinsic-dim",
+                        "2",
+                        "--n-clusters",
+                        "3",
+                        "--hidden-dim",
+                        "16",
+                        "--n-layers",
+                        "2",
+                        "--time-emb-dim",
+                        "16",
+                        "--sliced-w2-projections",
+                        "8",
+                        "--n-steps",
+                        "2",
+                        "--metric-every",
+                        "1",
+                        "--ckpt-every",
+                        "1",
+                        "--log-every",
+                        "1",
+                    ]
+                )
+            self.assertEqual(result["batch"]["batch_cap"], 4)
+            self.assertEqual(result["batch"]["effective_batch_size"], 4)
+            self.assertTrue(result["batch"]["drop_last"])
+            self.assertIn("ambient_f_mem", result["final_metrics"])
+            self.assertIn("latent_f_mem", result["final_metrics"])
+            self.assertNotIn("f_mem", result["final_metrics"])
+            self.assertTrue(Path(result["paths"]["metrics_along_training"]).is_file())
+            self.assertTrue(Path(result["paths"]["final_samples"]).is_file())
 
     def test_notebooks_have_required_sections_and_no_outputs(self):
         recipe_sections = [
@@ -312,28 +367,23 @@ class TestProtoRunners(unittest.TestCase):
             "## 4. Model Construction",
             "## 5. One Forward Loss Update",
             "## 6. Metric Calculation",
-            "## 7. Rendered CLI Command",
-            "## 8. Optional Full Job",
-            "## 9. Artifact Figure Loading",
+            "## 7. Optional Full Job",
+            "## 8. Artifact Figure Loading",
         ]
         synthetic_sections = [
             "## 0. Knobs",
             "## 1. Imports",
-            "## 2. Output Directories",
-            "## 3. Config",
-            "## 4. Manual And Canonical Data",
-            "## 5. Projection And Baselines",
-            "## 6. Model And One Update",
-            "## 7. Metrics",
-            "## 8. Rendered CLI Command",
-            "## 9. Optional Full Run",
-            "## 10. Artifacts And Figures",
+            "## 2. Config",
+            "## 3. Data",
+            "## 4. Projection And Baselines",
+            "## 5. Model And One Update",
+            "## 6. Metrics",
+            "## 7. Optional Full Run",
+            "## 8. Artifacts And Figures",
         ]
         notebook_checks = [
             (ROOT / "prototyping/runners/notebooks/synthetic_mlp.ipynb", synthetic_sections),
-            (ROOT / "prototyping/runners/notebooks/mnist_unet.ipynb", recipe_sections),
-            (ROOT / "prototyping/runners/notebooks/celeba32_unet.ipynb", recipe_sections),
-            (ROOT / "prototyping/runners/notebooks/celeba32_jit.ipynb", recipe_sections),
+            (ROOT / "prototyping/runners/notebooks/image32_unet.ipynb", recipe_sections),
         ]
         for notebook_path, required_sections in notebook_checks:
             notebook = json.loads(notebook_path.read_text())
@@ -342,6 +392,9 @@ class TestProtoRunners(unittest.TestCase):
             )
             for section in required_sections:
                 self.assertIn(section, source, notebook_path.name)
+            self.assertNotIn("Rendered CLI Command", source)
+            self.assertNotIn("validate_only", source)
+            self.assertNotIn("command_from_knobs", source)
             for cell in notebook.get("cells", []):
                 if cell.get("cell_type") == "code":
                     self.assertIsNone(cell.get("execution_count"))

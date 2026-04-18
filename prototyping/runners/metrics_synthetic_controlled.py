@@ -213,7 +213,80 @@ def memorization_metrics_in_spaces(samples, train_x, basis, train_latent, *, chu
     }
 
 
+def collect_metric_record(
+    *,
+    step,
+    samples,
+    baseline_samples,
+    train_tensor,
+    train_latent,
+    basis,
+    latent_means,
+    sigma_z,
+    sigma_eta,
+    reference_latent,
+    sliced_directions,
+    chunk_size,
+    config,
+):
+    """
+    Collect generated and reference-baseline diagnostics into one flat record.
+
+    The runner asks for one metric record; this function owns the details of
+    ambient/latent memorization, planted-GMM likelihoods, and baseline prefixes.
+    """
+    generated_mem = memorization_metrics_in_spaces(
+        samples,
+        train_tensor,
+        basis,
+        train_latent,
+        chunk_size=chunk_size,
+        config=config,
+    )
+    generated_oracle = oracle_gmm_metrics(
+        samples,
+        basis,
+        latent_means,
+        sigma_z,
+        sigma_eta,
+        reference_latent,
+        sliced_directions,
+    )
+    baseline_mem = memorization_metrics_in_spaces(
+        baseline_samples,
+        train_tensor,
+        basis,
+        train_latent,
+        chunk_size=chunk_size,
+        config=config,
+    )
+    baseline_latent = project_to_subspace(baseline_samples, basis)["latent"]
+    baseline_oracle = oracle_gmm_metrics(
+        baseline_samples,
+        basis,
+        latent_means,
+        sigma_z,
+        sigma_eta,
+        baseline_latent,
+        sliced_directions,
+    )
+
+    record = {"step": int(step)}
+    record.update(generated_mem)
+    record.update(generated_oracle)
+    record.update({"baseline_{}".format(key): value for key, value in baseline_mem.items()})
+    record.update(
+        {
+            "baseline_{}".format(key): value
+            for key, value in baseline_oracle.items()
+            if key != "oracle_latent_nll_std"
+        }
+    )
+    return record
+
+
 __all__ = [
+    "collect_metric_record",
     "component_coverage_metrics",
     "gmm_latent_log_prob",
     "latent_frechet_distance",

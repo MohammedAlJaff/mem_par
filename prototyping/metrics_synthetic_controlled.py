@@ -8,6 +8,7 @@ keeps that public path working while the prototype tree settles.
 """
 
 from prototyping.runners.metrics_synthetic_controlled import (
+    collect_metric_record,
     component_coverage_metrics,
     gmm_latent_log_prob,
     latent_frechet_distance,
@@ -19,6 +20,7 @@ from prototyping.runners.metrics_synthetic_controlled import (
 
 
 __all__ = [
+    "collect_metric_record",
     "component_coverage_metrics",
     "gmm_latent_log_prob",
     "latent_frechet_distance",

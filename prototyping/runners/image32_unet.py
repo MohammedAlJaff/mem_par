@@ -1,56 +1,101 @@
 """
-Readable prototype recipe: CelebA32 grayscale images with the UNet adapter.
+Readable prototype recipe for 32x32 image datasets with the UNet adapter.
 """
 
 import argparse
 from pathlib import Path
+import sys
+
+# Direct script execution from prototyping/runners should still find repo packages.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from prototyping.runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
     as_int_tuple,
-    count_parameters,
-    print_json,
-    render_command,
     resolve_batch_cap,
+)
+from prototyping.runners.metrics_image32 import (
+    DEFAULT_FIXED_TIMES,
+    collect_loss_eval_record,
+    collect_reference_memory,
+    evaluate_image32_run,
 )
 
 import torch
 from gdfm import GDFM
 from mp_config import clone_config, config_to_dict, get_base_config
 from mp_data import build_data_bundle
-from mp_metrics import compute_memorization_metrics, evaluate_run
 from mp_training import train_run
 
 
-RUNNER_NAME = "celeba32_unet"
-MODULE_NAME = "prototyping.runners.celeba32_unet"
-DEFAULT_STUDY_DIR = "outputs/prototype_runners/celeba32_unet"
-DEFAULT_RUN_NAME = RUNNER_NAME
+RUNNER_NAME = "image32_unet"
+MODULE_NAME = "prototyping.runners.image32_unet"
+DEFAULT_STUDY_DIR = "outputs/prototype_runners/image32_unet"
+
+# Dataset-specific defaults let one Image32 runner cover MNIST, CelebA,
+# flowers, animal faces, and similar 32x32 image checks without branching.
+DATASET_DEFAULTS = {
+    "mnist": {
+        "reference_split": "test",
+        "allow_same_source_reference": False,
+        "dataset_subdir": "",
+    },
+    "celeba32_grey": {
+        "reference_split": "valid",
+        "allow_same_source_reference": False,
+        "dataset_subdir": "",
+    },
+    "flowers102": {
+        "reference_split": "val",
+        "allow_same_source_reference": False,
+        "dataset_subdir": "",
+    },
+    "afhq_v2": {
+        "reference_split": "test",
+        "allow_same_source_reference": False,
+        "dataset_subdir": "afhq_v2",
+    },
+    "ffhq128": {
+        "reference_split": "seeded_partition",
+        "allow_same_source_reference": True,
+        "dataset_subdir": "ffhq/thumbnails128x128",
+    },
+}
 
 
 def default_knobs():
-    """Return the editable knobs for this recipe."""
-    # Treat this dictionary as the notebook-facing control panel. Each knob
-    # should stay visible in `build_config`, `parse_args`, or both.
+    """Return the editable knobs for this Image32 recipe."""
+    # This is the editable recipe surface shared by notebooks and CLI parsing.
+    # Keep new knobs here first, then thread them into config/rendering below.
     return {
         "device": "cpu",
-        "study_dir": DEFAULT_STUDY_DIR,
-        "run_name": DEFAULT_RUN_NAME,
+        "out_dir": DEFAULT_STUDY_DIR,
+        "run_name": RUNNER_NAME,
         "seed": 0,
-        "pred_space": "v",
+        "dataset": "celeba32_grey",
+        "prediction_space": "v",
         "loss_space": "v",
         "n_train": 128,
         "n_eval": 128,
         "n_steps": 30000,
         "ckpt_every": 2000,
         "batch_cap": 64,
-        "batch_size": None,
         "eval_samples": 64,
         "sampling_steps": 24,
         "root": "tmp/data",
+        "dataset_subdir": None,
         "download": False,
-        "reference_split": "valid",
+        "train_split": "train",
+        "reference_split": None,
+        "allow_same_source_reference": None,
+        "image_size": 32,
+        "image_channels": 1,
+        "resize_size": 0,
+        "balance_train_classes": True,
+        "balance_reference_classes": True,
+        "loss_eval_times": DEFAULT_FIXED_TIMES,
         "base_channels": 64,
         "channel_mult": (1, 2, 4, 4),
         "attn_resolutions": (8,),
@@ -66,39 +111,62 @@ def default_knobs():
 
 
 def build_config(knobs):
-    """Build the canonical config, with every CelebA32/UNet choice visible."""
-    # Notebooks usually pass partial overrides; merging here keeps the rest of
-    # the recipe deterministic and complete.
+    """Build the canonical config for one Image32 UNet run."""
+    # Merge once so every later assignment reads from one complete dictionary.
     knobs = {**default_knobs(), **dict(knobs)}
-    config = clone_config(get_base_config())
+    dataset = str(knobs["dataset"])
+    if dataset not in DATASET_DEFAULTS:
+        raise ValueError(f"Unknown Image32 dataset: {dataset}")
+    dataset_defaults = DATASET_DEFAULTS[dataset]
 
-    # Study metadata controls artifact layout and run labels, not the training
-    # objective.
+    config = clone_config(get_base_config())
+    # Study metadata is for artifact labels/manifests; dataset/backbone choices
+    # are set explicitly below.
     config.study.name = RUNNER_NAME
-    config.study.description = "CelebA32 grayscale GDFM/UNet prototype recipe."
+    config.study.description = f"{dataset} Image32 GDFM/UNet prototype recipe."
     config.outputs.run_name = str(knobs["run_name"])
 
-    # These are the scientific comparison knobs: what the network predicts and
-    # which target space the loss supervises.
     config.framework.family = "fm"
-    config.framework.prediction_space = str(knobs["pred_space"])
+    config.framework.prediction_space = str(knobs["prediction_space"])
     config.framework.loss_space = str(knobs["loss_space"])
 
-    # Data config selects fixed train/reference subsets for artifact replay.
-    # The runner does not introduce augmentation or raw-dataset streaming.
-    config.data.dataset = "celeba32_grey"
+    # None-valued split/source knobs mean "use the dataset table default";
+    # explicit values let the CLI override without adding per-dataset branches.
+    config.data.dataset = dataset
     config.data.root = str(knobs["root"])
+    config.data.dataset_subdir = str(
+        knobs["dataset_subdir"]
+        if knobs["dataset_subdir"] is not None
+        else dataset_defaults["dataset_subdir"]
+    )
     config.data.download = bool(knobs["download"])
-    config.data.reference_split = str(knobs["reference_split"])
+    config.data.train_split = str(knobs["train_split"])
+    config.data.reference_split = str(
+        knobs["reference_split"]
+        if knobs["reference_split"] is not None
+        else dataset_defaults["reference_split"]
+    )
+    config.data.allow_same_source_reference = bool(
+        knobs["allow_same_source_reference"]
+        if knobs["allow_same_source_reference"] is not None
+        else dataset_defaults["allow_same_source_reference"]
+    )
     config.data.n_train = int(knobs["n_train"])
     config.data.n_eval = int(knobs["n_eval"])
-    config.data.image_size = 32
-    config.data.image_channels = 1
+    config.data.image_size = int(knobs["image_size"])
+    config.data.image_channels = int(knobs["image_channels"])
+    config.data.resize_size = int(knobs["resize_size"])
     config.data.flatten = False
-    config.data.data_dim = 32 * 32
+    config.data.data_dim = (
+        int(knobs["image_channels"])
+        * int(knobs["image_size"])
+        * int(knobs["image_size"])
+    )
+    config.data.balance_train_classes = bool(knobs["balance_train_classes"])
+    config.data.balance_reference_classes = bool(knobs["balance_reference_classes"])
 
-    # GDFM reads these fields to build the UNet backbone. Parameterization logic
-    # lives in `GDFM`, not in the network itself.
+    # Generic image datasets currently share the UNet adapter. Dataset
+    # differences stay in data config, not in model construction.
     config.network.arch = "unet"
     config.network.base_channels = int(knobs["base_channels"])
     config.network.channel_mult = tuple(knobs["channel_mult"])
@@ -112,15 +180,20 @@ def build_config(knobs):
     config.training.ckpt_every = int(knobs["ckpt_every"])
     config.training.log_every = max(1, min(500, int(knobs["ckpt_every"])))
     batch_cap = resolve_batch_cap(knobs)
-    # `batch_cap` is the public B-cap; `batch_size` is a compatibility mirror.
+    # The canonical trainer still reads the mirror while the runner CLI exposes
+    # only the public B-cap.
     config.training.batch_cap = batch_cap
     config.training.batch_size = batch_cap
     config.training.optimizer = "adam"
 
-    # Evaluation keeps sample count and pairwise-distance memory use explicit.
+    # Keep evaluation memory controls visible because image pairwise metrics can
+    # become expensive quickly.
     config.evaluation.n_samples = int(knobs["eval_samples"])
     config.evaluation.batch_size = batch_cap
     config.evaluation.sample_panel_count = min(8, int(knobs["eval_samples"]))
+    config.evaluation.loss_eval_times = tuple(
+        float(item) for item in knobs["loss_eval_times"]
+    )
     config.evaluation.chunk_size = max(
         128,
         int(knobs["eval_samples"]),
@@ -142,7 +215,7 @@ def build_config(knobs):
 
 
 def build_data(config):
-    """Materialize the canonical CelebA32 train/reference bundle."""
+    """Materialize the canonical Image32 train/reference bundle."""
     return build_data_bundle(config)
 
 
@@ -154,12 +227,10 @@ def build_model(config, device):
 def run_one_update(model, train_tensor, config, device):
     """Run one visible optimizer update against the first mini-batch."""
     model.train()
-    # This smoke update is deterministic and intentionally small. Full training
-    # uses the canonical DataLoader/B-cap loop through `train_run`.
+    # This diagnostic is deterministic; full training uses canonical sampling.
     batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
     batch = train_tensor[:batch_size].to(device)
     torch.manual_seed(int(config.training.seed))
-    # Explicit eps/t makes the one-update diagnostic comparable across runs.
     eps = torch.randn_like(batch)
     t = torch.linspace(
         float(config.schedule.t_min),
@@ -190,152 +261,115 @@ def run_one_update(model, train_tensor, config, device):
 
 
 def inspect_metrics(config, data_bundle, model=None, device="cpu"):
-    """Compute a tiny held-out-reference memory check against training data."""
-    del model, device
-    # Before launching a full job, check whether the selected reference subset
-    # already looks suspiciously close to train.
+    """Compute held-out memory and optional fixed/random-t loss diagnostics."""
     train = data_bundle["train"].cpu()
     reference = data_bundle["reference"].cpu()
-    count = min(int(config.evaluation.n_samples), reference.shape[0])
-    metrics = compute_memorization_metrics(
-        reference[:count],
-        train,
-        chunk_size=int(config.evaluation.chunk_size),
-        config=config,
+    result = {
+        "data": _summarize_bundle(data_bundle),
+        "reference_memory": collect_reference_memory(
+            reference,
+            train,
+            chunk_size=int(config.evaluation.chunk_size),
+            config=config,
+        ),
+    }
+    if model is not None:
+        result["loss_eval"] = collect_loss_eval_record(
+            0,
+            model,
+            train,
+            config,
+            device,
+            fixed_times=tuple(config.evaluation.loss_eval_times),
+        )
+    return result
+
+
+def run_full_job(config, out_dir, device, evaluate=True):
+    """Run canonical training, then Image32 checkpoint metrics if requested."""
+    # Training remains canonical; empirical metrics live beside this runner.
+    run_dir = train_run(config, Path(out_dir), device=device)
+    evaluation = (
+        evaluate_image32_run(
+            run_dir,
+            device=device,
+            fixed_times=tuple(config.evaluation.loss_eval_times),
+        )
+        if evaluate
+        else {"checkpoint_metrics": [], "loss_eval": []}
     )
     return {
-        "data": _summarize_bundle(data_bundle),
-        "reference_memory": metrics,
-    }
-
-
-def run_full_job(config, study_dir, device, evaluate=True):
-    """Run canonical training, then canonical checkpoint evaluation if requested."""
-    # From here onward this prototype delegates to `src/`, so saved tensors,
-    # checkpoints, status files, and metric JSONs follow the canonical contract.
-    run_dir = train_run(config, Path(study_dir), device=device)
-    metrics = evaluate_run(run_dir, device=device) if evaluate else []
-    return {
         "run_dir": str(run_dir),
-        "checkpoint_metrics": metrics,
+        "checkpoint_metrics": evaluation["checkpoint_metrics"],
+        "loss_eval": evaluation["loss_eval"],
         "artifacts": artifact_paths(run_dir),
     }
 
 
 def parse_args(argv=None):
-    """Parse the CelebA32 UNet command line."""
+    """Parse the Image32 UNet command line."""
     knobs = default_knobs()
-    parser = argparse.ArgumentParser(description="CelebA32 UNet prototype recipe.")
+    parser = argparse.ArgumentParser(description="Image32 UNet prototype recipe.")
     parser.add_argument("--device", default=knobs["device"])
-    parser.add_argument("--study-dir", default=knobs["study_dir"])
+    parser.add_argument("--out-dir", default=knobs["out_dir"])
     parser.add_argument("--run-name", default=knobs["run_name"])
     parser.add_argument("--seed", type=int, default=knobs["seed"])
-    parser.add_argument("--pred-space", choices=PARAMETERIZATION_CHOICES, default=knobs["pred_space"])
+    parser.add_argument("--dataset", choices=tuple(DATASET_DEFAULTS), default=knobs["dataset"])
+    parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=knobs["prediction_space"])
     parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=knobs["loss_space"])
     parser.add_argument("--n-train", type=int, default=knobs["n_train"])
     parser.add_argument("--n-eval", type=int, default=knobs["n_eval"])
     parser.add_argument("--n-steps", type=int, default=knobs["n_steps"])
     parser.add_argument("--ckpt-every", type=int, default=knobs["ckpt_every"])
     parser.add_argument("--batch-cap", type=int, default=knobs["batch_cap"])
-    parser.add_argument("--batch-size", type=int, default=None, help="Legacy alias for --batch-cap.")
     parser.add_argument("--eval-samples", type=int, default=knobs["eval_samples"])
     parser.add_argument("--sampling-steps", type=int, default=knobs["sampling_steps"])
-    parser.add_argument("--validate-only", action="store_true")
-    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=knobs["wandb"])
-    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=knobs["wandb_mode"])
-    parser.add_argument("--wandb-project", default=knobs["wandb_project"])
-    parser.add_argument("--wandb-entity", default=knobs["wandb_entity"])
-    parser.add_argument("--wandb-notes", default=knobs["wandb_notes"])
     parser.add_argument("--root", default=knobs["root"])
+    parser.add_argument("--dataset-subdir", default=knobs["dataset_subdir"])
     parser.add_argument("--download", action=argparse.BooleanOptionalAction, default=knobs["download"])
+    parser.add_argument("--train-split", default=knobs["train_split"])
     parser.add_argument("--reference-split", default=knobs["reference_split"])
+    parser.add_argument("--allow-same-source-reference", action=argparse.BooleanOptionalAction, default=knobs["allow_same_source_reference"])
+    parser.add_argument("--image-size", type=int, default=knobs["image_size"])
+    parser.add_argument("--image-channels", type=int, choices=(1, 3), default=knobs["image_channels"])
+    parser.add_argument("--resize-size", type=int, default=knobs["resize_size"])
+    parser.add_argument("--balance-train-classes", action=argparse.BooleanOptionalAction, default=knobs["balance_train_classes"])
+    parser.add_argument("--balance-reference-classes", action=argparse.BooleanOptionalAction, default=knobs["balance_reference_classes"])
+    parser.add_argument("--loss-eval-times", default=",".join(str(item) for item in knobs["loss_eval_times"]))
     parser.add_argument("--base-channels", type=int, default=knobs["base_channels"])
     parser.add_argument("--channel-mult", default=",".join(str(item) for item in knobs["channel_mult"]))
     parser.add_argument("--attn-resolutions", default=",".join(str(item) for item in knobs["attn_resolutions"]))
     parser.add_argument("--num-res-blocks", type=int, default=knobs["num_res_blocks"])
     parser.add_argument("--dropout", type=float, default=knobs["dropout"])
     parser.add_argument("--time-emb-dim", type=int, default=knobs["time_emb_dim"])
+    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=knobs["wandb"])
+    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=knobs["wandb_mode"])
+    parser.add_argument("--wandb-project", default=knobs["wandb_project"])
+    parser.add_argument("--wandb-entity", default=knobs["wandb_entity"])
+    parser.add_argument("--wandb-notes", default=knobs["wandb_notes"])
     args = parser.parse_args(argv)
-    if args.batch_size is not None:
-        # Keep old commands working while making `batch_cap` the single internal
-        # source of truth.
-        args.batch_cap = args.batch_size
     args.channel_mult = as_int_tuple(args.channel_mult)
     args.attn_resolutions = as_int_tuple(args.attn_resolutions)
+    args.loss_eval_times = _as_float_tuple(args.loss_eval_times)
     return args
 
 
 def main(argv=None):
-    """CLI entrypoint for the CelebA32 UNet recipe."""
+    """CLI entrypoint for the Image32 UNet recipe."""
     args = parse_args(argv)
     knobs = {**default_knobs(), **vars(args)}
     config = build_config(knobs)
 
-    if args.validate_only:
-        # Cheap path for notebook iteration: prove data/model/loss/metrics wire
-        # up without creating a full attempt directory.
-        data_bundle = build_data(config)
-        model = build_model(config, args.device)
-        update = run_one_update(model, data_bundle["train"], config, args.device)
-        metrics = inspect_metrics(config, data_bundle, model, args.device)
-        print_json(
-            {
-                "config": _config_sections(config),
-                "model": {
-                    "class": "{}.{}".format(
-                        model.__class__.__module__,
-                        model.__class__.__name__,
-                    ),
-                    "backbone_class": "{}.{}".format(
-                        model.net.__class__.__module__,
-                        model.net.__class__.__name__,
-                    ),
-                    "parameters": count_parameters(model),
-                },
-                "one_update": update,
-                "metrics": metrics,
-                "command": command_from_knobs({**knobs, "validate_only": True}),
-            }
-        )
-        return None
-
-    # Full jobs are real canonical attempts; the printed payload points at the
-    # files to inspect next.
-    result = run_full_job(config, args.study_dir, args.device, evaluate=True)
-    print_json(result)
+    result = run_full_job(config, args.out_dir, args.device, evaluate=True)
+    _print_result(result)
     return result["run_dir"]
 
 
-def command_from_knobs(knobs):
-    """Render the CLI command matching a knob dictionary."""
-    knobs = {**default_knobs(), **dict(knobs)}
-    # Render the command notebooks should show the user before optional launch.
-    options = {
-        "device": knobs["device"],
-        "study_dir": knobs["study_dir"],
-        "run_name": knobs["run_name"],
-        "seed": knobs["seed"],
-        "pred_space": knobs["pred_space"],
-        "loss_space": knobs["loss_space"],
-        "n_train": knobs["n_train"],
-        "n_eval": knobs["n_eval"],
-        "n_steps": knobs["n_steps"],
-        "ckpt_every": knobs["ckpt_every"],
-        "batch_cap": resolve_batch_cap(knobs),
-        "eval_samples": knobs["eval_samples"],
-        "sampling_steps": knobs["sampling_steps"],
-        "root": knobs["root"],
-        "reference_split": knobs["reference_split"],
-        "download": bool(knobs["download"]),
-        "base_channels": knobs["base_channels"],
-        "channel_mult": knobs["channel_mult"],
-        "attn_resolutions": knobs["attn_resolutions"],
-        "validate_only": bool(knobs.get("validate_only", False)),
-    }
-    if not bool(knobs["download"]):
-        options.pop("download")
-        options["no_download"] = True
-    return render_command(MODULE_NAME, options)
+def _print_result(result):
+    print("{:<18} {}".format("run_dir:", result["run_dir"]))
+    print("{:<18} {}".format("checkpoints:", result["artifacts"]["checkpoints"]["path"]))
+    print("{:<18} {}".format("metrics:", result["artifacts"]["checkpoint_metrics"]["path"]))
+    print("{:<18} {}".format("loss_eval:", result["artifacts"]["loss_eval"]["path"]))
 
 
 def _config_sections(config):
@@ -378,6 +412,14 @@ def _preview_tensor(tensor, limit=10):
     if tensor is None:
         return None
     return [int(item) for item in tensor.flatten()[:limit].tolist()]
+
+
+def _as_float_tuple(value):
+    if isinstance(value, (tuple, list)):
+        return tuple(float(item) for item in value)
+    if value is None or str(value).strip() == "":
+        return ()
+    return tuple(float(item.strip()) for item in str(value).split(",") if item.strip())
 
 
 if __name__ == "__main__":

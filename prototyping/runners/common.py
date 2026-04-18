@@ -1,14 +1,13 @@
 """
 Tiny utilities shared by the readable prototype runner recipes.
 
-This file deliberately stays small. It sets import paths, formats JSON,
-renders CLI commands, counts parameters, and points at artifact files. Data
-loading, model building, metrics, training, and config choices live directly in
-each runner recipe.
+This file deliberately stays small. It sets import paths, formats JSON, counts
+parameters, resolves batch sizing, and points at artifact files. Data loading,
+model building, metrics, training, and config choices live directly in each
+runner recipe.
 """
 
 import json
-import shlex
 import sys
 from pathlib import Path
 
@@ -60,42 +59,24 @@ def count_parameters(model):
 
 
 def resolve_batch_cap(knobs):
-    """Resolve preferred `batch_cap` with legacy `batch_size` as an alias."""
-    # `batch_cap` is the public knob for N sweeps; `batch_size` is kept only so
-    # older notebooks and command snippets still run while we migrate.
+    """Resolve the public B-cap knob for runner recipes."""
     batch_cap = knobs.get("batch_cap")
     if batch_cap is None:
-        batch_cap = knobs.get("batch_size")
-    if batch_cap is None:
-        raise ValueError("Runner knobs must define batch_cap or batch_size.")
+        raise ValueError("Runner knobs must define batch_cap.")
     batch_cap = int(batch_cap)
     if batch_cap < 1:
         raise ValueError(f"batch_cap must be >= 1, got {batch_cap}")
     return batch_cap
 
 
-def render_command(module_name, options):
-    """Build a copy-pasteable ``python -m`` command from CLI options."""
-    command = ["python", "-m", module_name]
-    for key, value in options.items():
-        if value is None:
-            continue
-        flag = "--{}".format(key.replace("_", "-"))
-        # BooleanOptionalAction-style negatives are stored as `no_download`,
-        # but argparse expects `--no-download` on the command line.
-        if key.startswith("no_") and value is True:
-            command.append("--no-{}".format(key[3:].replace("_", "-")))
-        elif value is True:
-            command.append(flag)
-        elif value is False:
-            continue
-        elif isinstance(value, (tuple, list)):
-            # Tuple knobs stay readable in notebooks and become comma-separated
-            # CLI values when rendered.
-            command.extend([flag, ",".join(str(item) for item in value)])
-        else:
-            command.extend([flag, str(value)])
-    return " ".join(shlex.quote(item) for item in command)
+def resolve_batch_size(n_train, batch_cap):
+    """Return the effective mini-batch size for a selected dataset."""
+    if int(n_train) < 1:
+        raise ValueError("n_train must be at least 1.")
+    batch_cap = int(batch_cap)
+    if batch_cap < 1:
+        raise ValueError(f"batch_cap must be >= 1, got {batch_cap}")
+    return min(int(n_train), batch_cap)
 
 
 def artifact_paths(attempt_dir):
@@ -109,6 +90,7 @@ def artifact_paths(attempt_dir):
         "run_summary": attempt_dir / "artifacts" / "run_summary.json",
         "train_history": attempt_dir / "metrics" / "train_history.json",
         "checkpoint_metrics": attempt_dir / "metrics" / "checkpoint_metrics.json",
+        "loss_eval": attempt_dir / "metrics" / "loss_eval.json",
         "final_samples": attempt_dir / "metrics" / "final_samples.pt",
         "figures": attempt_dir / "figures",
         "checkpoints": attempt_dir / "checkpoints",

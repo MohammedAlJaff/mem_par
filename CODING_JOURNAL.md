@@ -600,3 +600,32 @@ the commit and leaving PR creation as a later step if needed.
 ### Next
 Create the feature branch, commit the selected files, and push it to origin
 with plain `git`.
+
+## 2026-04-18T11:44:30Z - Confirm Batch-Cap Runner Work Landed
+
+### Context
+The previous journal entry ended before the branch/commit/push step was
+recorded. A follow-up repo sanity check was requested before continuing runner
+review work.
+
+### Changed / Observed
+- Confirmed local `main`, `origin/main`, and `origin/HEAD` are all at
+  `2dfc6b5 Add batch-cap training and prototype runners`.
+- Confirmed the batch-cap canonical training and prototype runner work has
+  landed on the remote.
+- Observed remaining scratch files in the local working tree:
+  `.codex`, `ram_test.py`, and `prototyping/runners/tea_debug.log`.
+
+### Commands / Checks
+- `git status --short --branch`
+- `git log --oneline --decorate -6`
+- `git show --stat --oneline --decorate --summary HEAD`
+- `git branch -vv`
+
+### Results
+- The repo is up to date with `origin/main`.
+- The prior "create branch, commit, and push" next step is now stale history.
+
+### Next
+Remove local scratch artifacts that are no longer needed and review
+`prototyping/runners/synthetic_mlp.py`.
