@@ -70,3 +70,5 @@ Short operational guide for agents and contributors working in this repo.
 1. Use `prototyping/` or the archives for context when needed.
 2. Promote stable model or infrastructure code into `src/`.
 3. Keep the safety suite green before trusting the canonical path.
+4. After meaningful work, append or update `CODING_JOURNAL.md` with a UTC ISO
+   timestamp, decisions, commands/checks, results, blockers, and next action.
