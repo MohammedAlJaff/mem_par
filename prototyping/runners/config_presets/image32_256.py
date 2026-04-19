@@ -1,12 +1,12 @@
-"""Image32 UNet preset for 128px runs."""
+"""Image32 UNet preset for 256px runs."""
 
-from prototyping.runners.image32_unet_configs import image32_base
+from prototyping.runners.config_presets import image32_base
 
 
 def get_default_configs():
     config = image32_base.get_default_configs()
     config.model.base_channels = 64
-    config.model.channel_mult = (1, 2, 4, 4, 8)
+    config.model.channel_mult = (1, 2, 4, 4, 8, 8)
     config.model.attn_resolutions = (16,)
     config.model.num_res_blocks = 2
     config.sampling.n_steps = 24

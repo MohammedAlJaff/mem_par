@@ -668,3 +668,45 @@ readable, and add quick cleanup for obsolete scratch files.
 
 ### Next
 - Stage and commit the cleanup/preset migration and push when ready.
+
+## 2026-04-19T03:03:48Z - Finalize Runner Presets and Push
+
+### Context
+Image32 UNet was moved to a cleaner “knob-free” setup using a shared settings
+builder and dedicated preset modules.
+
+### Intent
+Finish the current runner refactor in version control and capture a compact log
+of what moved.
+
+### Changed / Observed
+- Removed the old knobs/config modules:
+  - `prototyping/runners/default_knobs/`
+  - `prototyping/runners/image32_unet_configs/`
+- Removed legacy `prototyping/runners/image32_unet_config.py`.
+- Added `prototyping/runners/image32_unet_config_builder.py` for explicit settings
+  merge + config construction.
+- Added `prototyping/runners/config_presets/` with:
+  - `image32_base.py`
+  - `image32_32.py`
+  - `image32_128.py`
+  - `image32_256.py`
+  - `__init__.py` exposing `list_presets(...)` and `get_default_configs(...)`.
+- Updated `prototyping/runners/image32_unet.py` imports to use the new presets
+  and builder APIs.
+
+### Commands / Checks
+- `git status --short --branch`
+- `python -m py_compile prototyping/runners/image32_unet.py prototyping/runners/image32_unet_config_builder.py prototyping/runners/config_presets/__init__.py prototyping/runners/config_presets/image32_*.py`
+- `rg "default_knobs.image32_unet|image32_unet_config|image32_unet_configs|config_presets|list_presets" -n prototyping/runners src tests`
+
+### Results
+- Runner/config refactor is now represented as a coherent preset+builder structure.
+- No remaining in-repo imports reference the removed knob/config modules.
+
+### Blockers
+- Multiple unrelated modified/untracked files remain in the worktree; this journal
+  entry does not include them in the same commit.
+
+### Next
+- Commit only the Image32 preset-builder migration files and push.

@@ -2,9 +2,9 @@
 
 from typing import Callable, Dict
 
-from prototyping.runners.image32_unet_configs import image32_128
-from prototyping.runners.image32_unet_configs import image32_256
-from prototyping.runners.image32_unet_configs import image32_32
+from prototyping.runners.config_presets import image32_128
+from prototyping.runners.config_presets import image32_256
+from prototyping.runners.config_presets import image32_32
 
 DEFAULT_PRESET = "image32_32"
 

@@ -15,17 +15,17 @@ from prototyping.runners.common import (
     artifact_paths,
     as_int_tuple,
 )
-from prototyping.runners.image32_unet_configs import list_presets
+from prototyping.runners.config_presets import list_presets
 from prototyping.runners.metrics_image32 import (
     collect_loss_eval_record,
     collect_reference_memory,
     evaluate_image32_run,
 )
-from prototyping.runners.default_knobs.image32_unet import (
-    DATASET_KNOB_RECIPES as DATASET_DEFAULTS,
-    default_knobs as _default_knobs,
+from prototyping.runners.image32_unet_config_builder import (
+    build_config as _build_config,
+    get_default_settings as _default_settings,
+    list_datasets as _list_datasets,
 )
-from prototyping.runners.image32_unet_config import build_config as _build_config
 
 import torch
 from gdfm import GDFM
@@ -33,14 +33,15 @@ from mp_config import config_to_dict
 from mp_data import build_data_bundle
 from mp_training import train_run
 
-def default_knobs():
-    """Return the editable knobs for this Image32 recipe."""
-    return _default_knobs()
+
+def default_settings():
+    """Return the canonical Image32 default settings for this recipe."""
+    return _default_settings()
 
 
-def build_config(knobs):
+def build_config(settings):
     """Build the canonical config for one Image32 UNet run."""
-    return _build_config(knobs)
+    return _build_config(settings)
 
 
 def build_data(config):
@@ -161,60 +162,62 @@ def run_full_job(config, out_dir, device, evaluate=True):
 
 def parse_args(argv=None):
     """Parse the Image32 UNet command line."""
-    knobs = default_knobs()
+    settings = default_settings()
     parser = argparse.ArgumentParser(description="Image32 UNet prototype recipe.")
-    parser.add_argument("--device", default=knobs["device"])
-    parser.add_argument("--out-dir", default=knobs["out_dir"])
-    parser.add_argument("--run-name", default=knobs["run_name"])
-    parser.add_argument("--seed", type=int, default=knobs["seed"])
-    parser.add_argument("--dataset", choices=tuple(DATASET_DEFAULTS), default=knobs["dataset"])
+    parser.add_argument("--device", default=settings["device"])
+    parser.add_argument("--out-dir", default=settings["out_dir"])
+    parser.add_argument("--run-name", default=settings["run_name"])
+    parser.add_argument("--seed", type=int, default=settings["seed"])
+    parser.add_argument("--dataset", choices=tuple(_list_datasets()), default=settings["dataset"])
     parser.add_argument(
         "--config-preset",
         choices=tuple(list_presets()),
-        default=knobs.get("config_preset"),
+        default=settings.get("config_preset"),
         help="Optional explicit UNet preset (overrides dataset default).",
     )
-    parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=knobs["prediction_space"])
-    parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=knobs["loss_space"])
-    parser.add_argument("--n-train", type=int, default=knobs["n_train"])
-    parser.add_argument("--n-eval", type=int, default=knobs["n_eval"])
-    parser.add_argument("--n-steps", type=int, default=knobs["n_steps"])
-    parser.add_argument("--ckpt-every", type=int, default=knobs["ckpt_every"])
-    parser.add_argument("--batch-cap", type=int, default=knobs["batch_cap"])
-    parser.add_argument("--eval-samples", type=int, default=knobs["eval_samples"])
-    parser.add_argument("--sampling-steps", type=int, default=knobs["sampling_steps"])
-    parser.add_argument("--root", default=knobs["root"])
-    parser.add_argument("--dataset-subdir", default=knobs["dataset_subdir"])
-    parser.add_argument("--download", action=argparse.BooleanOptionalAction, default=knobs["download"])
-    parser.add_argument("--train-split", default=knobs["train_split"])
-    parser.add_argument("--reference-split", default=knobs["reference_split"])
-    parser.add_argument("--allow-same-source-reference", action=argparse.BooleanOptionalAction, default=knobs["allow_same_source_reference"])
-    parser.add_argument("--image-size", type=int, default=knobs["image_size"])
-    parser.add_argument("--image-channels", type=int, choices=(1, 3), default=knobs["image_channels"])
-    parser.add_argument("--resize-size", type=int, default=knobs["resize_size"])
-    parser.add_argument("--balance-train-classes", action=argparse.BooleanOptionalAction, default=knobs["balance_train_classes"])
-    parser.add_argument("--balance-reference-classes", action=argparse.BooleanOptionalAction, default=knobs["balance_reference_classes"])
-    parser.add_argument("--loss-eval-times", default=",".join(str(item) for item in knobs["loss_eval_times"]))
-    parser.add_argument("--base-channels", type=int, default=knobs["base_channels"])
-    parser.add_argument("--channel-mult", default=",".join(str(item) for item in knobs["channel_mult"]))
-    parser.add_argument("--attn-resolutions", default=",".join(str(item) for item in knobs["attn_resolutions"]))
-    parser.add_argument("--num-res-blocks", type=int, default=knobs["num_res_blocks"])
-    parser.add_argument("--dropout", type=float, default=knobs["dropout"])
-    parser.add_argument("--time-emb-dim", type=int, default=knobs["time_emb_dim"])
-    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=knobs["wandb"])
-    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=knobs["wandb_mode"])
-    parser.add_argument("--wandb-project", default=knobs["wandb_project"])
-    parser.add_argument("--wandb-entity", default=knobs["wandb_entity"])
-    parser.add_argument("--wandb-notes", default=knobs["wandb_notes"])
-    parser.add_argument("--wandb-name", default=knobs["wandb_name"])
-    parser.add_argument("--wandb-group", default=knobs["wandb_group"])
-    parser.add_argument("--wandb-tags", default=knobs["wandb_tags"])
+    parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=settings["prediction_space"])
+    parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=settings["loss_space"])
+    parser.add_argument("--n-train", type=int, default=settings["n_train"])
+    parser.add_argument("--n-eval", type=int, default=settings["n_eval"])
+    parser.add_argument("--n-steps", type=int, default=settings["n_steps"])
+    parser.add_argument("--ckpt-every", type=int, default=settings["ckpt_every"])
+    parser.add_argument("--batch-cap", type=int, default=settings["batch_cap"])
+    parser.add_argument("--eval-samples", type=int, default=settings["eval_samples"])
+    parser.add_argument("--sampling-steps", type=int, default=settings["sampling_steps"])
+    parser.add_argument("--root", default=settings["root"])
+    parser.add_argument("--dataset-subdir", default=settings["dataset_subdir"])
+    parser.add_argument("--download", action=argparse.BooleanOptionalAction, default=settings["download"])
+    parser.add_argument("--train-split", default=settings["train_split"])
+    parser.add_argument("--reference-split", default=settings["reference_split"])
+    parser.add_argument("--allow-same-source-reference", action=argparse.BooleanOptionalAction, default=settings["allow_same_source_reference"])
+    parser.add_argument("--image-size", type=int, default=settings["image_size"])
+    parser.add_argument("--image-channels", type=int, choices=(1, 3), default=settings["image_channels"])
+    parser.add_argument("--resize-size", type=int, default=settings["resize_size"])
+    parser.add_argument("--balance-train-classes", action=argparse.BooleanOptionalAction, default=settings["balance_train_classes"])
+    parser.add_argument("--balance-reference-classes", action=argparse.BooleanOptionalAction, default=settings["balance_reference_classes"])
+    parser.add_argument("--loss-eval-times", default=",".join(str(item) for item in settings["loss_eval_times"]))
+    parser.add_argument("--base-channels", type=int, default=settings["base_channels"])
+    parser.add_argument("--channel-mult", default=",".join(str(item) for item in settings["channel_mult"]))
+    parser.add_argument("--attn-resolutions", default=",".join(str(item) for item in settings["attn_resolutions"]))
+    parser.add_argument("--num-res-blocks", type=int, default=settings["num_res_blocks"])
+    parser.add_argument("--dropout", type=float, default=settings["dropout"])
+    parser.add_argument("--time-emb-dim", type=int, default=settings["time_emb_dim"])
+    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=settings["wandb"])
+    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=settings["wandb_mode"])
+    parser.add_argument("--wandb-project", default=settings["wandb_project"])
+    parser.add_argument("--wandb-entity", default=settings["wandb_entity"])
+    parser.add_argument("--wandb-notes", default=settings["wandb_notes"])
+    parser.add_argument("--wandb-name", default=settings["wandb_name"])
+    parser.add_argument("--wandb-group", default=settings["wandb_group"])
+    parser.add_argument("--wandb-tags", default=settings["wandb_tags"])
     parser.add_argument(
-        "--wandb-strict", action=argparse.BooleanOptionalAction, default=knobs["wandb_strict"]
+        "--wandb-strict",
+        action=argparse.BooleanOptionalAction,
+        default=settings["wandb_strict"],
     )
-    parser.add_argument("--sanity-updates", type=int, default=knobs["sanity_updates"])
+    parser.add_argument("--sanity-updates", type=int, default=settings["sanity_updates"])
     parser.add_argument(
-        "--sanity-only", action=argparse.BooleanOptionalAction, default=knobs["sanity_only"]
+        "--sanity-only", action=argparse.BooleanOptionalAction, default=settings["sanity_only"]
     )
     args = parser.parse_args(argv)
     args.channel_mult = as_int_tuple(args.channel_mult)
@@ -226,8 +229,8 @@ def parse_args(argv=None):
 def main(argv=None):
     """CLI entrypoint for the Image32 UNet recipe."""
     args = parse_args(argv)
-    knobs = {**default_knobs(), **vars(args)}
-    config = build_config(knobs)
+    settings = {**default_settings(), **vars(args)}
+    config = build_config(settings)
 
     if args.sanity_updates is None:
         args.sanity_updates = 0
