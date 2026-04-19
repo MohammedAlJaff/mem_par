@@ -1,0 +1,67 @@
+"""Base Image32 UNet config defaults (shared across presets)."""
+
+from ml_collections import ConfigDict
+
+
+def get_default_configs():
+    """Return shared Image32 UNet defaults as an `ml_collections.ConfigDict`."""
+    config = ConfigDict()
+
+    # Study + framework.
+    config.study = ConfigDict()
+    config.study.name = "image32_unet"
+    config.study.description = "Image32 UNet prototype recipe."
+
+    config.framework = ConfigDict()
+    config.framework.family = "fm"
+    config.framework.prediction_space = "v"
+    config.framework.loss_space = "v"
+
+    # Model defaults.
+    config.model = ConfigDict()
+    config.model.arch = "unet"
+    config.model.base_channels = 64
+    config.model.channel_mult = (1, 2, 4, 4)
+    config.model.attn_resolutions = (8,)
+    config.model.num_res_blocks = 2
+    config.model.dropout = 0.0
+    config.model.time_emb_dim = None
+
+    # Training defaults.
+    config.training = ConfigDict()
+    config.training.seed = 0
+    config.training.n_steps = 30000
+    config.training.ckpt_every = 2000
+    config.training.log_every = 200
+    config.training.optimizer = "adam"
+    config.training.lr = 1.0e-3
+    config.training.weight_decay = 0.0
+
+    # Evaluation / sampling defaults.
+    config.evaluation = ConfigDict()
+    config.evaluation.n_samples = 64
+    config.evaluation.sample_panel_count = 8
+    config.evaluation.chunk_size = 128
+    config.evaluation.loss_eval_times = (0.1, 0.3, 0.5, 0.7, 0.9)
+
+    config.sampling = ConfigDict()
+    config.sampling.method = "heun"
+    config.sampling.n_steps = 24
+
+    # Tracking defaults.
+    config.tracking = ConfigDict()
+    config.tracking.wandb = ConfigDict()
+    config.tracking.wandb.enabled = True
+    config.tracking.wandb.mode = "online"
+    config.tracking.wandb.project = "mem_par"
+    config.tracking.wandb.entity = ""
+    config.tracking.wandb.notes = ""
+    config.tracking.wandb.name = ""
+    config.tracking.wandb.group = ""
+    config.tracking.wandb.tags = []
+    config.tracking.wandb.strict = False
+
+    config.tracking.console = ConfigDict()
+    config.tracking.console.summary_every_seconds = 60.0
+
+    return config

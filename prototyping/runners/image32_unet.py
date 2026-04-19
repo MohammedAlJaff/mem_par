@@ -14,204 +14,33 @@ from prototyping.runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
     as_int_tuple,
-    resolve_batch_cap,
 )
+from prototyping.runners.image32_unet_configs import list_presets
 from prototyping.runners.metrics_image32 import (
-    DEFAULT_FIXED_TIMES,
     collect_loss_eval_record,
     collect_reference_memory,
     evaluate_image32_run,
 )
+from prototyping.runners.default_knobs.image32_unet import (
+    DATASET_KNOB_RECIPES as DATASET_DEFAULTS,
+    default_knobs as _default_knobs,
+)
+from prototyping.runners.image32_unet_config import build_config as _build_config
 
 import torch
 from gdfm import GDFM
-from mp_config import clone_config, config_to_dict, get_base_config
+from mp_config import config_to_dict
 from mp_data import build_data_bundle
 from mp_training import train_run
 
-
-RUNNER_NAME = "image32_unet"
-MODULE_NAME = "prototyping.runners.image32_unet"
-DEFAULT_STUDY_DIR = "outputs/prototype_runners/image32_unet"
-
-# Dataset-specific defaults let one Image32 runner cover MNIST, CelebA,
-# flowers, animal faces, and similar 32x32 image checks without branching.
-DATASET_DEFAULTS = {
-    "mnist": {
-        "reference_split": "test",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-    },
-    "celeba32_grey": {
-        "reference_split": "valid",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-    },
-    "flowers102": {
-        "reference_split": "val",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-    },
-    "afhq_v2": {
-        "reference_split": "test",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "afhq_v2",
-    },
-    "ffhq128": {
-        "reference_split": "seeded_partition",
-        "allow_same_source_reference": True,
-        "dataset_subdir": "ffhq/thumbnails128x128",
-    },
-}
-
-
 def default_knobs():
     """Return the editable knobs for this Image32 recipe."""
-    # This is the editable recipe surface shared by notebooks and CLI parsing.
-    # Keep new knobs here first, then thread them into config/rendering below.
-    return {
-        "device": "cpu",
-        "out_dir": DEFAULT_STUDY_DIR,
-        "run_name": RUNNER_NAME,
-        "seed": 0,
-        "dataset": "celeba32_grey",
-        "prediction_space": "v",
-        "loss_space": "v",
-        "n_train": 128,
-        "n_eval": 128,
-        "n_steps": 30000,
-        "ckpt_every": 2000,
-        "batch_cap": 64,
-        "eval_samples": 64,
-        "sampling_steps": 24,
-        "root": "data",
-        "dataset_subdir": None,
-        "download": False,
-        "train_split": "train",
-        "reference_split": None,
-        "allow_same_source_reference": None,
-        "image_size": 32,
-        "image_channels": 1,
-        "resize_size": 0,
-        "balance_train_classes": True,
-        "balance_reference_classes": True,
-        "loss_eval_times": DEFAULT_FIXED_TIMES,
-        "base_channels": 64,
-        "channel_mult": (1, 2, 4, 4),
-        "attn_resolutions": (8,),
-        "num_res_blocks": 2,
-        "dropout": 0.0,
-        "time_emb_dim": None,
-        "wandb": False,
-        "wandb_mode": "offline",
-        "wandb_project": "mem_par",
-        "wandb_entity": "",
-        "wandb_notes": "",
-    }
+    return _default_knobs()
 
 
 def build_config(knobs):
     """Build the canonical config for one Image32 UNet run."""
-    # Merge once so every later assignment reads from one complete dictionary.
-    knobs = {**default_knobs(), **dict(knobs)}
-    dataset = str(knobs["dataset"])
-    if dataset not in DATASET_DEFAULTS:
-        raise ValueError(f"Unknown Image32 dataset: {dataset}")
-    dataset_defaults = DATASET_DEFAULTS[dataset]
-
-    config = clone_config(get_base_config())
-    # Study metadata is for artifact labels/manifests; dataset/backbone choices
-    # are set explicitly below.
-    config.study.name = RUNNER_NAME
-    config.study.description = f"{dataset} Image32 GDFM/UNet prototype recipe."
-    config.outputs.run_name = str(knobs["run_name"])
-
-    config.framework.family = "fm"
-    config.framework.prediction_space = str(knobs["prediction_space"])
-    config.framework.loss_space = str(knobs["loss_space"])
-
-    # None-valued split/source knobs mean "use the dataset table default";
-    # explicit values let the CLI override without adding per-dataset branches.
-    config.data.dataset = dataset
-    config.data.root = str(knobs["root"])
-    config.data.dataset_subdir = str(
-        knobs["dataset_subdir"]
-        if knobs["dataset_subdir"] is not None
-        else dataset_defaults["dataset_subdir"]
-    )
-    config.data.download = bool(knobs["download"])
-    config.data.train_split = str(knobs["train_split"])
-    config.data.reference_split = str(
-        knobs["reference_split"]
-        if knobs["reference_split"] is not None
-        else dataset_defaults["reference_split"]
-    )
-    config.data.allow_same_source_reference = bool(
-        knobs["allow_same_source_reference"]
-        if knobs["allow_same_source_reference"] is not None
-        else dataset_defaults["allow_same_source_reference"]
-    )
-    config.data.n_train = int(knobs["n_train"])
-    config.data.n_eval = int(knobs["n_eval"])
-    config.data.image_size = int(knobs["image_size"])
-    config.data.image_channels = int(knobs["image_channels"])
-    config.data.resize_size = int(knobs["resize_size"])
-    config.data.flatten = False
-    config.data.data_dim = (
-        int(knobs["image_channels"])
-        * int(knobs["image_size"])
-        * int(knobs["image_size"])
-    )
-    config.data.balance_train_classes = bool(knobs["balance_train_classes"])
-    config.data.balance_reference_classes = bool(knobs["balance_reference_classes"])
-
-    # Generic image datasets currently share the UNet adapter. Dataset
-    # differences stay in data config, not in model construction.
-    config.network.arch = "unet"
-    config.network.base_channels = int(knobs["base_channels"])
-    config.network.channel_mult = tuple(knobs["channel_mult"])
-    config.network.attn_resolutions = tuple(knobs["attn_resolutions"])
-    config.network.num_res_blocks = int(knobs["num_res_blocks"])
-    config.network.dropout = float(knobs["dropout"])
-    config.network.time_emb_dim = knobs["time_emb_dim"]
-
-    config.training.seed = int(knobs["seed"])
-    config.training.n_steps = int(knobs["n_steps"])
-    config.training.ckpt_every = int(knobs["ckpt_every"])
-    config.training.log_every = max(1, min(500, int(knobs["ckpt_every"])))
-    batch_cap = resolve_batch_cap(knobs)
-    # The canonical trainer still reads the mirror while the runner CLI exposes
-    # only the public B-cap.
-    config.training.batch_cap = batch_cap
-    config.training.batch_size = batch_cap
-    config.training.optimizer = "adam"
-
-    # Keep evaluation memory controls visible because image pairwise metrics can
-    # become expensive quickly.
-    config.evaluation.n_samples = int(knobs["eval_samples"])
-    config.evaluation.batch_size = batch_cap
-    config.evaluation.sample_panel_count = min(8, int(knobs["eval_samples"]))
-    config.evaluation.loss_eval_times = tuple(
-        float(item) for item in knobs["loss_eval_times"]
-    )
-    config.evaluation.chunk_size = max(
-        128,
-        int(knobs["eval_samples"]),
-        int(knobs["n_eval"]),
-        int(knobs["n_train"]),
-    )
-
-    config.sampling.method = "heun"
-    config.sampling.n_steps = int(knobs["sampling_steps"])
-
-    config.tracking.console.summary_every_steps = int(config.training.log_every)
-    config.tracking.console.summary_every_seconds = 60.0
-    config.tracking.wandb.enabled = bool(knobs["wandb"])
-    config.tracking.wandb.mode = str(knobs["wandb_mode"])
-    config.tracking.wandb.project = str(knobs["wandb_project"])
-    config.tracking.wandb.entity = str(knobs["wandb_entity"])
-    config.tracking.wandb.notes = str(knobs["wandb_notes"])
-    return config
+    return _build_config(knobs)
 
 
 def build_data(config):
@@ -230,34 +59,58 @@ def run_one_update(model, train_tensor, config, device):
     # This diagnostic is deterministic; full training uses canonical sampling.
     batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
     batch = train_tensor[:batch_size].to(device)
-    torch.manual_seed(int(config.training.seed))
-    eps = torch.randn_like(batch)
-    t = torch.linspace(
-        float(config.schedule.t_min),
-        float(config.schedule.t_max),
-        batch_size,
-        device=batch.device,
-    )
+    return run_sanity_updates(model, train_tensor, config, device, n_updates=1)[-1]
 
+
+def run_sanity_updates(model, train_tensor, config, device, n_updates=1):
+    """Run a small number of optimizer steps for command-line sanity checks."""
+    if n_updates is None:
+        n_updates = 1
+    if int(n_updates) < 1:
+        raise ValueError(f"n_updates must be >= 1, got {n_updates}")
+
+    model.train()
+    batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
+    if batch_size < 1:
+        raise ValueError("Sanity updates require at least one training sample.")
+
+    tensor = train_tensor.to(device)
     optimizer = torch.optim.Adam(
-        model.parameterfs(),
+        model.parameters(),
         lr=float(config.training.lr),
         weight_decay=float(config.training.weight_decay),
     )
-    optimizer.zero_grad(set_to_none=True)
-    loss = model.compute_loss(batch, eps=eps, t=t)
-    loss.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0e9)
-    optimizer.step()
+    results = []
+    base_seed = int(config.training.seed)
+    for step in range(int(n_updates)):
+        torch.manual_seed(base_seed + step)
+        batch = tensor[:batch_size]
+        eps = torch.randn_like(batch)
+        t = torch.linspace(
+            float(config.schedule.t_min),
+            float(config.schedule.t_max),
+            batch_size,
+            device=batch.device,
+        )
 
-    return {
-        "batch_shape": list(batch.shape),
-        "loss": float(loss.detach().cpu().item()),
-        "grad_norm": float(grad_norm.detach().cpu().item()),
-        "optimizer": "adam",
-        "prediction_space": str(config.framework.prediction_space),
-        "loss_space": str(config.framework.loss_space),
-    }
+        optimizer.zero_grad(set_to_none=True)
+        loss = model.compute_loss(batch, eps=eps, t=t)
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0e9)
+        optimizer.step()
+
+        results.append(
+            {
+                "step": step + 1,
+                "batch_shape": list(batch.shape),
+                "loss": float(loss.detach().cpu().item()),
+                "grad_norm": float(grad_norm.detach().cpu().item()),
+                "optimizer": "adam",
+                "prediction_space": str(config.framework.prediction_space),
+                "loss_space": str(config.framework.loss_space),
+            }
+        )
+    return results
 
 
 def inspect_metrics(config, data_bundle, model=None, device="cpu"):
@@ -315,6 +168,12 @@ def parse_args(argv=None):
     parser.add_argument("--run-name", default=knobs["run_name"])
     parser.add_argument("--seed", type=int, default=knobs["seed"])
     parser.add_argument("--dataset", choices=tuple(DATASET_DEFAULTS), default=knobs["dataset"])
+    parser.add_argument(
+        "--config-preset",
+        choices=tuple(list_presets()),
+        default=knobs.get("config_preset"),
+        help="Optional explicit UNet preset (overrides dataset default).",
+    )
     parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=knobs["prediction_space"])
     parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=knobs["loss_space"])
     parser.add_argument("--n-train", type=int, default=knobs["n_train"])
@@ -347,6 +206,16 @@ def parse_args(argv=None):
     parser.add_argument("--wandb-project", default=knobs["wandb_project"])
     parser.add_argument("--wandb-entity", default=knobs["wandb_entity"])
     parser.add_argument("--wandb-notes", default=knobs["wandb_notes"])
+    parser.add_argument("--wandb-name", default=knobs["wandb_name"])
+    parser.add_argument("--wandb-group", default=knobs["wandb_group"])
+    parser.add_argument("--wandb-tags", default=knobs["wandb_tags"])
+    parser.add_argument(
+        "--wandb-strict", action=argparse.BooleanOptionalAction, default=knobs["wandb_strict"]
+    )
+    parser.add_argument("--sanity-updates", type=int, default=knobs["sanity_updates"])
+    parser.add_argument(
+        "--sanity-only", action=argparse.BooleanOptionalAction, default=knobs["sanity_only"]
+    )
     args = parser.parse_args(argv)
     args.channel_mult = as_int_tuple(args.channel_mult)
     args.attn_resolutions = as_int_tuple(args.attn_resolutions)
@@ -360,6 +229,28 @@ def main(argv=None):
     knobs = {**default_knobs(), **vars(args)}
     config = build_config(knobs)
 
+    if args.sanity_updates is None:
+        args.sanity_updates = 0
+    if args.sanity_only and args.sanity_updates < 1:
+        args.sanity_updates = 1
+    if args.sanity_updates < 0:
+        raise ValueError(f"sanity-updates must be >= 0, got {args.sanity_updates}")
+
+    if args.sanity_updates > 0:
+        data_bundle = build_data(config)
+        model = build_model(config, args.device)
+        updates = run_sanity_updates(model, data_bundle["train"], config, args.device, args.sanity_updates)
+        metrics = inspect_metrics(config, data_bundle, model, args.device)
+        result = {
+            "sanity_updates": args.sanity_updates,
+            "update_records": updates,
+            "metrics": metrics,
+            "data": _summarize_bundle(data_bundle),
+        }
+        _print_sanity_result(result)
+        if args.sanity_only:
+            return result
+
     result = run_full_job(config, args.out_dir, args.device, evaluate=True)
     _print_result(result)
     return result["run_dir"]
@@ -370,6 +261,20 @@ def _print_result(result):
     print("{:<18} {}".format("checkpoints:", result["artifacts"]["checkpoints"]["path"]))
     print("{:<18} {}".format("metrics:", result["artifacts"]["checkpoint_metrics"]["path"]))
     print("{:<18} {}".format("loss_eval:", result["artifacts"]["loss_eval"]["path"]))
+
+
+def _print_sanity_result(result):
+    print("{:<18} {}".format("sanity_updates:", result["sanity_updates"]))
+    print("{:<18} {}".format("train_shape:", result["data"]["train_shape"]))
+    for update in result["update_records"]:
+        print(
+            "{:<18} step={} loss={:.6f} grad={:.6f}".format(
+                "update:",
+                update["step"],
+                update["loss"],
+                update["grad_norm"],
+            )
+        )
 
 
 def _config_sections(config):

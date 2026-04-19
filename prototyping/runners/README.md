@@ -13,7 +13,7 @@ training, metrics, and artifacts.
 | Name | Dataset | Backbone | Style | Module | Notebook |
 | --- | --- | --- | --- | --- | --- |
 | `synthetic_mlp` | `gmm_subspace` | `mlp` | direct script | `prototyping.runners.synthetic_mlp` | `notebooks/synthetic_mlp.ipynb` |
-| `image32_unet` | `mnist`, `celeba32_grey`, `flowers102`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `prototyping.runners.image32_unet` | `notebooks/image32_unet.ipynb` |
+| `image32_unet` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `prototyping.runners.image32_unet` | `notebooks/image32_unet.ipynb` |
 
 ## Command Examples
 
@@ -51,6 +51,15 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --n-steps 200 \
   --ckpt-every 50 \
   --no-download
+
+# Run a lightweight sanity check before deciding on a full job.
+PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
+  --dataset flowers102_128 \
+  --sanity-updates 2 \
+  --sanity-only \
+  --batch-cap 4 \
+  --n-train 8 \
+  --n-eval 8
 ```
 
 The public runner CLI uses `--prediction-space`, `--loss-space`,

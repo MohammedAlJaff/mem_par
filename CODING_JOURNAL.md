@@ -629,3 +629,42 @@ review work.
 ### Next
 Remove local scratch artifacts that are no longer needed and review
 `prototyping/runners/synthetic_mlp.py`.
+
+## 2026-04-19T02:50:59Z - Consolidate Image32 Config Presets
+
+### Context
+Image32 UNet runner work was split into separate knob/config presets with
+lightweight CLI exposure for sanity testing.
+
+### Intent
+Move Image32 UNet config defaults out of the runner body, keep the runner
+readable, and add quick cleanup for obsolete scratch files.
+
+### Changed / Observed
+- Added `prototyping/runners/default_knobs/image32_unet.py` for shared dataset
+  knob recipes and defaults.
+- Added `prototyping/runners/image32_unet_config.py` as the canonical config
+  builder for image32 runs.
+- Added `prototyping/runners/image32_unet_configs/` with shared presets:
+  `image32_base.py`, `image32_32.py`, `image32_128.py`, `image32_256.py`.
+- Updated `prototyping/runners/image32_unet.py` to import shared knobs/config,
+  add `--config-preset`, and use explicit sanity update flags.
+- Removed untracked scratch artifacts:
+  `prototyping/runners/Untitled Folder`, `.ipynb_checkpoints`, runner `__pycache__`
+  directories, and `prototyping/runners/notebooks/image_metrics_scaffold.ipynb`.
+
+### Commands / Checks
+- `python -m py_compile prototyping/runners/image32_unet.py prototyping/runners/image32_unet_config.py prototyping/runners/image32_unet_configs/__init__.py prototyping/runners/image32_unet_configs/*.py prototyping/runners/default_knobs/image32_unet.py`
+- `git status --short`
+- `rg`/import sweep across `prototyping` and `src` to confirm moved references.
+
+### Results
+- New Image32 config structure is in place and syntactically valid.
+- No active references to removed in-runner dataset/config constants remain.
+
+### Blockers
+- Full runtime testing requires the project environment (`mem_param_env`), not
+  active in this shell.
+
+### Next
+- Stage and commit the cleanup/preset migration and push when ready.
