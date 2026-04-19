@@ -85,7 +85,7 @@ PYTHONPATH=src python -m experiments.mnist.run \
   --device cuda \
   --wandb \
   --wandb-mode offline \
-  --wandb-project mem_par
+  --wandb-project memparam_mnist_tests
 ```
 
 When W&B is enabled, one W&B run corresponds to one attempt. The run is grouped

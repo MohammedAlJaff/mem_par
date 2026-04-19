@@ -1,6 +1,15 @@
 """Base Image32 UNet config defaults (shared across presets)."""
 
+import os
 from ml_collections import ConfigDict
+
+
+def _default_wandb_project(fallback):
+    return os.getenv("WANDB_PROJECT", "").strip() or fallback
+
+
+def _default_wandb_entity(fallback):
+    return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 
 def get_default_configs():
@@ -53,8 +62,8 @@ def get_default_configs():
     config.tracking.wandb = ConfigDict()
     config.tracking.wandb.enabled = True
     config.tracking.wandb.mode = "online"
-    config.tracking.wandb.project = "mem_par"
-    config.tracking.wandb.entity = ""
+    config.tracking.wandb.project = _default_wandb_project("memparam_mnist_tests")
+    config.tracking.wandb.entity = _default_wandb_entity("maj90")
     config.tracking.wandb.notes = ""
     config.tracking.wandb.name = ""
     config.tracking.wandb.group = ""

@@ -7,6 +7,7 @@ artifacts needed for quick lab inspection.
 """
 
 import argparse
+import os
 from pathlib import Path
 import sys
 import time
@@ -38,6 +39,14 @@ from prototyping.runners.tracking import Tracker
 RUNNER_NAME = "synthetic_mlp"
 DEFAULT_OUT_DIR = "outputs/prototype_runners/synthetic_mlp"
 DEFAULT_RUN_NAME = "synthetic_projected_gmm_mlp"
+
+
+def _default_wandb_project(fallback):
+    return os.getenv("WANDB_PROJECT", "").strip() or fallback
+
+
+def _default_wandb_entity(fallback):
+    return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 
 def parse_args(argv=None):
@@ -85,8 +94,12 @@ def parse_args(argv=None):
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-mode", choices=("offline", "online"), default="offline")
-    parser.add_argument("--wandb-project", default="mem_par")
-    parser.add_argument("--wandb-entity", default="")
+    parser.add_argument(
+        "--wandb-project", default=_default_wandb_project("memparam_mnist_tests")
+    )
+    parser.add_argument(
+        "--wandb-entity", default=_default_wandb_entity("maj90")
+    )
     parser.add_argument("--wandb-name", default="")
     parser.add_argument("--wandb-group", default="")
     parser.add_argument("--wandb-tags", default="")

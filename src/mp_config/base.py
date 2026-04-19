@@ -9,6 +9,7 @@ surface. It also owns the small conversion and override helpers needed to:
 """
 
 from ml_collections import ConfigDict
+import os
 
 
 def get_base_config():
@@ -129,14 +130,22 @@ def get_base_config():
     tracking_wandb = tracking.wandb = ConfigDict()
     tracking_wandb.enabled = False
     tracking_wandb.mode = "offline"
-    tracking_wandb.project = "mem_par"
-    tracking_wandb.entity = ""
+    tracking_wandb.project = _default_wandb_project("memparam_mnist_tests")
+    tracking_wandb.entity = _default_wandb_entity("maj90")
     tracking_wandb.dir = "logs/wandb"
     tracking_wandb.tags = []
     tracking_wandb.notes = ""
     tracking_wandb.strict = False
 
     return config
+
+
+def _default_wandb_project(fallback):
+    return os.getenv("WANDB_PROJECT", "").strip() or fallback
+
+
+def _default_wandb_entity(fallback):
+    return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 
 def config_to_dict(value):

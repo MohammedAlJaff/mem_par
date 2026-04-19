@@ -18,6 +18,11 @@ def _default_wandb_project(fallback):
     return project if project else fallback
 
 
+def _default_wandb_entity(fallback):
+    entity = os.getenv("WANDB_ENTITY", "").strip()
+    return entity if entity else fallback
+
+
 _UNET_PROFILES = {
     32: {
         "base_channels": 64,
@@ -157,8 +162,8 @@ DEFAULT_SETTINGS = {
     "time_emb_dim": None,
     "wandb": True,
     "wandb_mode": "online",
-    "wandb_project": _default_wandb_project("mem_par"),
-    "wandb_entity": "",
+    "wandb_project": _default_wandb_project("memparam_mnist_tests"),
+    "wandb_entity": _default_wandb_entity("maj90"),
     "wandb_name": "",
     "wandb_group": "",
     "wandb_tags": "",
@@ -180,6 +185,8 @@ def list_datasets():
 
 
 def _coalesce(value, fallback=None):
+    if isinstance(value, str) and not value.strip():
+        return fallback
     if value is None:
         return fallback
     return value
@@ -195,7 +202,10 @@ def build_config(settings):
     settings = {**DEFAULT_SETTINGS, **dataset_defaults, **settings}
 
     preset_name = str(
-        settings.get("config_preset", dataset_defaults.get("config_profile", "image32_32"))
+        _coalesce(
+            settings.get("config_preset"),
+            dataset_defaults.get("config_profile", "image32_32"),
+        )
     )
     defaults = get_default_configs(preset_name)
 

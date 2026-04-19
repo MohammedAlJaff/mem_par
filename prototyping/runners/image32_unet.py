@@ -14,6 +14,7 @@ from prototyping.runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
     as_int_tuple,
+    count_parameters,
 )
 from prototyping.runners.config_presets import list_presets
 from prototyping.runners.metrics_image32 import (
@@ -139,6 +140,37 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
     return result
 
 
+def _coerce_mnist_class_balance(settings):
+    """
+    Avoid hard failures when MNIST class-balanced sampling gets non-multiple counts.
+
+    MNIST loaders require class-balanced counts to be divisible by 10.
+    If a user asks for non-divisible counts with balancing enabled, keep the
+    requested size but disable balancing to preserve the run intent and avoid
+    dataset loader crashes.
+    """
+    if str(settings.get("dataset")).lower() != "mnist":
+        return
+
+    fixes = []
+    if bool(settings.get("balance_train_classes", False)) and int(settings.get("n_train", 0)) % 10 != 0:
+        settings["balance_train_classes"] = False
+        fixes.append(
+            f"MNIST train subset balancing disabled: n-train={settings['n_train']} is not divisible by 10."
+        )
+    if bool(settings.get("balance_reference_classes", False)) and int(settings.get("n_eval", 0)) % 10 != 0:
+        settings["balance_reference_classes"] = False
+        fixes.append(
+            f"MNIST reference balancing disabled: n-eval={settings['n_eval']} is not divisible by 10."
+        )
+    if not fixes:
+        return
+
+    print("run setup:")
+    for fix in fixes:
+        print("  - {}".format(fix))
+
+
 def run_full_job(config, out_dir, device, evaluate=True):
     """Run canonical training, then Image32 checkpoint metrics if requested."""
     # Training remains canonical; empirical metrics live beside this runner.
@@ -156,8 +188,57 @@ def run_full_job(config, out_dir, device, evaluate=True):
         "run_dir": str(run_dir),
         "checkpoint_metrics": evaluation["checkpoint_metrics"],
         "loss_eval": evaluation["loss_eval"],
+        "config": config,
         "artifacts": artifact_paths(run_dir),
     }
+
+
+def _print_model_summary(config, model=None, model_param_summary=None):
+    """Print concise model creation + parameterization metadata."""
+    network = config.network
+    framework = config.framework
+
+    model_desc = f"GDFM + {str(network.arch).upper()} ({str(network.arch)})"
+    print(
+        "{:<18} {}".format(
+            "model creation:",
+            model_desc,
+        )
+    )
+    print(
+        "{:<18} pred={} loss={}".format(
+            "model parameterization:",
+            str(framework.prediction_space),
+            str(framework.loss_space),
+        )
+    )
+    print(
+        "{:<18} {}".format(
+            "model topology:",
+            "base_ch={} channel_mult={} attn={} res_blocks={} dropout={} time_emb={}".format(
+                int(network.base_channels),
+                tuple(network.channel_mult),
+                tuple(network.attn_resolutions),
+                int(network.num_res_blocks),
+                float(network.dropout),
+                network.time_emb_dim,
+            ),
+        )
+    )
+
+    if model is None and model_param_summary is None:
+        return
+    if model is not None:
+        params = count_parameters(model)
+    else:
+        params = dict(model_param_summary)
+    print(
+        "{:<18} {:,} total | {:,} trainable".format(
+            "model params:",
+            params["total"],
+            params["trainable"],
+        )
+    )
 
 
 def parse_args(argv=None):
@@ -230,7 +311,9 @@ def main(argv=None):
     """CLI entrypoint for the Image32 UNet recipe."""
     args = parse_args(argv)
     settings = {**default_settings(), **vars(args)}
+    _coerce_mnist_class_balance(settings)
     config = build_config(settings)
+    model_param_summary = None
 
     if args.sanity_updates is None:
         args.sanity_updates = 0
@@ -242,6 +325,7 @@ def main(argv=None):
     if args.sanity_updates > 0:
         data_bundle = build_data(config)
         model = build_model(config, args.device)
+        model_param_summary = count_parameters(model)
         updates = run_sanity_updates(model, data_bundle["train"], config, args.device, args.sanity_updates)
         metrics = inspect_metrics(config, data_bundle, model, args.device)
         result = {
@@ -250,16 +334,26 @@ def main(argv=None):
             "metrics": metrics,
             "data": _summarize_bundle(data_bundle),
         }
+        if args.sanity_only:
+            _print_model_summary(config, model)
         _print_sanity_result(result)
         if args.sanity_only:
             return result
+        del model
 
     result = run_full_job(config, args.out_dir, args.device, evaluate=True)
+    if model_param_summary is not None:
+        result["model_param_summary"] = model_param_summary
     _print_result(result)
     return result["run_dir"]
 
 
 def _print_result(result):
+    # Keep this summary easy to scan in a running terminal.
+    _print_model_summary(
+        result["config"],
+        model_param_summary=result.get("model_param_summary"),
+    )
     print("{:<18} {}".format("run_dir:", result["run_dir"]))
     print("{:<18} {}".format("checkpoints:", result["artifacts"]["checkpoints"]["path"]))
     print("{:<18} {}".format("metrics:", result["artifacts"]["checkpoint_metrics"]["path"]))
@@ -267,6 +361,7 @@ def _print_result(result):
 
 
 def _print_sanity_result(result):
+    # Sanity run summaries focus on a stable small set of diagnostics.
     print("{:<18} {}".format("sanity_updates:", result["sanity_updates"]))
     print("{:<18} {}".format("train_shape:", result["data"]["train_shape"]))
     for update in result["update_records"]:

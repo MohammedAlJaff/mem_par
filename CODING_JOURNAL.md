@@ -710,3 +710,85 @@ of what moved.
 
 ### Next
 - Commit only the Image32 preset-builder migration files and push.
+
+## 2026-04-19T03:09:20Z - Default W&B Namespace to memparam_mnist_tests
+
+### Context
+User requested all default W&B logging for image prototypes and canonical flows to
+target `maj90/memparam_mnist_tests` by default, with env overrides.
+
+### Intent
+Make `WANDB_PROJECT`/`WANDB_ENTITY` the first override source, then set hard
+defaults to `memparam_mnist_tests`/`maj90`, while preserving CLI flags as
+highest-priority overrides.
+
+### Changed / Observed
+- Image32 preset stack:
+  - `prototyping/runners/image32_unet_config_builder.py` now defaults to
+    `memparam_mnist_tests` and `maj90` with `WANDB_*` env fallback support.
+  - `prototyping/runners/config_presets/image32_base.py` now applies the same
+    env-aware defaults in the preset baseline.
+- Synthetic prototype runner:
+  - `prototyping/runners/synthetic_mlp.py` now defaults to the same project/entity
+    via `WANDB_*` env fallback.
+- Canonical tracking surface:
+  - `src/mp_config/base.py` uses env-aware defaults for base W&B project/entity.
+  - `src/mp_tracking.py` uses env-aware fallback defaults when resolving active
+    W&B run metadata.
+- Docs and notebook defaults were aligned:
+  - `README.md` W&B example project flag.
+  - synthetic notebook knob default for `wandb_project`.
+
+### Commands / Checks
+- `python -m py_compile ...` for modified runner/config/tracking files (in `mem_param_env`).
+- Parser smoke checks:
+  - `parse_args([])` defaults for image32 and synthetic show `memparam_mnist_tests`/`maj90`.
+  - same check with `WANDB_PROJECT=alt_project WANDB_ENTITY=alt_entity` verified override.
+- Runtime smoke:
+  - tiny image32 full run (`--no-wandb`) completed successfully.
+  - tiny synthetic run with `--wandb` attempted and reached run completion; W&B
+    init warning observed due missing token in this environment, but status now
+    records configured default project/entity.
+
+### Blockers
+- W&B cloud/token is not available in this environment, so synthetic status shows
+  `warning` with `ServicePollForTokenError` when `--wandb` is enabled.
+
+### Next
+- Add explicit user-facing note for required env vars/token setup where online W&B is
+  needed.
+
+## 2026-04-19T03:33:21Z - Fix Image32 Preset Resolution for CLI Defaults
+
+### Context
+A `--dataset mnist --config_preset None` style path could pass the literal
+`"None"` into the preset resolver and crash before training started.
+
+### Intent
+Keep the Image32 prototype launcher from raising a preset lookup error when
+`config_preset` is unset while preserving explicit CLI overrides.
+
+### Changed / Observed
+- Updated `prototyping/runners/image32_unet_config_builder.py`:
+  - `_coalesce(...)` now treats blank strings as unset in addition to `None`.
+  - Preset selection now uses `_coalesce(settings["config_preset"], dataset default)`
+    instead of direct `str(...)` coercion.
+- Existing runtime class-balance guard for MNIST remains enabled and prints a
+  helpful warning when non-divisible counts are requested.
+
+### Commands / Checks
+- `python -m prototyping.runners.image32_unet --device cuda ...` with `--dataset
+  mnist` and `--n-train 4096 --n-eval 4096` now reaches config build instead of
+  hitting `Unknown Image32 UNet preset: None`.
+
+### Results
+- Preset resolution uses the dataset default (`image32_32`) when unset, so the
+  UNet CLI no longer fails on defaulted preset config.
+
+### Blockers
+- Project environment `python` entrypoint in this shell resolves to 3.6.8 for
+  `py_compile` checks, so syntax validation with future annotations could not be
+  fully executed in-place.
+
+### Next
+- Push the current session changes once the branch is clean.

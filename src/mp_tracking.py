@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -63,6 +64,14 @@ def format_duration(seconds):
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _default_wandb_project(fallback):
+    return os.getenv("WANDB_PROJECT", "").strip() or fallback
+
+
+def _default_wandb_entity(fallback):
+    return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 
 def _safe_float(value):
@@ -244,8 +253,16 @@ class AttemptTracker:
             return
 
         mode = str(getattr(self._wandb_config, "mode", "offline"))
-        project = str(getattr(self._wandb_config, "project", "mem_par"))
-        entity = str(getattr(self._wandb_config, "entity", "")).strip() or None
+        project = str(
+            getattr(
+                self._wandb_config,
+                "project",
+                _default_wandb_project("memparam_mnist_tests"),
+            )
+        )
+        entity = str(
+            getattr(self._wandb_config, "entity", _default_wandb_entity("maj90"))
+        ).strip() or None
         notes = str(getattr(self._wandb_config, "notes", "")).strip() or None
         configured_name = str(getattr(self._wandb_config, "name", "")).strip()
         configured_group = str(getattr(self._wandb_config, "group", "")).strip()

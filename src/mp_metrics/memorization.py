@@ -55,22 +55,92 @@ def _resolve_ratio_threshold(ratio_threshold=None, config=None):
     return 0.5
 
 
-def compute_nn_stats(samples, reference, chunk_size=256):
+def _resolve_batch_size(value, name):
+    if value is None:
+        return None
+    value = int(value)
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1, got {value}")
+    return value
+
+
+def _top2_distances(query, reference, reference_batch_size=None):
+    """
+    Compute top-2 reference neighbors for one query block.
+
+    When `reference_batch_size` is set, this merges each reference block's
+    local top-2 candidates into a running top-2. This keeps the temporary
+    distance tensor bounded by `[query_batch_size, reference_batch_size]`.
+    """
+    n_reference = int(reference.shape[0])
+    reference_batch_size = _resolve_batch_size(
+        reference_batch_size,
+        "reference_batch_size",
+    )
+    if reference_batch_size is None or reference_batch_size >= n_reference:
+        distances = torch.cdist(query, reference)
+        topk = torch.topk(distances, k=2, largest=False, dim=1)
+        return topk.values[:, 0], topk.values[:, 1], topk.indices[:, 0]
+
+    best_values = torch.full(
+        (query.shape[0], 2),
+        float("inf"),
+        dtype=query.dtype,
+        device=query.device,
+    )
+    best_indices = torch.full(
+        (query.shape[0], 2),
+        -1,
+        dtype=torch.long,
+        device=query.device,
+    )
+
+    for ref_start in range(0, n_reference, reference_batch_size):
+        ref_end = min(ref_start + reference_batch_size, n_reference)
+        ref_chunk = reference[ref_start:ref_end]
+        distances = torch.cdist(query, ref_chunk)
+        local_k = min(2, int(ref_chunk.shape[0]))
+        local_topk = torch.topk(distances, k=local_k, largest=False, dim=1)
+        local_indices = local_topk.indices + ref_start
+
+        candidate_values = torch.cat([best_values, local_topk.values], dim=1)
+        candidate_indices = torch.cat([best_indices, local_indices], dim=1)
+        merged = torch.topk(candidate_values, k=2, largest=False, dim=1)
+        best_values = merged.values
+        best_indices = torch.gather(candidate_indices, 1, merged.indices)
+
+    return best_values[:, 0], best_values[:, 1], best_indices[:, 0]
+
+
+def compute_nn_stats(
+    samples,
+    reference,
+    chunk_size=256,
+    query_batch_size=None,
+    reference_batch_size=None,
+):
     """
     Compute 1-NN, 2-NN, and the memorization ratio `r = d1 / d2`.
 
     Args:
         samples:   batch of generated or queried samples
         reference: batch of reference samples, usually the training set
-        chunk_size: batch size for the distance computation
+        chunk_size: legacy alias for query batch size
+        query_batch_size: batch size for queried/generated samples
+        reference_batch_size: optional batch size for the reference set
 
     Returns:
-        `d1`, `d2`, `r`, `ratios`, `nn_idx`, and `indices`
+        `d1`, `d2`, `r`, `nn_ratio`, `ratios`, `nn_idx`, and `indices`
 
     We return both the concise names (`r`, `nn_idx`) and the more explicit
     aliases (`ratios`, `indices`) so direct notebook use stays ergonomic while
     the checkpoint pipeline keeps its current field names.
     """
+    query_batch_size = _resolve_batch_size(
+        chunk_size if query_batch_size is None else query_batch_size,
+        "query_batch_size",
+    )
+
     samples = _flatten_batch(samples).float()
     reference = _flatten_batch(reference).float()
 
@@ -81,13 +151,16 @@ def compute_nn_stats(samples, reference, chunk_size=256):
     d2_list = []
     i1_list = []
 
-    for start in range(0, samples.shape[0], chunk_size):
-        chunk = samples[start : start + chunk_size]
-        distances = torch.cdist(chunk, reference)
-        topk = torch.topk(distances, k=2, largest=False, dim=1)
-        d1_list.append(topk.values[:, 0])
-        d2_list.append(topk.values[:, 1])
-        i1_list.append(topk.indices[:, 0])
+    for start in range(0, samples.shape[0], query_batch_size):
+        chunk = samples[start : start + query_batch_size]
+        d1, d2, nn_idx = _top2_distances(
+            chunk,
+            reference,
+            reference_batch_size=reference_batch_size,
+        )
+        d1_list.append(d1)
+        d2_list.append(d2)
+        i1_list.append(nn_idx)
 
     d1 = torch.cat(d1_list)
     d2 = torch.cat(d2_list)
@@ -98,6 +171,7 @@ def compute_nn_stats(samples, reference, chunk_size=256):
         "d1": d1,
         "d2": d2,
         "r": r,
+        "nn_ratio": r,
         "ratios": r,
         "nn_idx": nn_idx,
         "indices": nn_idx,
@@ -125,6 +199,8 @@ def compute_memorization_metrics(
     reference,
     ratio_threshold=None,
     chunk_size=256,
+    query_batch_size=None,
+    reference_batch_size=None,
     config=None,
 ):
     """
@@ -136,7 +212,13 @@ def compute_memorization_metrics(
         - checkpoint evaluation after loading saved tensors
     """
     threshold = _resolve_ratio_threshold(ratio_threshold, config=config)
-    stats = compute_nn_stats(samples, reference, chunk_size=chunk_size)
+    stats = compute_nn_stats(
+        samples,
+        reference,
+        chunk_size=chunk_size,
+        query_batch_size=query_batch_size,
+        reference_batch_size=reference_batch_size,
+    )
     ratios = stats["r"]
 
     return {
