@@ -42,7 +42,7 @@ Image32 recipe run:
 
 ```bash
 PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
-  --device cpu \
+  --device cuda \
   --out-dir outputs/prototype_runners/image32_unet \
   --dataset celeba32_grey \
   --prediction-space v \
@@ -54,12 +54,16 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
 
 # Run a lightweight sanity check before deciding on a full job.
 PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
+  --device cuda \
   --dataset flowers102_128 \
-  --sanity-updates 2 \
-  --sanity-only \
+  --visual-sanity \
+  --visual-sanity-count 8 \
+  --visual-sanity-updates 2 \
   --batch-cap 4 \
   --n-train 8 \
-  --n-eval 8
+  --n-eval 8 \
+  --n-steps 2 \
+  --ckpt-every 1
 ```
 
 The public runner CLI uses `--prediction-space`, `--loss-space`,
@@ -72,14 +76,25 @@ The synthetic runner writes:
 
 - `metrics/train_history.json`
 - `metrics/metrics_along_training.json`
+- `metrics/loss_eval.json`
+- `metrics/checkpoint_sample_previews.json`
+- `metrics/checkpoint_sample_previews/step_*.pt`
 - `metrics/final_samples*.pt`
 - `figures/*.png`
 - `checkpoints/step_*.pt`
 - `status.json`
 
 Image runners write the canonical attempt artifact tree under `--out-dir`.
-The Image32 runner also writes `metrics/loss_eval.json` with random-`t`
-training-style loss probes and fixed-`t` probes at `0.1, 0.3, 0.5, 0.7, 0.9`.
+Checkpoint evaluation writes `metrics/loss_eval.json` with held-out random-`t`
+loss probes and fixed-`t` probes at `0.5` and `0.75`.
+Checkpoint evaluation also writes `metrics/checkpoint_sample_previews.json` and
+small preview tensors under `metrics/checkpoint_sample_previews/`. When
+`--visual-sanity` is enabled, image runners also save train/sample grids under
+`figures/`, including one `checkpoint_samples_over_train_step_*.png` panel for
+every saved checkpoint, and log those panels to W&B when tracking is active.
+Canonical attempt folders receive a `DONE_` prefix after training artifacts are
+successfully written, so completed-training folders are visible from the
+filesystem while failed or aborted attempts keep their original names.
 
 ## Notebook Map
 

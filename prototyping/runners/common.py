@@ -91,6 +91,9 @@ def artifact_paths(attempt_dir):
         "train_history": attempt_dir / "metrics" / "train_history.json",
         "checkpoint_metrics": attempt_dir / "metrics" / "checkpoint_metrics.json",
         "loss_eval": attempt_dir / "metrics" / "loss_eval.json",
+        "checkpoint_sample_previews": (
+            attempt_dir / "metrics" / "checkpoint_sample_previews.json"
+        ),
         "final_samples": attempt_dir / "metrics" / "final_samples.pt",
         "figures": attempt_dir / "figures",
         "checkpoints": attempt_dir / "checkpoints",

@@ -34,6 +34,8 @@ from prototyping.runners.io_utils import (
     write_json,
 )
 from prototyping.runners.tracking import Tracker
+from mp_metrics.checkpoint_previews import collect_checkpoint_sample_preview_record
+from mp_metrics.loss_eval import collect_loss_eval_record, loss_eval_metric_payload
 
 
 RUNNER_NAME = "synthetic_mlp"
@@ -86,6 +88,7 @@ def parse_args(argv=None):
     parser.add_argument("--ckpt-every", type=int, default=2000)
 
     parser.add_argument("--eval-samples", type=int, default=256)
+    parser.add_argument("--checkpoint-preview-count", type=int, default=8)
     parser.add_argument("--sampling-method", choices=("euler", "heun"), default="heun")
     parser.add_argument("--sampling-steps", type=int, default=128)
     parser.add_argument("--ratio-threshold", type=float, default=0.3)
@@ -94,9 +97,7 @@ def parse_args(argv=None):
 
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-mode", choices=("offline", "online"), default="offline")
-    parser.add_argument(
-        "--wandb-project", default=_default_wandb_project("memparam_mnist_tests")
-    )
+    parser.add_argument("--wandb-project", default=_default_wandb_project(""))
     parser.add_argument(
         "--wandb-entity", default=_default_wandb_entity("maj90")
     )
@@ -113,6 +114,10 @@ def _validate_args(args):
         (args.n_train >= 2, "--n-train must be at least 2 for nearest-neighbor metrics."),
         (args.n_reference >= 1, "--n-reference/--n-eval must be at least 1."),
         (args.eval_samples >= 1, "--eval-samples must be at least 1."),
+        (
+            args.checkpoint_preview_count >= 0,
+            "--checkpoint-preview-count must be non-negative.",
+        ),
         (args.data_dim >= 1, "--data-dim must be at least 1."),
         (args.intrinsic_dim >= 1, "--intrinsic-dim must be at least 1."),
         (args.intrinsic_dim <= args.data_dim, "--intrinsic-dim must be <= --data-dim."),
@@ -179,6 +184,8 @@ def build_config(args, batch_size):
     config.evaluation.ratio_threshold = args.ratio_threshold
     config.evaluation.chunk_size = args.chunk_size
     config.evaluation.sample_panel_count = min(8, args.eval_samples)
+    config.evaluation.loss_eval_times = (0.5, 0.75)
+    config.evaluation.loss_eval_batch_size = batch_size
 
     config.sampling.method = args.sampling_method
     config.sampling.n_steps = args.sampling_steps
@@ -366,6 +373,10 @@ def main(argv=None):
 
     train_history = []
     metric_records = []
+    loss_records = []
+    checkpoint_sample_previews = []
+    last_sample_step = None
+    last_samples = None
     train_start = time.perf_counter()
     train_loader = DataLoader(
         train_tensor,
@@ -400,6 +411,8 @@ def main(argv=None):
             model.eval()
             with torch.no_grad():
                 samples = _sample(model, z_eval, args, device)
+            last_sample_step = int(step)
+            last_samples = samples
             record = collect_metric_record(
                 step=step,
                 samples=samples,
@@ -444,6 +457,50 @@ def main(argv=None):
             model.train()
 
         if step % args.ckpt_every == 0 or step == args.n_steps:
+            loss_record = collect_loss_eval_record(
+                step,
+                model,
+                reference_tensor,
+                config,
+                device,
+            )
+            loss_records.append(loss_record)
+            append_jsonl(paths["logs"] / "loss_eval.jsonl", loss_record)
+            tracker.log_scalars(loss_eval_metric_payload(loss_record), step=step)
+            if args.checkpoint_preview_count > 0:
+                preview_samples = last_samples if last_sample_step == int(step) else None
+                if preview_samples is None:
+                    was_training = model.training
+                    model.eval()
+                    try:
+                        with torch.no_grad():
+                            preview_samples = _sample(model, z_eval, args, device)
+                    finally:
+                        model.train(was_training)
+                try:
+                    preview_record = collect_checkpoint_sample_preview_record(
+                        step=step,
+                        samples=preview_samples,
+                        train_tensor=train_tensor,
+                        run_dir=paths["run"],
+                        config=config,
+                        count=int(args.checkpoint_preview_count),
+                        figure_enabled=False,
+                    )
+                    checkpoint_sample_previews.append(preview_record)
+                    append_jsonl(
+                        paths["logs"] / "checkpoint_sample_previews.jsonl",
+                        preview_record,
+                    )
+                except Exception as exc:
+                    _print_field(
+                        "warning",
+                        "checkpoint sample preview skipped step={}: {}: {}".format(
+                            step,
+                            type(exc).__name__,
+                            exc,
+                        ),
+                    )
             torch.save(
                 {
                     "step": int(step),
@@ -472,6 +529,11 @@ def main(argv=None):
     )
     write_json(paths["metrics"] / "train_history.json", train_history)
     write_json(paths["metrics"] / "metrics_along_training.json", metric_records)
+    write_json(paths["metrics"] / "loss_eval.json", loss_records)
+    write_json(
+        paths["metrics"] / "checkpoint_sample_previews.json",
+        checkpoint_sample_previews,
+    )
 
     figure_context = (
         "GMM D={} d={} N={} ref={} clusters={} sigma_z={:.3g} sigma_eta={:.3g}\n"
@@ -516,6 +578,7 @@ def main(argv=None):
     )
 
     final_metrics = metric_records[-1] if metric_records else {}
+    final_loss_eval = loss_records[-1] if loss_records else {}
     summary = {
         "run_dir": str(paths["run"]),
         "config": config_payload,
@@ -526,11 +589,16 @@ def main(argv=None):
         },
         "final_loss": train_history[-1]["loss"] if train_history else None,
         "final_metrics": final_metrics,
+        "final_loss_eval": final_loss_eval,
         "wandb": tracker.metadata,
         "paths": {
             "status": str(paths["run"] / "status.json"),
             "train_history": str(paths["metrics"] / "train_history.json"),
             "metrics_along_training": str(paths["metrics"] / "metrics_along_training.json"),
+            "loss_eval": str(paths["metrics"] / "loss_eval.json"),
+            "checkpoint_sample_previews": str(
+                paths["metrics"] / "checkpoint_sample_previews.json"
+            ),
             "final_samples": str(paths["metrics"] / "final_samples.pt"),
             "gmm_params": str(paths["artifacts"] / "gmm_params.json"),
             "figures": str(paths["figures"]),
@@ -538,6 +606,7 @@ def main(argv=None):
             "latest": str(out_root / "latest"),
             "latest_checkpoints": str(out_root / "latest_checkpoints"),
         },
+        "checkpoint_sample_previews": checkpoint_sample_previews,
         "figures": figure_paths,
     }
     tracker.log_scalars(
@@ -563,6 +632,9 @@ def main(argv=None):
             "training_wall_time_sec": float(time.perf_counter() - train_start),
             "final_loss": summary["final_loss"],
             "final_metrics": final_metrics,
+            "final_loss_eval": final_loss_eval,
+            "checkpoint_sample_previews": checkpoint_sample_previews,
+            "checkpoint_sample_previews_path": summary["paths"]["checkpoint_sample_previews"],
             "figures": figure_paths,
             "wandb": summary["wandb"],
         }
@@ -580,6 +652,7 @@ def main(argv=None):
             ),
         )
     _print_field("metrics", summary["paths"]["metrics_along_training"])
+    _print_field("sample_previews", summary["paths"]["checkpoint_sample_previews"])
     _print_field("figures", paths["figures"])
     _print_field("checkpoints", paths["checkpoints"])
     return summary

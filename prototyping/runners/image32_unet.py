@@ -40,6 +40,11 @@ def default_settings():
     return _default_settings()
 
 
+def default_knobs():
+    """Backward-compatible alias for notebook/test recipe settings."""
+    return default_settings()
+
+
 def build_config(settings):
     """Build the canonical config for one Image32 UNet run."""
     return _build_config(settings)
@@ -132,7 +137,7 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
         result["loss_eval"] = collect_loss_eval_record(
             0,
             model,
-            train,
+            reference,
             config,
             device,
             fixed_times=tuple(config.evaluation.loss_eval_times),
@@ -182,12 +187,17 @@ def run_full_job(config, out_dir, device, evaluate=True):
             fixed_times=tuple(config.evaluation.loss_eval_times),
         )
         if evaluate
-        else {"checkpoint_metrics": [], "loss_eval": []}
+        else {
+            "checkpoint_metrics": [],
+            "loss_eval": [],
+            "checkpoint_sample_previews": [],
+        }
     )
     return {
         "run_dir": str(run_dir),
         "checkpoint_metrics": evaluation["checkpoint_metrics"],
         "loss_eval": evaluation["loss_eval"],
+        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
         "config": config,
         "artifacts": artifact_paths(run_dir),
     }
@@ -262,6 +272,7 @@ def parse_args(argv=None):
     parser.add_argument("--n-eval", type=int, default=settings["n_eval"])
     parser.add_argument("--n-steps", type=int, default=settings["n_steps"])
     parser.add_argument("--ckpt-every", type=int, default=settings["ckpt_every"])
+    parser.add_argument("--log-every", type=int, default=settings["log_every"])
     parser.add_argument("--batch-cap", type=int, default=settings["batch_cap"])
     parser.add_argument("--eval-samples", type=int, default=settings["eval_samples"])
     parser.add_argument("--sampling-steps", type=int, default=settings["sampling_steps"])
@@ -300,6 +311,30 @@ def parse_args(argv=None):
     parser.add_argument(
         "--sanity-only", action=argparse.BooleanOptionalAction, default=settings["sanity_only"]
     )
+    parser.add_argument(
+        "--visual-sanity",
+        action=argparse.BooleanOptionalAction,
+        default=settings["visual_sanity"],
+        help="Save/display train and generated-sample image grids and log them to W&B.",
+    )
+    parser.add_argument(
+        "--visual-sanity-count",
+        type=int,
+        default=settings["visual_sanity_count"],
+        help="Number of images per row in visual sanity grids.",
+    )
+    parser.add_argument(
+        "--visual-sanity-updates",
+        type=int,
+        default=settings["visual_sanity_updates"],
+        help="Throwaway optimizer updates for the visual sanity sample panel.",
+    )
+    parser.add_argument(
+        "--visual-sanity-show",
+        action=argparse.BooleanOptionalAction,
+        default=settings["visual_sanity_show"],
+        help="Display visual sanity figures inline when running from a notebook.",
+    )
     args = parser.parse_args(argv)
     args.channel_mult = as_int_tuple(args.channel_mult)
     args.attn_resolutions = as_int_tuple(args.attn_resolutions)
@@ -321,6 +356,16 @@ def main(argv=None):
         args.sanity_updates = 1
     if args.sanity_updates < 0:
         raise ValueError(f"sanity-updates must be >= 0, got {args.sanity_updates}")
+    if args.log_every is not None and args.log_every < 1:
+        raise ValueError(f"log-every must be >= 1, got {args.log_every}")
+    if args.visual_sanity_count < 1:
+        raise ValueError(
+            f"visual-sanity-count must be >= 1, got {args.visual_sanity_count}"
+        )
+    if args.visual_sanity_updates < 0:
+        raise ValueError(
+            f"visual-sanity-updates must be >= 0, got {args.visual_sanity_updates}"
+        )
 
     if args.sanity_updates > 0:
         data_bundle = build_data(config)
@@ -356,8 +401,15 @@ def _print_result(result):
     )
     print("{:<18} {}".format("run_dir:", result["run_dir"]))
     print("{:<18} {}".format("checkpoints:", result["artifacts"]["checkpoints"]["path"]))
+    print("{:<18} {}".format("figures:", result["artifacts"]["figures"]["path"]))
     print("{:<18} {}".format("metrics:", result["artifacts"]["checkpoint_metrics"]["path"]))
     print("{:<18} {}".format("loss_eval:", result["artifacts"]["loss_eval"]["path"]))
+    print(
+        "{:<18} {}".format(
+            "sample_previews:",
+            result["artifacts"]["checkpoint_sample_previews"]["path"],
+        )
+    )
 
 
 def _print_sanity_result(result):

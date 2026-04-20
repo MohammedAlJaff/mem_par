@@ -1,10 +1,45 @@
 """Experiment tracking wrapper for prototype runners."""
 
+import os
+import re
 from pathlib import Path
 
 
 def scalar_payload(payload):
     return {key: value for key, value in payload.items() if value is not None}
+
+
+def _slug(value, fallback):
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-")
+    return text or fallback
+
+
+def _config_value(config, section, field, fallback):
+    value = config.get(section, {}).get(field, fallback)
+    return value if value not in (None, "") else fallback
+
+
+def _default_wandb_project(config):
+    project = os.getenv("WANDB_PROJECT", "").strip()
+    if project:
+        return project
+    dataset = _slug(_config_value(config, "data", "dataset", "dataset"), "dataset")
+    model = _slug(_config_value(config, "network", "arch", "model"), "model")
+    return f"memparam-{dataset}-{model}"
+
+
+def _default_wandb_run_name(config):
+    dataset = _slug(_config_value(config, "data", "dataset", "dataset"), "dataset")
+    model = _slug(_config_value(config, "network", "arch", "model"), "model")
+    n_train = int(_config_value(config, "data", "n_train", 0))
+    prediction = _slug(
+        _config_value(config, "framework", "prediction_space", "pred"),
+        "pred",
+    )
+    loss = _slug(_config_value(config, "framework", "loss_space", "loss"), "loss")
+    seed = int(_config_value(config, "training", "seed", 0))
+    return f"{dataset}-{model}-N{n_train}-{prediction}_{loss}-s{seed}"
 
 
 class Tracker:
@@ -14,6 +49,8 @@ class Tracker:
         self.config = config
         self.module = None
         self.run = None
+        self.project = args.wandb_project.strip() or _default_wandb_project(config)
+        self.run_name = args.wandb_name.strip() or _default_wandb_run_name(config)
         self.metadata = self._metadata(active=False)
 
         if not bool(args.wandb):
@@ -24,11 +61,11 @@ class Tracker:
 
             self.module = wandb
             self.run = wandb.init(
-                project=args.wandb_project,
+                project=self.project,
                 entity=args.wandb_entity.strip() or None,
                 mode=args.wandb_mode,
                 dir=str(self.wandb_dir),
-                name=args.wandb_name.strip() or None,
+                name=self.run_name,
                 group=args.wandb_group.strip() or None,
                 tags=[tag.strip() for tag in args.wandb_tags.split(",") if tag.strip()],
                 notes=args.wandb_notes.strip() or None,
@@ -50,10 +87,10 @@ class Tracker:
             "active": bool(active),
             "finished": False,
             "mode": str(self.args.wandb_mode),
-            "project": str(self.args.wandb_project),
+            "project": str(self.project),
             "entity": self.args.wandb_entity.strip() or None,
             "run_id": getattr(run, "id", None) if run is not None else None,
-            "run_name": getattr(run, "name", None) if run is not None else None,
+            "run_name": getattr(run, "name", self.run_name) if run is not None else None,
             "run_path": getattr(run, "path", None) if run is not None else None,
             "run_url": getattr(run, "url", None) if run is not None else None,
             "dir": str(self.wandb_dir.resolve()),

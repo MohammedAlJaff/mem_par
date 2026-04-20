@@ -43,7 +43,7 @@ def get_default_configs():
     config.training.ckpt_every = 2000
     config.training.log_every = 200
     config.training.optimizer = "adam"
-    config.training.lr = 1.0e-3
+    config.training.lr = 0.005
     config.training.weight_decay = 0.0
 
     # Evaluation / sampling defaults.
@@ -51,7 +51,8 @@ def get_default_configs():
     config.evaluation.n_samples = 64
     config.evaluation.sample_panel_count = 8
     config.evaluation.chunk_size = 128
-    config.evaluation.loss_eval_times = (0.1, 0.3, 0.5, 0.7, 0.9)
+    config.evaluation.loss_eval_times = (0.5, 0.75)
+    config.evaluation.loss_eval_batch_size = 0
 
     config.sampling = ConfigDict()
     config.sampling.method = "heun"
@@ -62,7 +63,7 @@ def get_default_configs():
     config.tracking.wandb = ConfigDict()
     config.tracking.wandb.enabled = True
     config.tracking.wandb.mode = "online"
-    config.tracking.wandb.project = _default_wandb_project("memparam_mnist_tests")
+    config.tracking.wandb.project = _default_wandb_project("")
     config.tracking.wandb.entity = _default_wandb_entity("maj90")
     config.tracking.wandb.notes = ""
     config.tracking.wandb.name = ""

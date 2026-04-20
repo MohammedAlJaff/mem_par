@@ -84,14 +84,15 @@ PYTHONPATH=src python -m experiments.mnist.run \
   --download \
   --device cuda \
   --wandb \
-  --wandb-mode offline \
-  --wandb-project memparam_mnist_tests
+  --wandb-mode offline
 ```
 
-When W&B is enabled, one W&B run corresponds to one attempt. The run is grouped
-by the stable `run_id`, uses the attempt id as its W&B id/name, and stores local
-offline files under the attempt's `logs/wandb/` directory for later
-`wandb sync`.
+When W&B is enabled, one W&B run corresponds to one attempt. By default the
+project is derived from the dataset+model combo, such as `memparam-mnist-unet`,
+and the visible run name includes dataset, model, `N`, prediction/loss
+parameterization, and seed. Set `WANDB_PROJECT` or pass `--wandb-project` to
+override that default. Local offline files are stored under the attempt's
+`logs/wandb/` directory for later `wandb sync`.
 
 ## Setup
 

@@ -792,3 +792,252 @@ Keep the Image32 prototype launcher from raising a preset lookup error when
 
 ### Next
 - Push the current session changes once the branch is clean.
+
+## 2026-04-19T03:46:13Z - Image32 Visual Sanity Panels
+
+### Context
+The Image32 UNet runner needs an opt-in visual sanity path that shows real train
+cells before model work and generated samples beside train examples after a few
+updates and after training.
+
+### Intent
+Make visual checks visible locally and in W&B without changing normal training
+behavior when the flag is off.
+
+### Changed / Observed
+- Added `config.visual_sanity` defaults in `src/mp_config/base.py`.
+- Added Image32 CLI/config settings:
+  - `--visual-sanity`
+  - `--visual-sanity-count`
+  - `--visual-sanity-updates`
+  - `--visual-sanity-show`
+- Extended `src/mp_training/trainer.py` so visual sanity runs:
+  - saves/logs `figures/visual_sanity_train_grid_before_model.png` after data
+    load and before model creation.
+  - trains a throwaway model for a few updates and saves/logs
+    `figures/visual_sanity_samples_over_train.png`.
+  - saves/logs `figures/final_samples_over_train.png` from the trained model.
+  - registers all visual sanity figures through `AttemptTracker`, so active W&B
+    receives them as images.
+- Runner final output now prints the `figures/` directory.
+- Updated `prototyping/runners/README.md` with CUDA visual sanity examples.
+
+### Commands / Checks
+- `module load Mambaforge && mamba activate mem_param_env && python -m py_compile ...`
+- Parser/config smoke for `--visual-sanity`.
+- Runtime smoke on CPU because CUDA is unavailable in this tool shell:
+  - `python -m prototyping.runners.image32_unet --device cpu --dataset mnist ... --visual-sanity`
+
+### Results
+- Visual sanity smoke produced the train grid, throwaway-update sample panel,
+  final sample panel, checkpoints, metrics, and final printed `figures:` path.
+
+### Blockers
+- CUDA is not visible inside the tool environment (`torch.cuda.is_available()`
+  is false), so CUDA runtime verification still needs the user node/session.
+
+### Next
+- Run the same smoke command with `--device cuda` on the active GPU node and
+  confirm W&B receives the three visual sanity figures.
+
+## 2026-04-19T04:07:22Z - Checkpoint Visual Panels for Image32 Evaluation
+
+### Context
+The Image32 visual sanity path should show sample evolution at each checkpoint,
+not only before and after training.
+
+### Intent
+Generate one samples-over-train panel for every saved checkpoint during
+Image32 evaluation, and stop W&B scalar logs from conflicting on the global
+step counter.
+
+### Changed / Observed
+- Added `src/mp_visualization.py` as the shared image-grid renderer.
+- Updated training visual sanity code to use the shared renderer.
+- Extended `prototyping/runners/metrics_image32.py`:
+  - resumes the attempt tracker during evaluation.
+  - logs eval metrics with explicit eval steps.
+  - saves/registers `figures/checkpoint_samples_over_train_step_*.png` for
+    every checkpoint when `--visual-sanity` is enabled.
+  - records `checkpoint_visual_panels` in `run_summary.json`.
+- Updated `src/mp_tracking.py`:
+  - defines W&B metric axes for train, eval, and visual sanity namespaces.
+  - converts caller-provided steps into explicit fields instead of W&B global
+    `step=...` logging.
+  - uses `reinit=\"finish_previous\"` for W&B initialization.
+
+### Commands / Checks
+- `module load Mambaforge && mamba activate mem_param_env && python -m py_compile ...`
+- `PYTHONPATH=src:. python -m unittest tests.test_tracking`
+- CPU runtime smoke:
+  - `python -m prototyping.runners.image32_unet --device cpu --dataset mnist --n-steps 2 --ckpt-every 2 --visual-sanity ...`
+
+### Results
+- Smoke run saved checkpoint panels for steps `0` and `2`, plus the existing
+  train/preflight/final panels.
+- `run_summary.json` records two `checkpoint_visual_panels`.
+- W&B online step-axis behavior still needs confirmation on the user CUDA
+  node/session because this tool shell cannot initialize W&B service reliably.
+
+### Next
+- Run the CUDA online smoke with `--n-steps 200 --ckpt-every 200 --visual-sanity`
+  and confirm no W&B out-of-order step warnings.
+
+## 2026-04-19T04:13:26Z - Informative Image Panel Titles
+
+### Context
+Visual sanity and checkpoint panels should be readable after the fact in local
+figures and W&B media, without needing to cross-reference the run config.
+
+### Changed / Observed
+- Added a shared `model_context_title(...)` helper for image panels.
+- Panel titles now include:
+  - checkpoint or sanity-update context when relevant.
+  - training steps and sampling steps.
+  - dataset and image size.
+  - framework family.
+  - prediction space and loss space parameterization.
+  - model architecture.
+- Training preflight, visual sanity, final samples, and checkpoint panels all
+  use the same title format.
+- Image-panel rendering now chooses a local `logs/matplotlib` cache next to
+  direct figure outputs when the path is not under a run `figures/` directory.
+
+### Commands / Checks
+- `module load Mambaforge && mamba activate mem_param_env && python -m py_compile src/mp_visualization.py src/mp_training/trainer.py prototyping/runners/metrics_image32.py`
+- Tiny render smoke to `/tmp/image32_title_smoke.png` with a checkpoint-style
+  contextual title.
+
+### Results
+- Syntax check and render smoke passed in `mem_param_env`.
+
+## 2026-04-19T23:27:07Z - Implement W&B Combo Naming and DONE Attempts
+
+### Context
+Followed up on the Image32 visual sanity work with operational naming and run
+folder cleanup requirements.
+
+### Intent
+Make W&B organization match the comparison workflow and make successfully
+trained attempts visible from the filesystem.
+
+### Changed / Observed
+- Set the Image32 base preset learning rate to `0.005`.
+- Changed default canonical W&B project resolution to
+  `memparam-{dataset}-{model}` when neither `--wandb-project` nor
+  `WANDB_PROJECT` is provided.
+- Changed default W&B run names to
+  `{dataset}-{model}-N{n_train}-{prediction_param}_{loss_param}-s{seed}`.
+- Added `mark_attempt_done(...)`, which renames successful training attempt
+  folders to `DONE_<attempt_id>` and rewrites status, run-summary, and manifest
+  paths.
+- Updated `train_run(...)` to mark attempts DONE after successful training, so
+  Image32 evaluation continues from the renamed path.
+- Restored the synthetic metrics compatibility shim so prototype-runner tests
+  execute instead of skipping.
+
+### Commands / Checks
+- `git diff --check`
+- `python -m py_compile ...` for changed source, runner, and test files.
+- `python -m json.tool prototyping/runners/notebooks/synthetic_mlp.ipynb`
+- `python -m unittest tests.test_tracking tests.test_artifact_layout tests.test_experiment_pipeline tests.test_proto_runners`
+- Checked `torch.cuda.is_available()` in this tool shell.
+
+### Results
+- Syntax, whitespace, and notebook JSON checks passed.
+- Focused test suite passed: 24 tests in 10.055 seconds.
+- CUDA is not visible in this tool shell (`torch.cuda.is_available() == False`).
+
+### Blockers
+- CUDA/W&B online smoke still needs to run from the active GPU session.
+
+### Next
+- Run the Image32 CUDA online smoke with `--visual-sanity`, `--n-steps 200`,
+  and `--ckpt-every 200`; confirm W&B project/run names, media panels, no
+  out-of-order step warnings, and final printed path using `DONE_`.
+
+## 2026-04-19T23:50:07Z - Shared Checkpoint Loss Evaluation
+
+### Context
+Loss values should be comparable across synthetic, image, canonical, and
+prototype runs, not only visible as noisy train-step losses.
+
+### Intent
+Evaluate held-out/reference-set loss at checkpoint cadence with random-`t` and
+fixed-`t` probes, then save and log the same metric shape across run types.
+
+### Changed / Observed
+- Added shared `src/mp_metrics/loss_eval.py` with deterministic checkpoint
+  probes for random `t`, `t=0.5`, and `t=0.75`.
+- Added config defaults:
+  - `evaluation.loss_eval_times = (0.5, 0.75)`
+  - `evaluation.loss_eval_batch_size = 0`
+- Canonical `evaluate_run(...)` now writes `metrics/loss_eval.json`, updates
+  run summary fields, and logs loss probes under `eval/*`.
+- Image32 evaluation now uses the shared helper and evaluates held-out
+  `reference_tensor`, not the training tensor.
+- Direct synthetic runner now records `loss_eval.json` at checkpoint steps.
+- Artifact status metadata now includes `loss_eval_path`.
+
+### Commands / Checks
+- `git diff --check`
+- `python -m py_compile ...` for changed source, runner, and test files.
+- `python -m unittest tests.test_loss_eval tests.test_experiment_pipeline tests.test_proto_runners tests.test_artifact_layout tests.test_tracking`
+
+### Results
+- Whitespace and syntax checks passed.
+- Focused suite passed: 25 tests in 10.485 seconds.
+
+### Blockers
+- No implementation blocker. CUDA/W&B smoke from the previous entry is still
+  pending in a GPU-visible session.
+
+### Next
+- In the next CUDA smoke, inspect both W&B `eval/random_t_loss` and
+  `eval/loss_t_0_5` / `eval/loss_t_0_75`, plus local `metrics/loss_eval.json`.
+
+## 2026-04-20T00:27:59Z - Checkpoint Sample Previews And Live Fixed-Z Grids
+
+### Context
+Image runs need quick visual feedback during training, while checkpoint
+evaluation should keep comparable samples for later inspection.
+
+### Intent
+Save small checkpoint sample previews consistently, and make live W&B sample
+grids easy to watch without changing the noise source across checkpoints.
+
+### Changed / Observed
+- Added `src/mp_metrics/checkpoint_previews.py` to save compact preview tensors
+  under `metrics/checkpoint_sample_previews/` and optional image panels under
+  `figures/`.
+- Canonical and Image32 checkpoint evaluation now write
+  `metrics/checkpoint_sample_previews.json` and update run summaries/status with
+  preview paths.
+- Direct synthetic runner now writes equivalent checkpoint preview tensor
+  records with `--checkpoint-preview-count`.
+- Added live visual sanity checkpoint grids in `train_run(...)`: after step 0
+  and each checkpoint, the trainer samples from the saved fixed `z_init` bank,
+  saves `figures/live_checkpoint_samples_over_train_step_*.png`, and logs the
+  panel to W&B under `eval/live_checkpoint_samples_over_train`.
+- Added `--log-every` to the Image32 CLI so train-loss logging cadence can be
+  controlled directly, e.g. `--log-every 1` for smoke runs.
+
+### Commands / Checks
+- `git diff --check`
+- `python -m py_compile ...` for changed source, runner, and test files in
+  `mem_param_env`.
+- `python -m unittest tests.test_checkpoint_previews tests.test_experiment_pipeline tests.test_proto_runners tests.test_artifact_layout tests.test_tracking tests.test_loss_eval`
+
+### Results
+- Whitespace and syntax checks passed.
+- Focused suite passed: 30 tests in 13.526 seconds.
+
+### Blockers
+- `gh` is not installed in this shell, so a draft GitHub PR cannot be opened
+  from here.
+- CUDA/W&B online smoke still needs to run from a GPU-visible session.
+
+### Next
+- Run the Image32 CUDA smoke with `--visual-sanity --visual-sanity-count 20
+  --ckpt-every 200 --log-every 1`; confirm W&B `train/loss` points and
+  `eval/live_checkpoint_samples_over_train` media at checkpoint steps.

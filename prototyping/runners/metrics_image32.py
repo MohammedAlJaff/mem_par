@@ -18,10 +18,20 @@ from mp_artifacts import (
     save_tensor,
 )
 from mp_metrics import compute_memorization_metrics
+from mp_metrics.checkpoint_previews import (
+    checkpoint_preview_figure_name,
+    collect_checkpoint_sample_preview_record,
+)
+from mp_metrics.loss_eval import (
+    DEFAULT_LOSS_EVAL_TIMES,
+    collect_loss_eval_record,
+    loss_eval_metric_payload,
+)
 from mp_metrics.memorization import compute_nn_stats
+from mp_tracking import AttemptTracker
 
 
-DEFAULT_FIXED_TIMES = (0.1, 0.3, 0.5, 0.7, 0.9)
+DEFAULT_FIXED_TIMES = DEFAULT_LOSS_EVAL_TIMES
 
 
 def collect_image32_metric_record(
@@ -77,121 +87,142 @@ def collect_reference_memory(reference_tensor, train_tensor, *, chunk_size, conf
     )
 
 
-def collect_loss_eval_record(
-    step,
-    model,
-    train_tensor,
-    config,
-    device,
-    *,
-    fixed_times=DEFAULT_FIXED_TIMES,
-):
-    """Evaluate loss once with training-style random t and at fixed t probes."""
-    batch_size = min(int(config.evaluation.batch_size), int(train_tensor.shape[0]))
-    batch = train_tensor[:batch_size].to(device)
-
-    was_training = model.training
-    model.eval()
-    try:
-        with torch.no_grad():
-            torch.manual_seed(int(config.training.seed) + int(step) + 1009)
-            random_t_loss = float(model.compute_loss(batch).detach().cpu().item())
-
-            fixed = {}
-            for value in fixed_times:
-                t_value = float(value)
-                torch.manual_seed(int(config.training.seed) + 2027)
-                eps = torch.randn_like(batch)
-                t = torch.full((batch.shape[0],), t_value, device=batch.device)
-                loss = model.compute_loss(batch, eps=eps, t=t)
-                fixed[_time_key(t_value)] = float(loss.detach().cpu().item())
-    finally:
-        model.train(was_training)
-
-    fixed_values = list(fixed.values())
-    record = {
-        "step": int(step),
-        "random_t_loss": random_t_loss,
-        "fixed_t_loss_mean": float(sum(fixed_values) / max(1, len(fixed_values))),
-        "fixed_t": fixed,
-    }
-    for key, value in fixed.items():
-        record[f"loss_t_{key}"] = value
-    return record
-
-
 def evaluate_image32_run(run_dir, device="cpu", fixed_times=DEFAULT_FIXED_TIMES):
     """Evaluate checkpoint memorization and fixed/random-t losses."""
     run_dir = Path(run_dir)
     config = load_config_snapshot(run_dir)
-    train_tensor = torch.load(run_dir / "artifacts" / "train_tensor.pt", map_location="cpu")
-    reference_tensor = torch.load(
-        run_dir / "artifacts" / "reference_tensor.pt",
-        map_location="cpu",
-    )
-    z_init = torch.load(run_dir / "artifacts" / "z_init.pt", map_location="cpu")
+    tracker = None
+    try:
+        tracker = AttemptTracker(config, run_dir)
+        tracker.stage("image32_evaluating", message=f"Image32 evaluation started device={device}")
 
-    model = GDFM(config).to(device)
-    records = []
-    loss_records = []
-    checkpoint_paths = list_checkpoint_paths(run_dir)
-    if not checkpoint_paths:
-        raise FileNotFoundError(f"No checkpoints found in {run_dir / 'checkpoints'}")
+        train_tensor = torch.load(run_dir / "artifacts" / "train_tensor.pt", map_location="cpu")
+        reference_tensor = torch.load(
+            run_dir / "artifacts" / "reference_tensor.pt",
+            map_location="cpu",
+        )
+        z_init = torch.load(run_dir / "artifacts" / "z_init.pt", map_location="cpu")
 
-    for checkpoint_path in checkpoint_paths:
-        state = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(state["model"])
-        samples = model.sample(
-            z_init.clone().to(device),
-            n_steps=int(config.sampling.n_steps),
-            method=str(config.sampling.method),
-            device=device,
-        ).cpu()
+        model = GDFM(config).to(device)
+        records = []
+        loss_records = []
+        checkpoint_sample_previews = []
+        checkpoint_paths = list_checkpoint_paths(run_dir)
+        if not checkpoint_paths:
+            raise FileNotFoundError(f"No checkpoints found in {run_dir / 'checkpoints'}")
 
-        records.append(
-            collect_image32_metric_record(
-                int(state["step"]),
+        for checkpoint_path in checkpoint_paths:
+            state = torch.load(checkpoint_path, map_location=device)
+            step = int(state["step"])
+            model.load_state_dict(state["model"])
+            samples = model.sample(
+                z_init.clone().to(device),
+                n_steps=int(config.sampling.n_steps),
+                method=str(config.sampling.method),
+                device=device,
+            ).cpu()
+
+            record = collect_image32_metric_record(
+                step,
                 samples,
                 reference_tensor,
                 train_tensor,
                 chunk_size=int(config.evaluation.chunk_size),
                 config=config,
             )
-        )
-        loss_records.append(
-            collect_loss_eval_record(
-                int(state["step"]),
+            loss_record = collect_loss_eval_record(
+                step,
                 model,
-                train_tensor,
+                reference_tensor,
                 config,
                 device,
                 fixed_times=fixed_times,
             )
+            records.append(record)
+            loss_records.append(loss_record)
+            tracker.log_metrics(
+                {
+                    "eval/f_mem": record["f_mem"],
+                    "eval/mean_nn_ratio": record["mean_nn_ratio"],
+                    "eval/std_nn_ratio": record["std_nn_ratio"],
+                    "eval/baseline_f_mem": record["baseline_f_mem"],
+                    "eval/baseline_mean_nn_ratio": record["baseline_mean_nn_ratio"],
+                    "eval/baseline_std_nn_ratio": record["baseline_std_nn_ratio"],
+                    **loss_eval_metric_payload(loss_record),
+                },
+                step=step,
+            )
+
+            try:
+                preview_record = collect_checkpoint_sample_preview_record(
+                    step=step,
+                    samples=samples,
+                    train_tensor=train_tensor,
+                    run_dir=run_dir,
+                    config=config,
+                )
+                checkpoint_sample_previews.append(preview_record)
+                if preview_record.get("figure_path"):
+                    figure_name = checkpoint_preview_figure_name(step)
+                    tracker.register_figure(
+                        figure_name,
+                        preview_record["figure_path"],
+                        log_to_wandb=False,
+                    )
+                    tracker.log_figure_metric(
+                        "eval/checkpoint_samples_over_train",
+                        preview_record["figure_path"],
+                        step=step,
+                    )
+            except Exception as exc:
+                tracker.warn(
+                    "checkpoint sample preview skipped "
+                    f"step={step}: {type(exc).__name__}: {exc}"
+                )
+
+            if checkpoint_path == checkpoint_paths[-1]:
+                neighbor_stats = compute_nn_stats(
+                    samples,
+                    train_tensor,
+                    chunk_size=int(config.evaluation.chunk_size),
+                )
+                panel_count = min(int(config.evaluation.sample_panel_count), samples.shape[0])
+                save_tensor(run_dir / "metrics" / "final_samples.pt", samples[:panel_count])
+                save_tensor(
+                    run_dir / "metrics" / "final_neighbors.pt",
+                    train_tensor[neighbor_stats["indices"][:panel_count]],
+                )
+
+        save_json(run_dir / "metrics" / "checkpoint_metrics.json", records)
+        save_json(run_dir / "metrics" / "loss_eval.json", loss_records)
+        save_json(
+            run_dir / "metrics" / "checkpoint_sample_previews.json",
+            checkpoint_sample_previews,
         )
+        _update_run_summary(run_dir, records, loss_records, checkpoint_sample_previews)
+        tracker.stage(
+            "completed",
+            message=f"Image32 evaluation complete checkpoints={len(records)}",
+            checkpoint_sample_previews_path=str(
+                (run_dir / "metrics" / "checkpoint_sample_previews.json").resolve()
+            ),
+            checkpoint_sample_previews=checkpoint_sample_previews,
+        )
+        return {
+            "checkpoint_metrics": records,
+            "loss_eval": loss_records,
+            "checkpoint_sample_previews": checkpoint_sample_previews,
+        }
+    except Exception as exc:
+        if tracker is not None:
+            tracker.stage("failed", last_error=f"{type(exc).__name__}: {exc}")
+        raise
+    finally:
+        if tracker is not None:
+            tracker.close()
 
-        if checkpoint_path == checkpoint_paths[-1]:
-            neighbor_stats = compute_nn_stats(
-                samples,
-                train_tensor,
-                chunk_size=int(config.evaluation.chunk_size),
-            )
-            panel_count = min(int(config.evaluation.sample_panel_count), samples.shape[0])
-            save_tensor(run_dir / "metrics" / "final_samples.pt", samples[:panel_count])
-            save_tensor(
-                run_dir / "metrics" / "final_neighbors.pt",
-                train_tensor[neighbor_stats["indices"][:panel_count]],
-            )
 
-    save_json(run_dir / "metrics" / "checkpoint_metrics.json", records)
-    save_json(run_dir / "metrics" / "loss_eval.json", loss_records)
-    _update_run_summary(run_dir, records, loss_records)
-    return {
-        "checkpoint_metrics": records,
-        "loss_eval": loss_records,
-    }
-
-
-def _update_run_summary(run_dir, records, loss_records):
+def _update_run_summary(run_dir, records, loss_records, checkpoint_sample_previews=None):
     run_dir = Path(run_dir)
     run_summary_path = run_dir / "artifacts" / "run_summary.json"
     run_summary = load_json(run_summary_path) if run_summary_path.exists() else {}
@@ -201,6 +232,10 @@ def _update_run_summary(run_dir, records, loss_records):
                 (run_dir / "metrics" / "checkpoint_metrics.json").resolve()
             ),
             "loss_eval_path": str((run_dir / "metrics" / "loss_eval.json").resolve()),
+            "checkpoint_sample_previews_path": str(
+                (run_dir / "metrics" / "checkpoint_sample_previews.json").resolve()
+            ),
+            "checkpoint_sample_previews": list(checkpoint_sample_previews or []),
             "final_samples_path": str((run_dir / "metrics" / "final_samples.pt").resolve()),
             "final_neighbors_path": str((run_dir / "metrics" / "final_neighbors.pt").resolve()),
             "final_metrics": records[-1] if records else {},
@@ -208,11 +243,6 @@ def _update_run_summary(run_dir, records, loss_records):
         }
     )
     save_json(run_summary_path, run_summary)
-
-
-def _time_key(value):
-    return str(float(value)).replace(".", "_")
-
 
 __all__ = [
     "DEFAULT_FIXED_TIMES",

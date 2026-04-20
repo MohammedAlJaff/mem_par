@@ -13,11 +13,6 @@ RUNNER_NAME = "image32_unet"
 DEFAULT_STUDY_DIR = "outputs/prototype_runners/image32_unet"
 
 
-def _default_wandb_project(fallback):
-    project = os.getenv("WANDB_PROJECT", "").strip()
-    return project if project else fallback
-
-
 def _default_wandb_entity(fallback):
     entity = os.getenv("WANDB_ENTITY", "").strip()
     return entity if entity else fallback
@@ -139,6 +134,7 @@ DEFAULT_SETTINGS = {
     "n_eval": 128,
     "n_steps": 30000,
     "ckpt_every": 2000,
+    "log_every": None,
     "batch_cap": 64,
     "eval_samples": 64,
     "sampling_steps": 24,
@@ -162,7 +158,7 @@ DEFAULT_SETTINGS = {
     "time_emb_dim": None,
     "wandb": True,
     "wandb_mode": "online",
-    "wandb_project": _default_wandb_project("memparam_mnist_tests"),
+    "wandb_project": "",
     "wandb_entity": _default_wandb_entity("maj90"),
     "wandb_name": "",
     "wandb_group": "",
@@ -171,6 +167,10 @@ DEFAULT_SETTINGS = {
     "wandb_strict": False,
     "sanity_updates": 0,
     "sanity_only": False,
+    "visual_sanity": False,
+    "visual_sanity_count": 8,
+    "visual_sanity_updates": 2,
+    "visual_sanity_show": True,
 }
 
 
@@ -272,7 +272,11 @@ def build_config(settings):
     config.training.seed = int(settings["seed"])
     config.training.n_steps = int(settings["n_steps"])
     config.training.ckpt_every = int(settings["ckpt_every"])
-    config.training.log_every = max(1, min(500, int(config.training.ckpt_every)))
+    log_every = settings.get("log_every")
+    if log_every is None:
+        config.training.log_every = max(1, min(500, int(config.training.ckpt_every)))
+    else:
+        config.training.log_every = max(1, int(log_every))
     batch_cap = resolve_batch_cap(settings)
     config.training.batch_cap = batch_cap
     config.training.batch_size = batch_cap
@@ -295,6 +299,9 @@ def build_config(settings):
             settings["loss_eval_times"], defaults.evaluation.loss_eval_times
         )
     )
+    config.evaluation.loss_eval_batch_size = int(
+        _coalesce(getattr(defaults.evaluation, "loss_eval_batch_size", 0), 0)
+    )
     config.evaluation.chunk_size = max(
         int(_coalesce(defaults.evaluation.chunk_size, 128)),
         int(config.evaluation.n_samples),
@@ -305,6 +312,12 @@ def build_config(settings):
     # Sampling.
     config.sampling.method = defaults.sampling.method
     config.sampling.n_steps = int(_coalesce(settings["sampling_steps"], defaults.sampling.n_steps))
+
+    # Visual sanity checks.
+    config.visual_sanity.enabled = bool(settings["visual_sanity"])
+    config.visual_sanity.num_images = int(settings["visual_sanity_count"])
+    config.visual_sanity.n_updates = int(settings["visual_sanity_updates"])
+    config.visual_sanity.show = bool(settings["visual_sanity_show"])
 
     # Tracking.
     config.tracking.console.summary_every_steps = int(config.training.log_every)

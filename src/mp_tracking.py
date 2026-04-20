@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -66,12 +67,33 @@ def format_duration(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
-def _default_wandb_project(fallback):
-    return os.getenv("WANDB_PROJECT", "").strip() or fallback
+def _wandb_slug(value, fallback):
+    """
+    Build a compact W&B-safe name fragment while preserving useful underscores.
+    """
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-")
+    return text or fallback
+
+
+def _default_wandb_project(config):
+    dataset = _wandb_slug(getattr(config.data, "dataset", ""), "dataset")
+    model = _wandb_slug(getattr(config.network, "arch", ""), "model")
+    return os.getenv("WANDB_PROJECT", "").strip() or f"memparam-{dataset}-{model}"
 
 
 def _default_wandb_entity(fallback):
     return os.getenv("WANDB_ENTITY", "").strip() or fallback
+
+
+def _default_wandb_run_name(config):
+    dataset = _wandb_slug(getattr(config.data, "dataset", ""), "dataset")
+    model = _wandb_slug(getattr(config.network, "arch", ""), "model")
+    n_train = int(getattr(config.data, "n_train", 0))
+    prediction = _wandb_slug(getattr(config.framework, "prediction_space", ""), "pred")
+    loss = _wandb_slug(getattr(config.framework, "loss_space", ""), "loss")
+    seed = int(getattr(config.training, "seed", 0))
+    return f"{dataset}-{model}-N{n_train}-{prediction}_{loss}-s{seed}"
 
 
 def _safe_float(value):
@@ -166,9 +188,14 @@ class AttemptTracker:
             [
                 f"dataset:{self.config.data.dataset}",
                 f"arch:{self.config.network.arch}",
+                f"n_train:{self.config.data.n_train}",
                 f"prediction:{self.config.framework.prediction_space}",
                 f"loss:{self.config.framework.loss_space}",
                 f"seed:{self.status['seed_id']}",
+                f"lr:{self.config.training.lr}",
+                f"batch_cap:{self.config.training.batch_cap}",
+                f"steps:{self.config.training.n_steps}",
+                f"ckpt_every:{self.config.training.ckpt_every}",
             ]
         )
         deduped = []
@@ -244,6 +271,42 @@ class AttemptTracker:
         if bool(getattr(self._wandb_config, "strict", False)):
             raise
 
+    def _define_wandb_metric_axes(self):
+        """
+        Tell W&B which explicit fields should be used as x-axes.
+        """
+        if self._wandb_module is None or not hasattr(self._wandb_module, "define_metric"):
+            return
+        try:
+            self._wandb_module.define_metric("train/step")
+            self._wandb_module.define_metric("train/*", step_metric="train/step")
+            self._wandb_module.define_metric("eval/step")
+            self._wandb_module.define_metric("eval/*", step_metric="eval/step")
+            self._wandb_module.define_metric("visual_sanity/update")
+            self._wandb_module.define_metric(
+                "visual_sanity/*",
+                step_metric="visual_sanity/update",
+            )
+        except Exception as exc:
+            self.warn(
+                "W&B metric-axis definition failed; continuing with default axes: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _attach_explicit_step_metric(self, metrics, step):
+        """
+        Convert an optional caller step into a namespace-specific metric field.
+        """
+        if step is None:
+            return metrics
+        if any(key.startswith("visual_sanity/") for key in metrics):
+            metrics.setdefault("visual_sanity/update", int(step))
+        elif any(key.startswith("eval/") for key in metrics):
+            metrics.setdefault("eval/step", int(step))
+        elif any(key.startswith("train/") for key in metrics):
+            metrics.setdefault("train/step", int(step))
+        return metrics
+
     def _init_wandb(self):
         """
         Initialize one optional W&B run for this attempt.
@@ -253,20 +316,15 @@ class AttemptTracker:
             return
 
         mode = str(getattr(self._wandb_config, "mode", "offline"))
-        project = str(
-            getattr(
-                self._wandb_config,
-                "project",
-                _default_wandb_project("memparam_mnist_tests"),
-            )
-        )
+        configured_project = str(getattr(self._wandb_config, "project", "")).strip()
+        project = configured_project or _default_wandb_project(self.config)
         entity = str(
             getattr(self._wandb_config, "entity", _default_wandb_entity("maj90"))
         ).strip() or None
         notes = str(getattr(self._wandb_config, "notes", "")).strip() or None
         configured_name = str(getattr(self._wandb_config, "name", "")).strip()
         configured_group = str(getattr(self._wandb_config, "group", "")).strip()
-        run_name = configured_name or self.status["attempt_id"]
+        run_name = configured_name or _default_wandb_run_name(self.config)
         run_group = configured_group or self.status["run_id"]
         wandb_dir = self.attempt_dir / str(getattr(self._wandb_config, "dir", "logs/wandb"))
         wandb_dir.mkdir(parents=True, exist_ok=True)
@@ -287,10 +345,11 @@ class AttemptTracker:
                 notes=notes,
                 tags=self._wandb_tags(),
                 config=config_to_dict(self.config),
-                reinit=True,
+                reinit="finish_previous",
             )
             self._wandb_module = wandb_module
             self._wandb_run = run
+            self._define_wandb_metric_axes()
             metadata = self._status_wandb_payload(
                 enabled=True,
                 active=True,
@@ -564,6 +623,24 @@ class AttemptTracker:
             except Exception as exc:
                 self._handle_wandb_failure(exc, context=f"figure logging ({name})")
 
+    def log_figure_metric(self, metric_name, path, *, step=None):
+        """
+        Log one saved figure to W&B under a metric namespace with explicit axes.
+        """
+        if self._wandb_run is None or self._wandb_module is None or self._wandb_failed:
+            return
+        try:
+            payload = {
+                str(metric_name): self._wandb_module.Image(str(Path(path).resolve()))
+            }
+            payload = self._attach_explicit_step_metric(payload, step)
+            self._wandb_run.log(payload)
+        except Exception as exc:
+            self._handle_wandb_failure(
+                exc,
+                context=f"figure metric logging ({metric_name})",
+            )
+
     def log_metrics(self, metrics, *, step=None):
         """
         Send scalar metrics to W&B when it is active.
@@ -573,11 +650,9 @@ class AttemptTracker:
         clean_metrics = {key: value for key, value in metrics.items() if value is not None}
         if not clean_metrics:
             return
+        clean_metrics = self._attach_explicit_step_metric(clean_metrics, step)
         try:
-            if step is None:
-                self._wandb_run.log(clean_metrics)
-            else:
-                self._wandb_run.log(clean_metrics, step=int(step))
+            self._wandb_run.log(clean_metrics)
         except Exception as exc:
             self._handle_wandb_failure(exc, context="metric logging")
 

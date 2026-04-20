@@ -110,6 +110,8 @@ def get_base_config():
     evaluation.ratio_threshold = 0.5
     evaluation.sample_panel_count = 8
     evaluation.chunk_size = 256
+    evaluation.loss_eval_times = (0.5, 0.75)
+    evaluation.loss_eval_batch_size = 0
 
     sampling = config.sampling = ConfigDict()
     sampling.method = "heun"
@@ -117,6 +119,12 @@ def get_base_config():
 
     outputs = config.outputs = ConfigDict()
     outputs.run_name = "run"
+
+    visual_sanity = config.visual_sanity = ConfigDict()
+    visual_sanity.enabled = False
+    visual_sanity.num_images = 8
+    visual_sanity.n_updates = 2
+    visual_sanity.show = True
 
     tracking = config.tracking = ConfigDict()
 
@@ -130,7 +138,7 @@ def get_base_config():
     tracking_wandb = tracking.wandb = ConfigDict()
     tracking_wandb.enabled = False
     tracking_wandb.mode = "offline"
-    tracking_wandb.project = _default_wandb_project("memparam_mnist_tests")
+    tracking_wandb.project = ""
     tracking_wandb.entity = _default_wandb_entity("maj90")
     tracking_wandb.dir = "logs/wandb"
     tracking_wandb.tags = []
@@ -138,10 +146,6 @@ def get_base_config():
     tracking_wandb.strict = False
 
     return config
-
-
-def _default_wandb_project(fallback):
-    return os.getenv("WANDB_PROJECT", "").strip() or fallback
 
 
 def _default_wandb_entity(fallback):

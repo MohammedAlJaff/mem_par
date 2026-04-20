@@ -36,6 +36,7 @@ from ml_collections import ConfigDict
 from mp_config import config_to_dict
 
 TERMINAL_ATTEMPT_STATES = {"completed", "failed", "aborted"}
+DONE_ATTEMPT_PREFIX = "DONE_"
 
 
 def _slug(text):
@@ -120,7 +121,57 @@ def _attempt_paths(attempt_dir):
         "data_meta_path": attempt_dir / "artifacts" / "data_meta.json",
         "train_history_path": attempt_dir / "metrics" / "train_history.json",
         "checkpoint_metrics_path": attempt_dir / "metrics" / "checkpoint_metrics.json",
+        "loss_eval_path": attempt_dir / "metrics" / "loss_eval.json",
+        "checkpoint_sample_previews_path": (
+            attempt_dir / "metrics" / "checkpoint_sample_previews.json"
+        ),
     }
+
+
+def _attempt_status_path_fields(attempt_dir):
+    """
+    Build the absolute path fields stored in an attempt `status.json`.
+    """
+    attempt_dir = Path(attempt_dir)
+    paths = _attempt_paths(attempt_dir)
+    return {
+        "attempt_dir": str(attempt_dir.resolve()),
+        "artifacts_dir": str(paths["artifacts_dir"].resolve()),
+        "checkpoints_dir": str(paths["checkpoints_dir"].resolve()),
+        "metrics_dir": str(paths["metrics_dir"].resolve()),
+        "figures_dir": str(paths["figures_dir"].resolve()),
+        "logs_dir": str(paths["logs_dir"].resolve()),
+        "status_path": str(paths["status_path"].resolve()),
+        "events_log_path": str(paths["events_log_path"].resolve()),
+        "attempt_log_path": str(paths["attempt_log_path"].resolve()),
+        "config_path": str(paths["config_path"].resolve()),
+        "run_summary_path": str(paths["run_summary_path"].resolve()),
+        "data_meta_path": str(paths["data_meta_path"].resolve()),
+        "train_history_path": str(paths["train_history_path"].resolve()),
+        "checkpoint_metrics_path": str(paths["checkpoint_metrics_path"].resolve()),
+        "loss_eval_path": str(paths["loss_eval_path"].resolve()),
+        "checkpoint_sample_previews_path": str(
+            paths["checkpoint_sample_previews_path"].resolve()
+        ),
+    }
+
+
+def _rewrite_path_strings(value, old_root, new_root):
+    """
+    Rewrite absolute path strings under one attempt root after a folder rename.
+    """
+    old_root = str(Path(old_root).resolve())
+    new_root = str(Path(new_root).resolve())
+    if isinstance(value, dict):
+        return {
+            key: _rewrite_path_strings(item, old_root, new_root)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_rewrite_path_strings(item, old_root, new_root) for item in value]
+    if isinstance(value, str) and value.startswith(old_root):
+        return new_root + value[len(old_root) :]
+    return value
 
 
 def save_json(path, payload):
@@ -482,6 +533,138 @@ def _sync_status_into_manifests(attempt_dir, status):
         save_json(experiment_manifest_path, experiment_manifest)
 
 
+def _remove_old_attempt_manifest_entry(attempt_dir, old_attempt_id, new_attempt_id):
+    """
+    Remove stale manifest entries after an attempt folder receives DONE_.
+    """
+    if not old_attempt_id or old_attempt_id == new_attempt_id:
+        return
+
+    context = _layout_context(attempt_dir)
+    experiment_dir = context["experiment_dir"]
+    run_dir = context["run_dir"]
+    seed_dir = context["seed_dir"]
+    seed_id = context["seed_id"]
+
+    seed_manifest_path = seed_dir / "seed_manifest.json"
+    if seed_manifest_path.exists():
+        seed_manifest = load_json(seed_manifest_path)
+        seed_manifest.get("attempts", {}).pop(old_attempt_id, None)
+        if seed_manifest.get("latest_attempt") == old_attempt_id:
+            seed_manifest["latest_attempt"] = new_attempt_id
+        if seed_manifest.get("latest_completed_attempt") == old_attempt_id:
+            seed_manifest["latest_completed_attempt"] = new_attempt_id
+        save_json(seed_manifest_path, seed_manifest)
+
+    run_manifest_path = run_dir / "run_manifest.json"
+    if run_manifest_path.exists():
+        run_manifest = load_json(run_manifest_path)
+        seed_entry = run_manifest.get("seeds", {}).get(seed_id)
+        if seed_entry is not None:
+            if seed_entry.get("latest_attempt") == old_attempt_id:
+                seed_entry["latest_attempt"] = new_attempt_id
+            if seed_entry.get("latest_completed_attempt") == old_attempt_id:
+                seed_entry["latest_completed_attempt"] = new_attempt_id
+            save_json(run_manifest_path, run_manifest)
+
+    experiment_manifest_path = experiment_dir / "experiment_manifest.json"
+    if experiment_manifest_path.exists():
+        experiment_manifest = load_json(experiment_manifest_path)
+        experiment_manifest["last_updated_at"] = _iso_now()
+        save_json(experiment_manifest_path, experiment_manifest)
+
+
+def _refresh_run_summary_paths(attempt_dir, old_attempt_dir, original_attempt_id):
+    """
+    Rewrite run-summary paths after a successful-training DONE_ rename.
+    """
+    attempt_dir = Path(attempt_dir)
+    summary_path = _attempt_paths(attempt_dir)["run_summary_path"]
+    if not summary_path.exists():
+        return None
+
+    summary = load_json(summary_path)
+    summary = _rewrite_path_strings(summary, old_attempt_dir, attempt_dir)
+    summary.update(
+        {
+            "run_dir": str(attempt_dir.resolve()),
+            "attempt_id": attempt_dir.name,
+            "original_attempt_id": original_attempt_id,
+            "artifacts_dir": str((attempt_dir / "artifacts").resolve()),
+            "checkpoints_dir": str((attempt_dir / "checkpoints").resolve()),
+            "metrics_dir": str((attempt_dir / "metrics").resolve()),
+            "figures_dir": str((attempt_dir / "figures").resolve()),
+            "logs_dir": str((attempt_dir / "logs").resolve()),
+            "status_path": str((attempt_dir / "status.json").resolve()),
+            "attempt_log_path": str((attempt_dir / "logs" / "attempt.log").resolve()),
+        }
+    )
+    save_json(summary_path, summary)
+    return summary
+
+
+def mark_attempt_done(attempt_dir):
+    """
+    Rename a successfully trained attempt folder with a DONE_ prefix.
+
+    The marker is applied only when callers explicitly invoke this helper on
+    the successful path. Failed and aborted attempts remain at their original
+    paths.
+    """
+    attempt_dir = Path(attempt_dir).resolve()
+    if attempt_dir.name.startswith(DONE_ATTEMPT_PREFIX):
+        status = load_attempt_status(attempt_dir)
+        status["attempt_id"] = attempt_dir.name
+        status.update(_attempt_status_path_fields(attempt_dir))
+        save_json(_attempt_paths(attempt_dir)["status_path"], status)
+        _sync_status_into_manifests(attempt_dir, status)
+        return attempt_dir
+
+    done_attempt_dir = attempt_dir.with_name(f"{DONE_ATTEMPT_PREFIX}{attempt_dir.name}")
+    if done_attempt_dir.exists():
+        raise FileExistsError(f"DONE attempt directory already exists: {done_attempt_dir}")
+
+    status = load_attempt_status(attempt_dir)
+    original_attempt_id = (
+        status.get("original_attempt_id")
+        or status.get("attempt_id")
+        or attempt_dir.name
+    )
+
+    old_attempt_dir = attempt_dir
+    attempt_dir.rename(done_attempt_dir)
+
+    status = _rewrite_path_strings(status, old_attempt_dir, done_attempt_dir)
+    status["attempt_id"] = done_attempt_dir.name
+    status["original_attempt_id"] = original_attempt_id
+    status["updated_at"] = _iso_now()
+    status.update(_attempt_status_path_fields(done_attempt_dir))
+    save_json(_attempt_paths(done_attempt_dir)["status_path"], status)
+
+    _refresh_run_summary_paths(
+        done_attempt_dir,
+        old_attempt_dir,
+        original_attempt_id,
+    )
+    _remove_old_attempt_manifest_entry(
+        done_attempt_dir,
+        original_attempt_id,
+        done_attempt_dir.name,
+    )
+    _sync_status_into_manifests(done_attempt_dir, status)
+    _append_event_log(
+        done_attempt_dir,
+        {
+            "timestamp": _iso_now(),
+            "event_type": "attempt_folder_marked_done",
+            "state": status.get("state"),
+            "attempt_id": done_attempt_dir.name,
+            "original_attempt_id": original_attempt_id,
+        },
+    )
+    return done_attempt_dir
+
+
 def create_run_layout(experiment_dir, config):
     """
     Create the canonical attempt directory tree for one training launch.
@@ -541,6 +724,10 @@ def create_run_layout(experiment_dir, config):
         "data_meta_path": str(paths["data_meta_path"].resolve()),
         "train_history_path": str(paths["train_history_path"].resolve()),
         "checkpoint_metrics_path": str(paths["checkpoint_metrics_path"].resolve()),
+        "loss_eval_path": str(paths["loss_eval_path"].resolve()),
+        "checkpoint_sample_previews_path": str(
+            paths["checkpoint_sample_previews_path"].resolve()
+        ),
         "progress": {},
         "latest_metrics": {},
         "last_checkpoint": None,

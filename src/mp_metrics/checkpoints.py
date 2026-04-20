@@ -20,6 +20,11 @@ from mp_artifacts import (
     save_tensor,
     update_attempt_status,
 )
+from mp_metrics.checkpoint_previews import (
+    checkpoint_preview_figure_name,
+    collect_checkpoint_sample_preview_record,
+)
+from mp_metrics.loss_eval import collect_loss_eval_record, loss_eval_metric_payload
 from mp_metrics.memorization import compute_memorization_metrics, compute_nn_stats
 from mp_tracking import AttemptTracker
 
@@ -201,6 +206,8 @@ def evaluate_run(run_dir, device="cpu"):
 
         model = GDFM(config).to(device)
         records = []
+        loss_records = []
+        checkpoint_sample_previews = []
         checkpoint_paths = list_checkpoint_paths(run_dir)
 
         if not checkpoint_paths:
@@ -220,13 +227,49 @@ def evaluate_run(run_dir, device="cpu"):
                 # Use the same saved `z_init` at every checkpoint so changes in the
                 # curve reflect the model, not evaluation randomness.
                 state = torch.load(checkpoint_path, map_location=device)
+                step = int(state["step"])
                 model.load_state_dict(state["model"])
+                loss_record = collect_loss_eval_record(
+                    step,
+                    model,
+                    reference_tensor,
+                    config,
+                    device,
+                )
+                loss_records.append(loss_record)
+                tracker.log_metrics(loss_eval_metric_payload(loss_record), step=step)
                 samples = model.sample(
                     z_init.clone().to(device),
                     n_steps=int(config.sampling.n_steps),
                     method=str(config.sampling.method),
                     device=device,
                 ).cpu()
+                try:
+                    preview_record = collect_checkpoint_sample_preview_record(
+                        step=step,
+                        samples=samples,
+                        train_tensor=train_tensor,
+                        run_dir=run_dir,
+                        config=config,
+                    )
+                    checkpoint_sample_previews.append(preview_record)
+                    if preview_record.get("figure_path"):
+                        figure_name = checkpoint_preview_figure_name(step)
+                        tracker.register_figure(
+                            figure_name,
+                            preview_record["figure_path"],
+                            log_to_wandb=False,
+                        )
+                        tracker.log_figure_metric(
+                            "eval/checkpoint_samples_over_train",
+                            preview_record["figure_path"],
+                            step=step,
+                        )
+                except Exception as exc:
+                    tracker.warn(
+                        "checkpoint sample preview skipped "
+                        f"step={step}: {type(exc).__name__}: {exc}"
+                    )
 
                 metrics = compute_memorization_metrics(
                     samples,
@@ -244,7 +287,7 @@ def evaluate_run(run_dir, device="cpu"):
                 # Keep both generated-sample and held-out-reference metrics at the same
                 # checkpoint so later plots can compare them directly.
                 record = {
-                    "step": int(state["step"]),
+                    "step": step,
                     "ratio_threshold": metrics["ratio_threshold"],
                     "f_mem": metrics["f_mem"],
                     "mean_nn_ratio": metrics["mean_nn_ratio"],
@@ -294,6 +337,11 @@ def evaluate_run(run_dir, device="cpu"):
             progress.close()
 
         save_json(run_dir / "metrics" / "checkpoint_metrics.json", records)
+        save_json(run_dir / "metrics" / "loss_eval.json", loss_records)
+        save_json(
+            run_dir / "metrics" / "checkpoint_sample_previews.json",
+            checkpoint_sample_previews,
+        )
         figure_paths = _save_checkpoint_metric_figures(records, run_dir / "figures")
         for name, path in figure_paths.items():
             tracker.register_figure(name, path)
@@ -302,6 +350,7 @@ def evaluate_run(run_dir, device="cpu"):
         run_summary = load_json(run_summary_path) if run_summary_path.exists() else {}
         evaluation_wall_time_sec = time.perf_counter() - eval_start
         final_record = records[-1]
+        final_loss_record = loss_records[-1] if loss_records else {}
         run_summary.update(
             {
                 "evaluation_wall_time_sec": evaluation_wall_time_sec,
@@ -312,7 +361,13 @@ def evaluate_run(run_dir, device="cpu"):
                 "final_neighbors_path": str(
                     (run_dir / "metrics" / "final_neighbors.pt").resolve()
                 ),
+                "loss_eval_path": str((run_dir / "metrics" / "loss_eval.json").resolve()),
+                "checkpoint_sample_previews_path": str(
+                    (run_dir / "metrics" / "checkpoint_sample_previews.json").resolve()
+                ),
+                "checkpoint_sample_previews": checkpoint_sample_previews,
                 "final_metrics": final_record,
+                "final_loss_eval": final_loss_record,
                 "generated_figures": tracker.status.get("generated_figures"),
                 "wandb": tracker.status.get("wandb"),
             }
@@ -327,6 +382,8 @@ def evaluate_run(run_dir, device="cpu"):
                 "eval/final_baseline_mean_nn_ratio": final_record["baseline_mean_nn_ratio"],
                 "eval/final_baseline_std_nn_ratio": final_record["baseline_std_nn_ratio"],
                 "eval/evaluation_wall_time_sec": evaluation_wall_time_sec,
+                "eval/final_random_t_loss": final_loss_record.get("random_t_loss"),
+                "eval/final_fixed_t_loss_mean": final_loss_record.get("fixed_t_loss_mean"),
             },
             step=int(final_record["step"]),
         )
@@ -340,6 +397,11 @@ def evaluate_run(run_dir, device="cpu"):
             checkpoint_metrics_path=str(
                 (run_dir / "metrics" / "checkpoint_metrics.json").resolve()
             ),
+            loss_eval_path=str((run_dir / "metrics" / "loss_eval.json").resolve()),
+            checkpoint_sample_previews_path=str(
+                (run_dir / "metrics" / "checkpoint_sample_previews.json").resolve()
+            ),
+            checkpoint_sample_previews=checkpoint_sample_previews,
             final_samples_path=str((run_dir / "metrics" / "final_samples.pt").resolve()),
             final_neighbors_path=str(
                 (run_dir / "metrics" / "final_neighbors.pt").resolve()

@@ -133,6 +133,17 @@ class TestProtoRunners(unittest.TestCase):
             self.assertEqual(config.network.arch, arch, name)
             self.assertEqual(config.training.batch_cap, knobs["batch_cap"])
             self.assertEqual(config.training.batch_size, knobs["batch_cap"])
+            self.assertEqual(config.training.lr, 0.005)
+            self.assertEqual(config.tracking.wandb.project, "")
+
+    def test_image_runner_exposes_train_loss_log_cadence(self):
+        knobs = image32_unet.default_knobs()
+        knobs["log_every"] = 7
+        config = image32_unet.build_config(knobs)
+        args = image32_unet.parse_args(["--log-every", "7"])
+
+        self.assertEqual(config.training.log_every, 7)
+        self.assertEqual(args.log_every, 7)
 
     def test_image_runners_accept_parameterization_spaces(self):
         for name, module, _, _ in RECIPE_RUNNERS:
@@ -271,7 +282,8 @@ class TestProtoRunners(unittest.TestCase):
         self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
         self.assertIn("random_t_loss", metrics["loss_eval"])
-        self.assertIn("loss_t_0_1", metrics["loss_eval"])
+        self.assertIn("loss_t_0_5", metrics["loss_eval"])
+        self.assertIn("loss_t_0_75", metrics["loss_eval"])
 
     @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
     def test_image32_unet_recipe_steps_use_fake_celeba_dataset(self):
@@ -303,6 +315,52 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
         self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
+
+    @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
+    def test_image32_visual_sanity_full_run_writes_checkpoint_previews(self):
+        knobs = image32_unet.default_knobs()
+        knobs.update(
+            {
+                "dataset": "mnist",
+                "n_train": 4,
+                "n_eval": 4,
+                "n_steps": 1,
+                "ckpt_every": 1,
+                "batch_cap": 2,
+                "eval_samples": 2,
+                "sampling_steps": 2,
+                "image_size": 16,
+                "base_channels": 8,
+                "channel_mult": (1, 2),
+                "attn_resolutions": (8,),
+                "num_res_blocks": 1,
+                "time_emb_dim": 16,
+                "download": False,
+                "balance_train_classes": False,
+                "balance_reference_classes": False,
+                "wandb": False,
+                "visual_sanity": True,
+                "visual_sanity_count": 2,
+                "visual_sanity_updates": 0,
+                "visual_sanity_show": False,
+            }
+        )
+        config = image32_unet.build_config(knobs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = image32_unet.run_full_job(config, tmpdir, "cpu", evaluate=True)
+
+            previews = result["checkpoint_sample_previews"]
+            self.assertGreater(len(previews), 0)
+            self.assertTrue(Path(result["artifacts"]["checkpoint_sample_previews"]["path"]).is_file())
+            self.assertTrue(Path(previews[-1]["samples_path"]).is_file())
+            self.assertTrue(Path(previews[-1]["figure_path"]).is_file())
+            summary_path = Path(result["run_dir"]) / "artifacts" / "run_summary.json"
+            run_summary = json.loads(summary_path.read_text())
+            live_previews = run_summary["visual_sanity"]["live_checkpoint_samples"]
+            self.assertGreater(len(live_previews), 0)
+            self.assertTrue(Path(live_previews[-1]["path"]).is_file())
 
     def test_synthetic_tiny_full_run_writes_release_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -345,6 +403,8 @@ class TestProtoRunners(unittest.TestCase):
                         "1",
                         "--ckpt-every",
                         "1",
+                        "--checkpoint-preview-count",
+                        "3",
                         "--log-every",
                         "1",
                     ]
@@ -354,9 +414,18 @@ class TestProtoRunners(unittest.TestCase):
             self.assertTrue(result["batch"]["drop_last"])
             self.assertIn("ambient_f_mem", result["final_metrics"])
             self.assertIn("latent_f_mem", result["final_metrics"])
+            self.assertIn("random_t_loss", result["final_loss_eval"])
+            self.assertIn("loss_t_0_5", result["final_loss_eval"])
+            self.assertIn("loss_t_0_75", result["final_loss_eval"])
             self.assertNotIn("f_mem", result["final_metrics"])
             self.assertTrue(Path(result["paths"]["metrics_along_training"]).is_file())
+            self.assertTrue(Path(result["paths"]["loss_eval"]).is_file())
+            self.assertTrue(Path(result["paths"]["checkpoint_sample_previews"]).is_file())
             self.assertTrue(Path(result["paths"]["final_samples"]).is_file())
+            self.assertGreater(len(result["checkpoint_sample_previews"]), 0)
+            preview_path = Path(result["checkpoint_sample_previews"][-1]["samples_path"])
+            self.assertTrue(preview_path.is_file())
+            self.assertEqual(torch.load(preview_path, map_location="cpu").shape[0], 3)
 
     def test_notebooks_have_required_sections_and_no_outputs(self):
         recipe_sections = [
