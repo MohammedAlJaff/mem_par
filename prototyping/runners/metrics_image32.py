@@ -88,10 +88,12 @@ def collect_reference_memory(reference_tensor, train_tensor, *, chunk_size, conf
     )
 
 
-def evaluate_image32_run(run_dir, device="cpu", fixed_times=DEFAULT_FIXED_TIMES):
+def evaluate_image32_run(run_dir, device="cpu", fixed_times=None):
     """Evaluate checkpoint memorization and fixed/random-t losses."""
     run_dir = Path(run_dir)
     config = load_config_snapshot(run_dir)
+    if fixed_times is None:
+        fixed_times = tuple(config.evaluation.loss_eval_times)
     configure_torch_runtime(config, device)
     tracker = None
     try:

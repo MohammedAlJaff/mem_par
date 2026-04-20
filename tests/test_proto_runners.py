@@ -145,6 +145,8 @@ class TestProtoRunners(unittest.TestCase):
             self.assertEqual(config.runtime.precision, "fp32")
             self.assertEqual(config.study.dataset_key, "celeba32_grey")
             self.assertEqual(config.tracking.wandb.project, "memparam-celeba32_grey-unet")
+            self.assertFalse(settings["final_eval"])
+            self.assertIsNone(settings["eval_run_dir"])
 
     def test_image_runner_exposes_train_loss_log_cadence(self):
         settings = image_runner.default_settings()
@@ -157,6 +159,8 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(args.log_every, 7)
         self.assertEqual(default_args.precision, "fp32")
         self.assertFalse(default_args.compare_numerics)
+        self.assertFalse(default_args.final_eval)
+        self.assertIsNone(default_args.eval_run_dir)
 
     def test_image_runner_accepts_slim_cli_surface(self):
         args = image_runner.parse_args(
@@ -192,6 +196,9 @@ class TestProtoRunners(unittest.TestCase):
                 "--precision",
                 "bf16",
                 "--compare-numerics",
+                "--final-eval",
+                "--eval-run-dir",
+                "DONE_some_attempt",
                 "--eval-samples",
                 "6",
                 "--sampling-steps",
@@ -224,6 +231,8 @@ class TestProtoRunners(unittest.TestCase):
         self.assertFalse(args.wandb)
         self.assertEqual(args.precision, "bf16")
         self.assertTrue(args.compare_numerics)
+        self.assertTrue(args.final_eval)
+        self.assertEqual(args.eval_run_dir, "DONE_some_attempt")
         self.assertTrue(args.generation_trace)
         self.assertEqual(config.runtime.precision, "bf16")
         self.assertEqual(config.tracking.wandb.project, "proj")
@@ -484,6 +493,56 @@ class TestProtoRunners(unittest.TestCase):
         self.assertIn("f_mem", metrics["reference_memory"])
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
+    def test_image_runner_default_run_skips_final_eval_but_keeps_generation_trace(self):
+        settings = image_runner.default_settings()
+        settings.update(
+            {
+                "dataset": "mnist",
+                "n_train": 4,
+                "n_eval": 4,
+                "n_steps": 1,
+                "ckpt_every": 1,
+                "batch_cap": 2,
+                "eval_samples": 2,
+                "sampling_steps": 2,
+                "image_size": 16,
+                "base_channels": 8,
+                "channel_mult": (1, 2),
+                "attn_resolutions": (8,),
+                "num_res_blocks": 1,
+                "time_emb_dim": 16,
+                "download": False,
+                "balance_train_classes": False,
+                "balance_reference_classes": False,
+                "wandb": False,
+                "generation_trace": True,
+                "generation_trace_count": 2,
+                "generation_trace_show": False,
+            }
+        )
+        config = image_runner.build_config(settings)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = image_runner.run_full_job(config, tmpdir, "cpu")
+
+            self.assertEqual(result["checkpoint_metrics"], [])
+            self.assertEqual(result["loss_eval"], [])
+            self.assertEqual(result["checkpoint_sample_previews"], [])
+            self.assertFalse(Path(result["artifacts"]["checkpoint_metrics"]["path"]).exists())
+            self.assertFalse(Path(result["artifacts"]["loss_eval"]["path"]).exists())
+            self.assertFalse(
+                Path(result["artifacts"]["checkpoint_sample_previews"]["path"]).exists()
+            )
+            summary_path = Path(result["run_dir"]) / "artifacts" / "run_summary.json"
+            run_summary = json.loads(summary_path.read_text())
+            trace = run_summary["generation_trace"]
+            self.assertTrue(Path(trace["z_init_path"]).is_file())
+            self.assertTrue(Path(trace["train_grid_path"]).is_file())
+            self.assertTrue(Path(trace["final_samples_path"]).is_file())
+            self.assertGreater(len(trace["checkpoint_samples"]), 0)
+
+    @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_image32_generation_trace_full_run_writes_checkpoint_previews(self):
         settings = image_runner.default_settings()
         settings.update(
@@ -532,6 +591,75 @@ class TestProtoRunners(unittest.TestCase):
             self.assertGreater(len(checkpoint_trace), 0)
             self.assertEqual(checkpoint_trace[0]["step"], 0)
             self.assertTrue(Path(checkpoint_trace[-1]["path"]).is_file())
+
+    @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
+    def test_image_runner_eval_run_dir_replays_finished_done_run(self):
+        settings = image_runner.default_settings()
+        settings.update(
+            {
+                "dataset": "mnist",
+                "n_train": 4,
+                "n_eval": 4,
+                "n_steps": 1,
+                "ckpt_every": 1,
+                "batch_cap": 2,
+                "eval_samples": 2,
+                "sampling_steps": 2,
+                "image_size": 16,
+                "base_channels": 8,
+                "channel_mult": (1, 2),
+                "attn_resolutions": (8,),
+                "num_res_blocks": 1,
+                "time_emb_dim": 16,
+                "download": False,
+                "balance_train_classes": False,
+                "balance_reference_classes": False,
+                "wandb": False,
+                "generation_trace": False,
+            }
+        )
+        config = image_runner.build_config(settings)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with contextlib.redirect_stdout(io.StringIO()):
+                train_result = image_runner.run_full_job(config, tmpdir, "cpu")
+            run_dir = Path(train_result["run_dir"])
+            self.assertTrue(run_dir.name.startswith("DONE_"))
+            self.assertFalse(Path(train_result["artifacts"]["checkpoint_metrics"]["path"]).exists())
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                eval_result = image_runner.main(
+                    ["--device", "cpu", "--eval-run-dir", str(run_dir)]
+                )
+
+            self.assertEqual(eval_result["mode"], "eval_run_dir")
+            self.assertEqual(Path(eval_result["run_dir"]), run_dir)
+            self.assertGreater(len(eval_result["checkpoint_metrics"]), 0)
+            self.assertGreater(len(eval_result["loss_eval"]), 0)
+            self.assertGreater(len(eval_result["checkpoint_sample_previews"]), 0)
+            self.assertTrue(Path(eval_result["artifacts"]["checkpoint_metrics"]["path"]).is_file())
+            status = json.loads((run_dir / "status.json").read_text())
+            self.assertEqual(status["state"], "completed")
+
+    def test_image_runner_eval_run_dir_rejects_unfinished_or_incomplete_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            with self.assertRaisesRegex(ValueError, "DONE_"):
+                image_runner.run_eval_job(root / "attempt_0001", "cpu")
+
+            for state in ("failed", "aborted"):
+                done_bad = root / f"DONE_{state}"
+                done_bad.mkdir()
+                (done_bad / "status.json").write_text(json.dumps({"state": state}))
+                with self.assertRaisesRegex(ValueError, "trained"):
+                    image_runner.run_eval_job(done_bad, "cpu")
+
+            done_incomplete = root / "DONE_incomplete"
+            done_incomplete.mkdir()
+            (done_incomplete / "status.json").write_text(json.dumps({"state": "trained"}))
+            with self.assertRaisesRegex(FileNotFoundError, "required saved-run artifacts"):
+                image_runner.run_eval_job(done_incomplete, "cpu")
 
     def test_synthetic_tiny_full_run_writes_release_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:

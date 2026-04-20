@@ -34,6 +34,7 @@ from prototyping.runners.image_runner_config_builder import (
 from gdfm import GDFM
 from mp_config import clone_config
 from mp_data import build_data_bundle
+from mp_artifacts import list_checkpoint_paths, load_attempt_status
 from mp_runtime import (
     PRECISION_CHOICES,
     autocast_context,
@@ -42,6 +43,17 @@ from mp_runtime import (
     validate_precision,
 )
 from mp_training import train_run
+
+DONE_ATTEMPT_PREFIX = "DONE_"
+EVAL_READY_STATES = {"trained", "completed"}
+EVAL_REQUIRED_FILES = (
+    "status.json",
+    "artifacts/config.json",
+    "artifacts/train_tensor.pt",
+    "artifacts/reference_tensor.pt",
+    "artifacts/z_init.pt",
+    "artifacts/run_summary.json",
+)
 
 
 def default_settings():
@@ -90,7 +102,7 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
     return result
 
 
-def run_full_job(config, out_dir, device, evaluate=True):
+def run_full_job(config, out_dir, device, evaluate=False):
     """Run canonical training, then image checkpoint metrics if requested."""
     # Training remains canonical; empirical metrics live beside this runner.
     run_dir = train_run(config, Path(out_dir), device=device)
@@ -113,6 +125,58 @@ def run_full_job(config, out_dir, device, evaluate=True):
         "loss_eval": evaluation["loss_eval"],
         "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
         "config": config,
+        "artifacts": artifact_paths(run_dir),
+    }
+
+
+def _validate_eval_run_dir(run_dir):
+    """Return a replayable DONE attempt directory or raise a clear error."""
+    run_dir = Path(run_dir).expanduser().resolve()
+    if not run_dir.name.startswith(DONE_ATTEMPT_PREFIX):
+        raise ValueError(
+            "eval-run-dir must be a finished DONE_ attempt directory; "
+            f"got {run_dir}"
+        )
+
+    status_path = run_dir / "status.json"
+    if not status_path.is_file():
+        raise FileNotFoundError(f"eval-run-dir is missing status.json: {run_dir}")
+
+    status = load_attempt_status(run_dir)
+    state = str(status.get("state", ""))
+    if state not in EVAL_READY_STATES:
+        raise ValueError(
+            "eval-run-dir must have status state 'trained' or 'completed'; "
+            f"got {state!r} for {run_dir}"
+        )
+
+    missing = [
+        str((run_dir / relative_path).resolve())
+        for relative_path in EVAL_REQUIRED_FILES
+        if not (run_dir / relative_path).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "eval-run-dir is missing required saved-run artifacts: "
+            + ", ".join(missing)
+        )
+
+    checkpoint_paths = list_checkpoint_paths(run_dir)
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"eval-run-dir has no checkpoints: {run_dir / 'checkpoints'}")
+    return run_dir
+
+
+def run_eval_job(run_dir, device):
+    """Replay checkpoint metrics for one finished DONE attempt directory."""
+    run_dir = _validate_eval_run_dir(run_dir)
+    evaluation = evaluate_image32_run(run_dir, device=device)
+    return {
+        "mode": "eval_run_dir",
+        "run_dir": str(run_dir),
+        "checkpoint_metrics": evaluation["checkpoint_metrics"],
+        "loss_eval": evaluation["loss_eval"],
+        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
         "artifacts": artifact_paths(run_dir),
     }
 
@@ -348,6 +412,17 @@ def parse_args(argv=None):
         help="Benchmark fp32 against the selected precision without writing a run.",
     )
     parser.add_argument(
+        "--final-eval",
+        action=argparse.BooleanOptionalAction,
+        default=settings["final_eval"],
+        help="Run checkpoint metrics after training. Defaults off; replay later with --eval-run-dir.",
+    )
+    parser.add_argument(
+        "--eval-run-dir",
+        default=settings["eval_run_dir"],
+        help="Evaluate an existing finished DONE_ attempt directory instead of training.",
+    )
+    parser.add_argument(
         "--eval-samples",
         type=int,
         default=settings["eval_samples"],
@@ -409,6 +484,14 @@ def parse_args(argv=None):
 def main(argv=None):
     """CLI entrypoint for the image UNet recipe."""
     args = parse_args(argv)
+
+    if args.eval_run_dir is not None:
+        if args.compare_numerics:
+            raise ValueError("--eval-run-dir cannot be combined with --compare-numerics")
+        result = run_eval_job(args.eval_run_dir, args.device)
+        _print_eval_result(result)
+        return result
+
     settings = vars(args)
     config = build_config(settings)
 
@@ -421,7 +504,12 @@ def main(argv=None):
     if args.compare_numerics:
         return compare_numerics(config, args.device)
 
-    result = run_full_job(config, args.out_dir, args.device, evaluate=True)
+    result = run_full_job(
+        config,
+        args.out_dir,
+        args.device,
+        evaluate=bool(args.final_eval),
+    )
     _print_result(result)
     return result["run_dir"]
 
@@ -439,6 +527,19 @@ def _print_result(result):
     _print_kv("run_dir:", result["run_dir"])
     _print_kv("checkpoints:", result["artifacts"]["checkpoints"]["path"])
     _print_kv("figures:", result["artifacts"]["figures"]["path"])
+    _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
+    _print_kv("loss_eval:", result["artifacts"]["loss_eval"]["path"])
+    _print_kv(
+        "sample_previews:",
+        result["artifacts"]["checkpoint_sample_previews"]["path"],
+    )
+    if not result["checkpoint_metrics"]:
+        _print_kv("final_eval:", "skipped; replay later with --eval-run-dir")
+
+
+def _print_eval_result(result):
+    _print_kv("eval_run_dir:", result["run_dir"])
+    _print_kv("checkpoints:", len(result["checkpoint_metrics"]))
     _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
     _print_kv("loss_eval:", result["artifacts"]["loss_eval"]["path"])
     _print_kv(

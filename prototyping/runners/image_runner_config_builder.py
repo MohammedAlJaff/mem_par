@@ -197,6 +197,8 @@ DEFAULT_SETTINGS = {
     # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
     "precision": "fp32",
     "compare_numerics": False,
+    "final_eval": False,
+    "eval_run_dir": None,
 
     # Sampling/evaluation.
     # eval_samples: generated samples per checkpoint; also the size of z_init.pt.

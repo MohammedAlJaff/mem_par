@@ -1169,3 +1169,46 @@ scientific training step unambiguous. Keep DDP/multi-GPU out of this runner.
 - Run longer Flowers128/AFHQ256 BF16 jobs with dataset-specific W&B projects.
 - Start any multi-GPU work in a separate DDP runner rather than expanding
   `image_runner.py`.
+
+## 2026-04-20T04:29:38Z - Make Image Runner Final Evaluation Replayable
+
+### Context
+For long 128px/256px runs, doing checkpoint metrics immediately after training
+is not always worth the wall-clock cost because the run already saves all
+artifacts needed to evaluate later.
+
+### Intent
+Keep training checkpoint-first and make evaluation an explicit choice: skip it
+by default for long jobs, opt into it when desired, and allow metrics to be
+replayed later from finished `DONE_...` attempts.
+
+### Changed / Observed
+- Added `--final-eval/--no-final-eval` to `image_runner`; the default is now
+  `--no-final-eval`.
+- Added `--eval-run-dir` to replay image checkpoint metrics from an existing
+  finished attempt directory.
+- Enforced the replay contract: the eval path accepts only `DONE_...` attempt
+  folders with `status.json` state `trained` or `completed`, required saved-run
+  artifacts, and at least one checkpoint.
+- Kept training artifacts unchanged: config snapshot, train/reference tensors,
+  `z_init.pt`, checkpoints, train history, and generation trace remain written
+  during training.
+- Kept immediate final evaluation available with `--final-eval`; replay eval
+  uses the saved config and existing W&B run id.
+
+### Commands / Checks
+- `python -m unittest tests.test_proto_runners`
+- `python -m unittest tests.test_checkpoint_previews tests.test_experiment_pipeline tests.test_loss_eval`
+- `git diff --check`
+- `python -m py_compile prototyping/runners/image_runner.py prototyping/runners/image_runner_config_builder.py prototyping/runners/metrics_image32.py tests/test_proto_runners.py`
+- `python -m prototyping.runners.image_runner --help`
+
+### Results
+- `tests.test_proto_runners`: 22 tests passed.
+- Checkpoint/experiment/loss-eval suite: 9 tests passed.
+- Whitespace, byte-compile, and CLI help checks passed.
+- Only existing `torch.load(weights_only=False)` FutureWarnings appeared.
+
+### Next
+- Run a tiny CUDA train-only job, then replay it with `--eval-run-dir` to verify
+  W&B resume behavior in the UI.
