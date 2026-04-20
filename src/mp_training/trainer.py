@@ -44,6 +44,7 @@ from mp_artifacts import (
     update_attempt_status,
 )
 from mp_data import build_data_bundle
+from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker
 from mp_visualization import (
     is_image_batch,
@@ -136,7 +137,7 @@ def _batching_metadata(config, train_tensor):
     }
 
 
-def _build_train_loader(train_tensor, batching, generator):
+def _build_train_loader(train_tensor, batching, generator, *, pin_memory=False):
     """
     Build a shuffled DataLoader over the already-materialized training tensor.
     """
@@ -146,6 +147,7 @@ def _build_train_loader(train_tensor, batching, generator):
         shuffle=True,
         drop_last=bool(batching["drop_last"]),
         generator=generator,
+        pin_memory=bool(pin_memory),
     )
 
 
@@ -289,12 +291,13 @@ def _save_samples_over_train_figure(
     was_training = model.training
     model.eval()
     with torch.no_grad():
-        samples = model.sample(
-            z_init[:count].clone().to(device),
-            n_steps=int(config.sampling.n_steps),
-            method=str(config.sampling.method),
-            device=device,
-        ).cpu()
+        with autocast_context(config, device):
+            samples = model.sample(
+                z_init[:count].clone().to(device),
+                n_steps=int(config.sampling.n_steps),
+                method=str(config.sampling.method),
+                device=device,
+            ).cpu()
     if was_training:
         model.train()
 
@@ -448,6 +451,10 @@ def train_run(config, study_dir, device="cpu"):
     # still update status if anything fails after layout creation.
     tracker = None
     try:
+        # Resolve numerical mode and H2D movement before the tracker starts so
+        # the saved config and W&B config include the exact runtime settings.
+        runtime = configure_torch_runtime(config, device)
+
         # -----------------------------------------------------------------
         # Phase 2: start operator-facing tracking.
         #
@@ -560,6 +567,7 @@ def train_run(config, study_dir, device="cpu"):
             "reference_source_id": data_bundle.get("reference_source_id"),
             "data_validation": data_bundle.get("data_validation"),
             "batching": batching,
+            "runtime": runtime,
         }
         save_json(run_dir / "artifacts" / "data_meta.json", data_meta)
         tracker.stage(
@@ -574,6 +582,7 @@ def train_run(config, study_dir, device="cpu"):
             ),
             data_meta_path=str((run_dir / "artifacts" / "data_meta.json").resolve()),
             batching=batching,
+            runtime=runtime,
         )
 
         generation_trace = {
@@ -602,7 +611,12 @@ def train_run(config, study_dir, device="cpu"):
         # model's internal loss still samples its own times/noise unless
         # callers pass explicit values into `compute_loss`.
         generator = torch.Generator().manual_seed(int(config.training.seed))
-        train_loader = _build_train_loader(train_tensor, batching, generator)
+        train_loader = _build_train_loader(
+            train_tensor,
+            batching,
+            generator,
+            pin_memory=bool(runtime["pin_memory"]),
+        )
         train_iterator = iter(train_loader)
 
         # -----------------------------------------------------------------
@@ -644,6 +658,7 @@ def train_run(config, study_dir, device="cpu"):
                 f"device={device}"
             ),
             batching=batching,
+            runtime=runtime,
         )
         progress = tqdm(
             range(1, int(config.training.n_steps) + 1),
@@ -663,13 +678,17 @@ def train_run(config, study_dir, device="cpu"):
                 except StopIteration:
                     train_iterator = iter(train_loader)
                     batch = next(train_iterator)
-                batch = batch.to(device)
+                batch = batch.to(
+                    device,
+                    non_blocking=bool(runtime["non_blocking_h2d"]),
+                )
 
                 # The whole learning rule is these four lines: clear old
                 # gradients, compute the GDFM loss, backpropagate, and update
                 # parameters.
                 optimizer.zero_grad(set_to_none=True)
-                loss = model.compute_loss(batch)
+                with autocast_context(config, device):
+                    loss = model.compute_loss(batch)
                 loss.backward()
                 optimizer.step()
 
@@ -771,6 +790,7 @@ def train_run(config, study_dir, device="cpu"):
             "effective_batch_size": int(batching["effective_batch_size"]),
             "drop_last": bool(batching["drop_last"]),
             "optimizer": str(config.training.optimizer),
+            "runtime": runtime,
             "training_wall_time_sec": training_wall_time_sec,
             "training_seconds_per_step": (
                 training_wall_time_sec / n_steps if n_steps > 0 else 0.0
@@ -810,6 +830,7 @@ def train_run(config, study_dir, device="cpu"):
             train_history_path=str((run_dir / "metrics" / "train_history.json").resolve()),
             generated_figures=generated_figures,
             generation_trace=generation_trace,
+            runtime=runtime,
         )
         run_dir = mark_attempt_done(run_dir)
         tracker.attempt_dir = run_dir

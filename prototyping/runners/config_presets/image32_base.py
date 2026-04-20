@@ -18,8 +18,8 @@ def get_default_configs():
 
     # Study + framework.
     config.study = ConfigDict()
-    config.study.name = "image32_unet"
-    config.study.description = "Image32 UNet prototype recipe."
+    config.study.name = "image_runner"
+    config.study.description = "Image UNet prototype recipe."
 
     config.framework = ConfigDict()
     config.framework.family = "fm"

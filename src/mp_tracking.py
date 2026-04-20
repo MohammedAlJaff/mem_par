@@ -77,7 +77,8 @@ def _wandb_slug(value, fallback):
 
 
 def _default_wandb_project(config):
-    dataset = _wandb_slug(getattr(config.data, "dataset", ""), "dataset")
+    dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
+    dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
     return os.getenv("WANDB_PROJECT", "").strip() or f"memparam-{dataset}-{model}"
 
@@ -87,7 +88,8 @@ def _default_wandb_entity(fallback):
 
 
 def _default_wandb_run_name(config):
-    dataset = _wandb_slug(getattr(config.data, "dataset", ""), "dataset")
+    dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
+    dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
     n_train = int(getattr(config.data, "n_train", 0))
     prediction = _wandb_slug(getattr(config.framework, "prediction_space", ""), "pred")
@@ -115,6 +117,20 @@ def _format_rate(value):
     if value is None or not math.isfinite(float(value)):
         return "?"
     return f"{float(value):.2f}"
+
+
+def _wandb_figure_caption(metric_name, step):
+    """
+    Label W&B media with the scientific checkpoint step, not W&B's row index.
+    """
+    metric_name = str(metric_name)
+    if metric_name.startswith("generation_trace/"):
+        label = "generation_trace"
+    elif metric_name.endswith("/checkpoint_samples_over_train"):
+        label = "checkpoint_samples_over_train"
+    else:
+        label = metric_name
+    return f"{label} | grad_step={int(step)}"
 
 
 class AttemptTracker:
@@ -630,8 +646,14 @@ class AttemptTracker:
         if self._wandb_run is None or self._wandb_module is None or self._wandb_failed:
             return
         try:
+            image_kwargs = {}
+            if step is not None:
+                image_kwargs["caption"] = _wandb_figure_caption(metric_name, step)
             payload = {
-                str(metric_name): self._wandb_module.Image(str(Path(path).resolve()))
+                str(metric_name): self._wandb_module.Image(
+                    str(Path(path).resolve()),
+                    **image_kwargs,
+                )
             }
             payload = self._attach_explicit_step_metric(payload, step)
             self._wandb_run.log(payload)

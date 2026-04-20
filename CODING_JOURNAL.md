@@ -1097,3 +1097,75 @@ definitions for the run-size knobs.
 ### Next
 - Run the proper Image32 CUDA run with `--generation-trace`; inspect both
   `generation_trace_*` training panels and checkpoint metric previews.
+
+## 2026-04-20T03:40:26Z - Generalize Image Runner And Add Runtime Speed/Trace Polish
+
+### Context
+The prototype image runner is no longer only a 32px runner: today it was used
+for Flowers128 and AFHQ/face-style 256px experiments, and the W&B projects were
+getting mixed across dataset/model combinations.
+
+### Intent
+Ship the single-process image workflow with clearer naming, visible runtime
+numerics, fixed-noise generation traces, and W&B metadata that makes the
+scientific training step unambiguous. Keep DDP/multi-GPU out of this runner.
+
+### Changed / Observed
+- Hard-renamed the public entrypoint from
+  `prototyping.runners.image32_unet` to `prototyping.runners.image_runner`.
+- Kept image-family internals where they still fit: `metrics_image32.py` and
+  the `image32_32`, `image32_128`, and `image32_256` presets.
+- Updated the default output root to
+  `outputs/prototype_runners/image_runner`.
+- Added `--precision {fp32,tf32,bf16}` and `--compare-numerics`, with runtime
+  metadata for TF32, autocast dtype, pinned memory, and nonblocking H2D copies.
+- Enabled CUDA `pin_memory` and nonblocking transfer for the already
+  materialized train-tensor batches.
+- Kept the fixed-`z_init` `generation_trace` figures across training and kept
+  the checkpoint preview figure family alongside it.
+- Added W&B image captions that show the real gradient step, e.g.
+  `generation_trace | grad_step=...` and
+  `checkpoint_samples_over_train | grad_step=...`.
+- Routed default W&B projects by dataset/model key, such as
+  `memparam-flowers102_128-unet`, while treating the old broad
+  `memparam-image32-unet` value as legacy auto-routing.
+- Flipped Flowers102 profiles so training uses official `test` and reference
+  evaluation uses official `train`, which better matches the available split
+  sizes for generative experiments.
+- Verified the hard rename behavior: the old module fails by design and
+  `python -m prototyping.runners.image_runner --help` works in `mem_param_env`.
+- Left multi-GPU/DDP intentionally deferred to a separate future runner, likely
+  `prototyping.runners.image_runner_ddp`, launched with `torchrun`.
+- GPU note from AFHQ 256 BF16 on A100 40GB: batch 16 ran at about
+  `3.28 step/s`; batch 24 ran at about `2.24 step/s`, so batch 16 remains the
+  better fixed-step default for that setup. An 80GB GPU may help with headroom
+  and larger evals, but DDP is the real route to shorter wall-clock for huge
+  step counts.
+
+### Commands / Checks
+- `python -m unittest tests.test_proto_runners`
+- `python -m unittest tests.test_tracking tests.test_mp_runtime`
+- `python -m unittest tests.test_checkpoint_previews tests.test_experiment_pipeline tests.test_loss_eval`
+- `git diff --check`
+- `python -m py_compile ...` for changed runner, runtime, metric, trainer,
+  tracking, and test files.
+- `python -m prototyping.runners.image_runner --help`
+- `python -m prototyping.runners.image32_unet --help`
+
+### Results
+- `tests.test_proto_runners`: 19 tests passed.
+- `tests.test_tracking tests.test_mp_runtime`: 6 tests passed.
+- Checkpoint/experiment/loss-eval suite: 9 tests passed.
+- Whitespace and byte-compile checks passed.
+- New runner help works inside `mem_param_env`.
+- Old `image32_unet` module fails with `No module named`, as intended.
+- Only existing `torch.load(weights_only=False)` FutureWarnings appeared.
+
+### Blockers
+- None for this ship batch.
+
+### Next
+- Push this runtime batch to `origin/main`.
+- Run longer Flowers128/AFHQ256 BF16 jobs with dataset-specific W&B projects.
+- Start any multi-GPU work in a separate DDP runner rather than expanding
+  `image_runner.py`.

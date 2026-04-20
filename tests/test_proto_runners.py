@@ -10,19 +10,19 @@ try:
     import torch
     from mp_data import build_data_bundle
     from prototyping.runners import (
-        image32_unet,
+        image_runner,
         synthetic_mlp,
     )
 except ModuleNotFoundError:
     torch = None
     build_data_bundle = None
-    image32_unet = None
+    image_runner = None
     synthetic_mlp = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE_RUNNERS = (
-    ("image32_unet", image32_unet, "celeba32_grey", "unet"),
+    ("image_runner", image_runner, "celeba32_grey", "unet"),
 )
 
 
@@ -128,6 +128,8 @@ class TestProtoRunners(unittest.TestCase):
         for name, module, dataset, arch in RECIPE_RUNNERS:
             settings = module.default_settings()
             config = module.build_config(settings)
+            self.assertEqual(settings["out_dir"], "outputs/prototype_runners/image_runner")
+            self.assertEqual(config.study.name, "image_runner")
             self.assertEqual(config.data.dataset, dataset, name)
             self.assertEqual(config.network.arch, arch, name)
             self.assertEqual(config.training.batch_cap, settings["batch_cap"])
@@ -140,19 +142,24 @@ class TestProtoRunners(unittest.TestCase):
             self.assertIsNone(config.network.time_emb_dim)
             self.assertEqual(config.training.optimizer, "adam")
             self.assertEqual(config.training.lr, 1.0e-4)
-            self.assertEqual(config.tracking.wandb.project, "")
+            self.assertEqual(config.runtime.precision, "fp32")
+            self.assertEqual(config.study.dataset_key, "celeba32_grey")
+            self.assertEqual(config.tracking.wandb.project, "memparam-celeba32_grey-unet")
 
     def test_image_runner_exposes_train_loss_log_cadence(self):
-        settings = image32_unet.default_settings()
+        settings = image_runner.default_settings()
         settings["log_every"] = 7
-        config = image32_unet.build_config(settings)
-        args = image32_unet.parse_args(["--log-every", "7"])
+        config = image_runner.build_config(settings)
+        args = image_runner.parse_args(["--log-every", "7"])
+        default_args = image_runner.parse_args([])
 
         self.assertEqual(config.training.log_every, 7)
         self.assertEqual(args.log_every, 7)
+        self.assertEqual(default_args.precision, "fp32")
+        self.assertFalse(default_args.compare_numerics)
 
     def test_image_runner_accepts_slim_cli_surface(self):
-        args = image32_unet.parse_args(
+        args = image_runner.parse_args(
             [
                 "--device",
                 "cpu",
@@ -182,6 +189,9 @@ class TestProtoRunners(unittest.TestCase):
                 "1",
                 "--batch-cap",
                 "4",
+                "--precision",
+                "bf16",
+                "--compare-numerics",
                 "--eval-samples",
                 "6",
                 "--sampling-steps",
@@ -206,24 +216,31 @@ class TestProtoRunners(unittest.TestCase):
                 "--no-generation-trace-show",
             ]
         )
-        config = image32_unet.build_config(vars(args))
+        config = image_runner.build_config(vars(args))
 
         self.assertEqual(args.prediction_space, "eps")
         self.assertEqual(args.loss_space, "eps")
         self.assertFalse(args.download)
         self.assertFalse(args.wandb)
+        self.assertEqual(args.precision, "bf16")
+        self.assertTrue(args.compare_numerics)
         self.assertTrue(args.generation_trace)
+        self.assertEqual(config.runtime.precision, "bf16")
+        self.assertEqual(config.tracking.wandb.project, "proj")
         self.assertEqual(config.generation_trace.num_images, 2)
         self.assertFalse(config.generation_trace.show)
         self.assertEqual(config.tracking.wandb.tags, ["a", "b"])
 
     def test_image32_config_preset_owns_rare_geometry_and_architecture(self):
-        settings = image32_unet.default_settings()
+        settings = image_runner.default_settings()
         settings.update({"dataset": "flowers102", "config_preset": "image32_128"})
 
-        config = image32_unet.build_config(settings)
+        config = image_runner.build_config(settings)
 
         self.assertEqual(config.data.dataset, "flowers102")
+        self.assertEqual(config.study.dataset_key, "flowers102")
+        self.assertEqual(config.data.train_split, "test")
+        self.assertEqual(config.data.reference_split, "train")
         self.assertEqual(config.data.image_size, 128)
         self.assertEqual(config.data.resize_size, 128)
         self.assertEqual(config.data.image_channels, 3)
@@ -231,6 +248,30 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(tuple(config.network.channel_mult), (1, 2, 4, 4, 8))
         self.assertEqual(tuple(config.network.attn_resolutions), (16,))
         self.assertEqual(config.network.dropout, 0.0)
+
+    def test_image32_wandb_project_uses_dataset_key_and_model(self):
+        settings = image_runner.default_settings()
+        settings.update({"dataset": "flowers102_128"})
+
+        config = image_runner.build_config(settings)
+
+        self.assertEqual(config.data.dataset, "flowers102")
+        self.assertEqual(config.study.dataset_key, "flowers102_128")
+        self.assertEqual(config.network.arch, "unet")
+        self.assertEqual(config.tracking.wandb.project, "memparam-flowers102_128-unet")
+
+    def test_image32_legacy_broad_wandb_project_routes_to_dataset_project(self):
+        settings = image_runner.default_settings()
+        settings.update(
+            {
+                "dataset": "mnist",
+                "wandb_project": "memparam-image32-unet",
+            }
+        )
+
+        config = image_runner.build_config(settings)
+
+        self.assertEqual(config.tracking.wandb.project, "memparam-mnist-unet")
 
     def test_image_runners_accept_parameterization_spaces(self):
         for name, module, _, _ in RECIPE_RUNNERS:
@@ -290,6 +331,7 @@ class TestProtoRunners(unittest.TestCase):
                     (module, ["--visual-sanity-updates", "1"]),
                     (module, ["--visual-sanity-show"]),
                     (module, ["--generation-trace-updates", "1"]),
+                    (module, ["--precision", "fp16"]),
                 ]
             )
         for module, argv in removed:
@@ -326,12 +368,28 @@ class TestProtoRunners(unittest.TestCase):
         self.assertNotIn("from mp_training import train_run", text)
         self.assertNotIn("from mp_metrics import evaluate_run", text)
 
-    def test_image32_runner_is_the_only_image_recipe_surface(self):
-        text = Path(image32_unet.__file__).read_text()
+    def test_image_runner_is_the_only_image_recipe_surface(self):
+        text = Path(image_runner.__file__).read_text()
         self.assertIn("metrics_image32", text)
         self.assertNotIn("mnist_unet", text)
         self.assertNotIn("celeba32_unet", text)
         self.assertNotIn("celeba32_jit", text)
+        self.assertFalse((ROOT / "prototyping/runners/image32_unet.py").exists())
+        self.assertFalse(
+            (ROOT / "prototyping/runners/image32_unet_config_builder.py").exists()
+        )
+
+    def test_image_runner_docs_use_new_public_entrypoint(self):
+        docs = [
+            ROOT / "README.md",
+            ROOT / "prototyping/runners/README.md",
+            ROOT / "prototyping/runners/notebooks/image_runner.ipynb",
+        ]
+        for path in docs:
+            text = path.read_text()
+            self.assertNotIn("prototyping.runners.image32_unet", text)
+            self.assertNotIn("notebooks/image32_unet.ipynb", text)
+            self.assertNotIn("outputs/prototype_runners/image32_unet", text)
 
     def test_manual_gmm_equations_match_canonical_builder(self):
         args = synthetic_mlp.parse_args(
@@ -363,8 +421,8 @@ class TestProtoRunners(unittest.TestCase):
         self.assertTrue(torch.equal(manual["means"], canonical["geometry"]["means"]))
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_image32_unet_recipe_steps_use_fake_mnist_dataset(self):
-        settings = image32_unet.default_settings()
+    def test_image_runner_recipe_steps_use_fake_mnist_dataset(self):
+        settings = image_runner.default_settings()
         settings.update(
             {
                 "dataset": "mnist",
@@ -384,10 +442,10 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = image32_unet.build_config(settings)
-        data = image32_unet.build_data(config)
-        model = image32_unet.build_model(config, "cpu")
-        metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
+        config = image_runner.build_config(settings)
+        data = image_runner.build_data(config)
+        model = image_runner.build_model(config, "cpu")
+        metrics = image_runner.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [10, 1, 16, 16])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
@@ -397,8 +455,8 @@ class TestProtoRunners(unittest.TestCase):
         self.assertIn("loss_t_0_75", metrics["loss_eval"])
 
     @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
-    def test_image32_unet_recipe_steps_use_fake_celeba_dataset(self):
-        settings = image32_unet.default_settings()
+    def test_image_runner_recipe_steps_use_fake_celeba_dataset(self):
+        settings = image_runner.default_settings()
         settings.update(
             {
                 "n_train": 4,
@@ -416,10 +474,10 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = image32_unet.build_config(settings)
-        data = image32_unet.build_data(config)
-        model = image32_unet.build_model(config, "cpu")
-        metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
+        config = image_runner.build_config(settings)
+        data = image_runner.build_data(config)
+        model = image_runner.build_model(config, "cpu")
+        metrics = image_runner.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [4, 1, 32, 32])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
@@ -427,7 +485,7 @@ class TestProtoRunners(unittest.TestCase):
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_image32_generation_trace_full_run_writes_checkpoint_previews(self):
-        settings = image32_unet.default_settings()
+        settings = image_runner.default_settings()
         settings.update(
             {
                 "dataset": "mnist",
@@ -453,11 +511,11 @@ class TestProtoRunners(unittest.TestCase):
                 "generation_trace_show": False,
             }
         )
-        config = image32_unet.build_config(settings)
+        config = image_runner.build_config(settings)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with contextlib.redirect_stdout(io.StringIO()):
-                result = image32_unet.run_full_job(config, tmpdir, "cpu", evaluate=True)
+                result = image_runner.run_full_job(config, tmpdir, "cpu", evaluate=True)
 
             previews = result["checkpoint_sample_previews"]
             self.assertGreater(len(previews), 0)
@@ -564,7 +622,7 @@ class TestProtoRunners(unittest.TestCase):
         ]
         notebook_checks = [
             (ROOT / "prototyping/runners/notebooks/synthetic_mlp.ipynb", synthetic_sections),
-            (ROOT / "prototyping/runners/notebooks/image32_unet.ipynb", recipe_sections),
+            (ROOT / "prototyping/runners/notebooks/image_runner.ipynb", recipe_sections),
         ]
         for notebook_path, required_sections in notebook_checks:
             notebook = json.loads(notebook_path.read_text())

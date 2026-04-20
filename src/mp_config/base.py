@@ -33,6 +33,7 @@ def get_base_config():
     study = config.study = ConfigDict()
     study.name = "unnamed_study"
     study.description = "Canonical outer-shell study."
+    study.dataset_key = ""
 
     framework = config.framework = ConfigDict()
     framework.family = "fm"
@@ -124,6 +125,13 @@ def get_base_config():
     generation_trace.enabled = False
     generation_trace.num_images = 8
     generation_trace.show = True
+
+    runtime = config.runtime = ConfigDict()
+    runtime.precision = "fp32"
+    runtime.tf32_enabled = False
+    runtime.autocast_dtype = "none"
+    runtime.pin_memory = True
+    runtime.non_blocking_h2d = False
 
     tracking = config.tracking = ConfigDict()
 

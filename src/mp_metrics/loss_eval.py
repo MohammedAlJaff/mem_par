@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import torch
 
+from mp_runtime import autocast_context
+
 
 DEFAULT_LOSS_EVAL_TIMES = (0.5, 0.75)
 
@@ -79,7 +81,10 @@ def collect_loss_eval_record(
                 enabled=True,
             ):
                 torch.manual_seed(seed + step + 1009)
-                random_t_loss = float(model.compute_loss(batch).detach().cpu().item())
+                with autocast_context(config, batch.device):
+                    random_t_loss = float(
+                        model.compute_loss(batch).detach().cpu().item()
+                    )
 
                 fixed = {}
                 for value in probes:
@@ -87,7 +92,8 @@ def collect_loss_eval_record(
                     torch.manual_seed(seed + step + int(round(t_value * 10000)) + 2027)
                     eps = torch.randn_like(batch)
                     t = torch.full((batch.shape[0],), t_value, device=batch.device)
-                    loss = model.compute_loss(batch, eps=eps, t=t)
+                    with autocast_context(config, batch.device):
+                        loss = model.compute_loss(batch, eps=eps, t=t)
                     fixed[time_key(t_value)] = float(loss.detach().cpu().item())
     finally:
         model.train(was_training)

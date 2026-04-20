@@ -26,6 +26,7 @@ from mp_metrics.checkpoint_previews import (
 )
 from mp_metrics.loss_eval import collect_loss_eval_record, loss_eval_metric_payload
 from mp_metrics.memorization import compute_memorization_metrics, compute_nn_stats
+from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker
 
 
@@ -189,6 +190,7 @@ def evaluate_run(run_dir, device="cpu"):
     tracker = None
     try:
         config = load_config_snapshot(run_dir)
+        configure_torch_runtime(config, device)
         tracker = AttemptTracker(config, run_dir)
         tracker.stage("evaluating", message=f"checkpoint evaluation started device={device}")
         _validate_saved_holdout_metadata(run_dir)
@@ -238,12 +240,13 @@ def evaluate_run(run_dir, device="cpu"):
                 )
                 loss_records.append(loss_record)
                 tracker.log_metrics(loss_eval_metric_payload(loss_record), step=step)
-                samples = model.sample(
-                    z_init.clone().to(device),
-                    n_steps=int(config.sampling.n_steps),
-                    method=str(config.sampling.method),
-                    device=device,
-                ).cpu()
+                with autocast_context(config, device):
+                    samples = model.sample(
+                        z_init.clone().to(device),
+                        n_steps=int(config.sampling.n_steps),
+                        method=str(config.sampling.method),
+                        device=device,
+                    ).cpu()
                 try:
                     preview_record = collect_checkpoint_sample_preview_record(
                         step=step,

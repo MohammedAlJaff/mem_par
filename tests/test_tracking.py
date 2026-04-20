@@ -71,7 +71,10 @@ class TestAttemptTracker(unittest.TestCase):
             return run
 
         fake.init = init
-        fake.Image = lambda path: {"image_path": path}
+        fake.Image = lambda path, caption=None: {
+            "image_path": path,
+            "caption": caption,
+        }
         old_module = self.install_fake_wandb(fake)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -88,6 +91,11 @@ class TestAttemptTracker(unittest.TestCase):
                     "eval/checkpoint_samples_over_train",
                     figure_path,
                     step=7,
+                )
+                tracker.log_figure_metric(
+                    "generation_trace/samples_over_train",
+                    figure_path,
+                    step=9,
                 )
                 tracker.close()
 
@@ -110,9 +118,23 @@ class TestAttemptTracker(unittest.TestCase):
                     (
                         {
                             "eval/checkpoint_samples_over_train": {
-                                "image_path": str(figure_path.resolve())
+                                "image_path": str(figure_path.resolve()),
+                                "caption": "checkpoint_samples_over_train | grad_step=7",
                             },
                             "eval/step": 7,
+                        },
+                        None,
+                    ),
+                )
+                self.assertEqual(
+                    fake.runs[0].logs[3],
+                    (
+                        {
+                            "generation_trace/samples_over_train": {
+                                "image_path": str(figure_path.resolve()),
+                                "caption": "generation_trace | grad_step=9",
+                            },
+                            "generation_trace/step": 9,
                         },
                         None,
                     ),
@@ -148,7 +170,10 @@ class TestAttemptTracker(unittest.TestCase):
             return run
 
         fake.init = init
-        fake.Image = lambda path: {"image_path": path}
+        fake.Image = lambda path, caption=None: {
+            "image_path": path,
+            "caption": caption,
+        }
         old_module = self.install_fake_wandb(fake)
         try:
             with tempfile.TemporaryDirectory() as tmpdir:

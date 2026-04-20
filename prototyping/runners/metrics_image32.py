@@ -28,6 +28,7 @@ from mp_metrics.loss_eval import (
     loss_eval_metric_payload,
 )
 from mp_metrics.memorization import compute_nn_stats
+from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker
 
 
@@ -91,6 +92,7 @@ def evaluate_image32_run(run_dir, device="cpu", fixed_times=DEFAULT_FIXED_TIMES)
     """Evaluate checkpoint memorization and fixed/random-t losses."""
     run_dir = Path(run_dir)
     config = load_config_snapshot(run_dir)
+    configure_torch_runtime(config, device)
     tracker = None
     try:
         tracker = AttemptTracker(config, run_dir)
@@ -115,12 +117,13 @@ def evaluate_image32_run(run_dir, device="cpu", fixed_times=DEFAULT_FIXED_TIMES)
             state = torch.load(checkpoint_path, map_location=device)
             step = int(state["step"])
             model.load_state_dict(state["model"])
-            samples = model.sample(
-                z_init.clone().to(device),
-                n_steps=int(config.sampling.n_steps),
-                method=str(config.sampling.method),
-                device=device,
-            ).cpu()
+            with autocast_context(config, device):
+                samples = model.sample(
+                    z_init.clone().to(device),
+                    n_steps=int(config.sampling.n_steps),
+                    method=str(config.sampling.method),
+                    device=device,
+                ).cpu()
 
             record = collect_image32_metric_record(
                 step,

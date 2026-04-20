@@ -1,7 +1,8 @@
-"""Configuration builder for the Image32 UNet runner."""
+"""Configuration builder for the image UNet runner."""
 
 import copy
 import os
+import re
 
 from prototyping.runners.common import resolve_batch_cap
 from prototyping.runners.config_presets import get_default_configs
@@ -9,13 +10,41 @@ from mp_config import clone_config, get_base_config
 from prototyping.runners.metrics_image32 import DEFAULT_FIXED_TIMES
 
 
-RUNNER_NAME = "image32_unet"
-DEFAULT_STUDY_DIR = "outputs/prototype_runners/image32_unet"
+RUNNER_NAME = "image_runner"
+DEFAULT_STUDY_DIR = "outputs/prototype_runners/image_runner"
 
 
 def _default_wandb_entity(fallback):
     entity = os.getenv("WANDB_ENTITY", "").strip()
     return entity if entity else fallback
+
+
+_LEGACY_BROAD_WANDB_PROJECTS = {
+    "memparam-image32-unet",
+    "image32-unet",
+}
+
+
+def _wandb_slug(value, fallback):
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-")
+    return text or fallback
+
+
+def _dataset_model_wandb_project(dataset_key, model_arch):
+    dataset = _wandb_slug(dataset_key, "dataset")
+    model = _wandb_slug(model_arch, "model")
+    return f"memparam-{dataset}-{model}"
+
+
+def _resolve_wandb_project(raw_project, dataset_key, model_arch):
+    requested = str(raw_project or "").strip()
+    canonical = _dataset_model_wandb_project(dataset_key, model_arch)
+    if not requested or requested.lower() in _LEGACY_BROAD_WANDB_PROJECTS:
+        return canonical
+    if requested.lower() in {"auto", "dataset-model"}:
+        return canonical
+    return requested
 
 
 _UNET_PROFILES = {
@@ -75,7 +104,11 @@ DATASET_DEFAULTS = {
         "image_size": 32,
         "image_channels": 3,
         "resize_size": 0,
-        "reference_split": "val",
+        # Flowers102's official train split has only 1,020 images.
+        # For generative runs we train on the large official test split and use
+        # the small official train split as the held-out/reference set.
+        "train_split": "test",
+        "reference_split": "train",
         "allow_same_source_reference": False,
         "dataset_subdir": "",
         **_UNET_PROFILES[32],
@@ -86,7 +119,11 @@ DATASET_DEFAULTS = {
         "image_size": 128,
         "image_channels": 3,
         "resize_size": 128,
-        "reference_split": "val",
+        # Flowers102's official train split has only 1,020 images.
+        # For generative runs we train on the large official test split and use
+        # the small official train split as the held-out/reference set.
+        "train_split": "test",
+        "reference_split": "train",
         "allow_same_source_reference": False,
         "dataset_subdir": "",
         **_UNET_PROFILES[128],
@@ -97,7 +134,11 @@ DATASET_DEFAULTS = {
         "image_size": 256,
         "image_channels": 3,
         "resize_size": 256,
-        "reference_split": "val",
+        # Flowers102's official train split has only 1,020 images.
+        # For generative runs we train on the large official test split and use
+        # the small official train split as the held-out/reference set.
+        "train_split": "test",
+        "reference_split": "train",
         "allow_same_source_reference": False,
         "dataset_subdir": "",
         **_UNET_PROFILES[256],
@@ -151,6 +192,11 @@ DEFAULT_SETTINGS = {
     "ckpt_every": 2000,
     "log_every": None,
     "batch_cap": 64,
+
+    # Runtime numerics.
+    # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
+    "precision": "fp32",
+    "compare_numerics": False,
 
     # Sampling/evaluation.
     # eval_samples: generated samples per checkpoint; also the size of z_init.pt.
@@ -291,11 +337,11 @@ def _preset_value(defaults, section_name, key, fallback):
 
 
 def build_config(settings):
-    """Build the canonical Image32 UNet config from merged run settings."""
+    """Build the canonical image UNet config from merged run settings."""
     raw_settings = dict(settings)
     dataset = str(_coalesce(raw_settings.get("dataset"), DEFAULT_SETTINGS["dataset"]))
     if dataset not in DATASET_DEFAULTS:
-        raise ValueError(f"Unknown Image32 dataset: {dataset}")
+        raise ValueError(f"Unknown image runner dataset: {dataset}")
     dataset_defaults = DATASET_DEFAULTS[dataset]
     settings = _merge_settings(raw_settings, dataset_defaults)
 
@@ -328,7 +374,8 @@ def build_config(settings):
 
     # Study metadata.
     config.study.name = RUNNER_NAME
-    config.study.description = f"{dataset} Image32 GDFM/UNet prototype recipe."
+    config.study.description = f"{dataset} image GDFM/UNet prototype recipe."
+    config.study.dataset_key = dataset
     config.outputs.run_name = str(settings["run_name"])
 
     # Framework.
@@ -406,6 +453,13 @@ def build_config(settings):
         _coalesce(weight_decay, defaults.training.weight_decay)
     )
 
+    # Runtime.
+    config.runtime.precision = str(settings["precision"])
+    config.runtime.tf32_enabled = False
+    config.runtime.autocast_dtype = "none"
+    config.runtime.pin_memory = True
+    config.runtime.non_blocking_h2d = False
+
     # Evaluation.
     config.evaluation.n_samples = int(
         _coalesce(settings["eval_samples"], defaults.evaluation.n_samples)
@@ -449,7 +503,11 @@ def build_config(settings):
     )
     config.tracking.wandb.enabled = bool(settings["wandb"])
     config.tracking.wandb.mode = str(settings["wandb_mode"])
-    config.tracking.wandb.project = str(settings["wandb_project"])
+    config.tracking.wandb.project = _resolve_wandb_project(
+        settings["wandb_project"],
+        dataset,
+        config.network.arch,
+    )
     wandb_entity = (
         raw_settings["wandb_entity"]
         if _raw_overrides_default(raw_settings, "wandb_entity")

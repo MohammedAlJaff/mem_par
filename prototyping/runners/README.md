@@ -13,7 +13,7 @@ training, metrics, and artifacts.
 | Name | Dataset | Backbone | Style | Module | Notebook |
 | --- | --- | --- | --- | --- | --- |
 | `synthetic_mlp` | `gmm_subspace` | `mlp` | direct script | `prototyping.runners.synthetic_mlp` | `notebooks/synthetic_mlp.ipynb` |
-| `image32_unet` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `prototyping.runners.image32_unet` | `notebooks/image32_unet.ipynb` |
+| `image_runner` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `prototyping.runners.image_runner` | `notebooks/image_runner.ipynb` |
 
 ## Command Examples
 
@@ -38,12 +38,12 @@ PYTHONPATH=src:. python -m prototyping.runners.synthetic_mlp \
   --ckpt-every 50
 ```
 
-Image32 recipe run:
+Image recipe run:
 
 ```bash
-PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
+PYTHONPATH=src:. python -m prototyping.runners.image_runner \
   --device cuda \
-  --out-dir outputs/prototype_runners/image32_unet \
+  --out-dir outputs/prototype_runners/image_runner \
   --dataset celeba32_grey \
   --prediction-space v \
   --loss-space v \
@@ -53,7 +53,7 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --no-download
 
 # Run the same full pipeline with tiny step counts before submitting a long job.
-PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
+PYTHONPATH=src:. python -m prototyping.runners.image_runner \
   --device cuda \
   --dataset flowers102_128 \
   --generation-trace \
@@ -66,13 +66,17 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --ckpt-every 1
 ```
 
-The Image32 CLI is intentionally slim. It exposes run identity, dataset/preset,
+The image runner CLI is intentionally slim. It exposes run identity, dataset/preset,
 prediction/loss spaces, selected dataset sizes, training cadence, sampling
 count, data root/download, W&B basics, and `--generation-trace`. Architecture
 and low-level data variants live in named presets selected by `--config-preset`
 or in dataset profiles such as `flowers102_128`.
 
-The core Image32 size knobs mean exactly this:
+`image_runner` is the single-process image entrypoint. Future multi-GPU/DDP
+experiments should live in a separate script such as `image_runner_ddp`, launched
+with `torchrun`, so distributed concerns do not leak into this runner.
+
+The core image-runner size knobs mean exactly this:
 
 | Flag | Config field | Meaning |
 | --- | --- | --- |
@@ -80,6 +84,18 @@ The core Image32 size knobs mean exactly this:
 | `--n-eval` | `config.data.n_eval` | Number of real held-out/reference images loaded for evaluation. |
 | `--eval-samples` | `config.evaluation.n_samples` | Number of generated samples per checkpoint; also the size of `artifacts/z_init.pt`. |
 | `--sampling-steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
+| `--precision` | `config.runtime.precision` | Numerical mode: `fp32`, CUDA `tf32`, or CUDA `bf16` autocast. |
+| `--compare-numerics` | runner-only | Runs an in-memory fp32-vs-selected-precision smoke benchmark instead of a full artifact run. |
+
+W&B projects default to the user-facing dataset key plus model arch:
+`memparam-flowers102_128-unet`, `memparam-mnist-unet`, etc. The old broad
+`memparam-image32-unet` value is treated as auto so copied commands stop mixing
+datasets into one W&B project.
+
+Flowers102 profiles intentionally train on the large official `test` split and
+use the small official `train` split as the held-out/reference split. The
+official `train` split has only 1,020 images; the official `test` split has
+6,149.
 
 ## Artifacts
 

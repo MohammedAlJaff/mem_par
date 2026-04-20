@@ -90,8 +90,9 @@ PYTHONPATH=src python -m experiments.mnist.run \
 When W&B is enabled, one W&B run corresponds to one attempt. By default the
 project is derived from the dataset+model combo, such as `memparam-mnist-unet`,
 and the visible run name includes dataset, model, `N`, prediction/loss
-parameterization, and seed. Set `WANDB_PROJECT` or pass `--wandb-project` to
-override that default. Local offline files are stored under the attempt's
+parameterization, and seed. Image32 runners use the user-facing dataset key, so
+`flowers102_128` goes to `memparam-flowers102_128-unet` rather than mixing with
+other Image32 datasets. Local offline files are stored under the attempt's
 `logs/wandb/` directory for later `wandb sync`.
 
 ## Setup

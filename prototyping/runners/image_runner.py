@@ -1,14 +1,18 @@
 """
-Readable prototype recipe for 32x32 image datasets with the UNet adapter.
+Readable prototype recipe for image datasets with the UNet adapter.
 """
 
 import argparse
 from pathlib import Path
 import sys
+import time
 
 # Direct script execution from prototyping/runners should still find repo packages.
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+import torch
+from torch.utils.data import DataLoader
 
 from prototyping.runners.common import (
     PARAMETERIZATION_CHOICES,
@@ -21,34 +25,43 @@ from prototyping.runners.metrics_image32 import (
     collect_reference_memory,
     evaluate_image32_run,
 )
-from prototyping.runners.image32_unet_config_builder import (
+from prototyping.runners.image_runner_config_builder import (
     build_config as _build_config,
     get_default_settings as _default_settings,
     list_datasets as _list_datasets,
 )
 
 from gdfm import GDFM
+from mp_config import clone_config
 from mp_data import build_data_bundle
+from mp_runtime import (
+    PRECISION_CHOICES,
+    autocast_context,
+    configure_torch_runtime,
+    torch_device,
+    validate_precision,
+)
 from mp_training import train_run
 
 
 def default_settings():
-    """Return the canonical Image32 default settings for this recipe."""
+    """Return the canonical image-runner default settings for this recipe."""
     return _default_settings()
 
 
 def build_config(settings):
-    """Build the canonical config for one Image32 UNet run."""
+    """Build the canonical config for one image-runner UNet run."""
     return _build_config(settings)
 
 
 def build_data(config):
-    """Materialize the canonical Image32 train/reference bundle."""
+    """Materialize the canonical image train/reference bundle."""
     return build_data_bundle(config)
 
 
 def build_model(config, device):
     """Build the canonical GDFM wrapper and its UNet backbone."""
+    configure_torch_runtime(config, device)
     return GDFM(config).to(device)
 
 
@@ -78,7 +91,7 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
 
 
 def run_full_job(config, out_dir, device, evaluate=True):
-    """Run canonical training, then Image32 checkpoint metrics if requested."""
+    """Run canonical training, then image checkpoint metrics if requested."""
     # Training remains canonical; empirical metrics live beside this runner.
     run_dir = train_run(config, Path(out_dir), device=device)
     evaluation = (
@@ -102,6 +115,120 @@ def run_full_job(config, out_dir, device, evaluate=True):
         "config": config,
         "artifacts": artifact_paths(run_dir),
     }
+
+
+def compare_numerics(config, device):
+    """
+    Run a tiny in-memory training benchmark for fp32 vs a faster CUDA mode.
+
+    This intentionally avoids W&B and the run-artifact layout. It uses the
+    configured dataset, model, optimizer, batch cap, and number of steps so the
+    table answers the practical question: "what changes when I flip precision?"
+    """
+    selected_precision = str(config.runtime.precision)
+    target_precision = "bf16" if selected_precision == "fp32" else selected_precision
+    precisions = ("fp32", target_precision)
+    for precision in precisions:
+        trial_config = clone_config(config)
+        trial_config.runtime.precision = precision
+        validate_precision(trial_config, device)
+
+    data_bundle = build_data(config)
+    train_tensor = data_bundle["train"].cpu()
+    results = []
+    for precision in precisions:
+        trial_config = clone_config(config)
+        trial_config.runtime.precision = precision
+        trial_config.tracking.wandb.enabled = False
+        runtime = configure_torch_runtime(trial_config, device)
+
+        seed = int(trial_config.training.seed)
+        torch.manual_seed(seed)
+        torch_dev = torch_device(device)
+        if torch_dev.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats(torch_dev)
+
+        model = build_model(trial_config, device)
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=float(trial_config.training.lr),
+            weight_decay=float(trial_config.training.weight_decay),
+        )
+
+        batch_cap = int(trial_config.training.batch_cap)
+        batch_size = min(batch_cap, int(train_tensor.shape[0]))
+        drop_last = int(train_tensor.shape[0]) > batch_cap
+        generator = torch.Generator().manual_seed(seed)
+        loader = DataLoader(
+            train_tensor,
+            batch_size=batch_size,
+            shuffle=True,
+            drop_last=drop_last,
+            generator=generator,
+            pin_memory=bool(runtime["pin_memory"]),
+        )
+        iterator = iter(loader)
+        n_steps = int(trial_config.training.n_steps)
+        first_loss = None
+        final_loss = None
+
+        if torch_dev.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(torch_dev)
+        start = time.perf_counter()
+        model.train()
+        for _ in range(n_steps):
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                iterator = iter(loader)
+                batch = next(iterator)
+            batch = batch.to(device, non_blocking=bool(runtime["non_blocking_h2d"]))
+
+            optimizer.zero_grad(set_to_none=True)
+            with autocast_context(trial_config, device):
+                loss = model.compute_loss(batch)
+            loss.backward()
+            optimizer.step()
+
+            loss_value = float(loss.detach().cpu().item())
+            if first_loss is None:
+                first_loss = loss_value
+            final_loss = loss_value
+
+        if torch_dev.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(torch_dev)
+            peak_memory_gb = torch.cuda.max_memory_allocated(torch_dev) / 1.0e9
+        else:
+            peak_memory_gb = 0.0
+        elapsed = time.perf_counter() - start
+
+        results.append(
+            {
+                "precision": precision,
+                "avg_step_time_sec": elapsed / max(1, n_steps),
+                "peak_cuda_memory_gb": peak_memory_gb,
+                "first_loss": first_loss,
+                "final_loss": final_loss,
+                **runtime,
+            }
+        )
+
+        del model, optimizer
+        if torch_dev.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    result = {
+        "mode": "compare_numerics",
+        "device": str(device),
+        "n_steps": int(config.training.n_steps),
+        "n_train": int(config.data.n_train),
+        "batch_cap": int(config.training.batch_cap),
+        "results": results,
+    }
+    _print_numerics_compare(result)
+    return result
 
 
 def _print_model_summary(config, model=None, model_param_summary=None):
@@ -138,9 +265,9 @@ def _print_model_summary(config, model=None, model_param_summary=None):
 
 
 def parse_args(argv=None):
-    """Parse the Image32 UNet command line."""
+    """Parse the image runner command line."""
     settings = default_settings()
-    parser = argparse.ArgumentParser(description="Image32 UNet prototype recipe.")
+    parser = argparse.ArgumentParser(description="Image UNet prototype recipe.")
 
     # Run identity.
     parser.add_argument("--device", default=settings["device"])
@@ -209,6 +336,18 @@ def parse_args(argv=None):
         help="Maximum minibatch size; smaller datasets use the dataset size.",
     )
     parser.add_argument(
+        "--precision",
+        choices=PRECISION_CHOICES,
+        default=settings["precision"],
+        help="Numerical mode: fp32, CUDA TF32, or CUDA BF16 autocast.",
+    )
+    parser.add_argument(
+        "--compare-numerics",
+        action="store_true",
+        default=settings["compare_numerics"],
+        help="Benchmark fp32 against the selected precision without writing a run.",
+    )
+    parser.add_argument(
         "--eval-samples",
         type=int,
         default=settings["eval_samples"],
@@ -268,7 +407,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    """CLI entrypoint for the Image32 UNet recipe."""
+    """CLI entrypoint for the image UNet recipe."""
     args = parse_args(argv)
     settings = vars(args)
     config = build_config(settings)
@@ -279,6 +418,8 @@ def main(argv=None):
         raise ValueError(
             f"generation-trace-count must be >= 1, got {args.generation_trace_count}"
         )
+    if args.compare_numerics:
+        return compare_numerics(config, args.device)
 
     result = run_full_job(config, args.out_dir, args.device, evaluate=True)
     _print_result(result)
@@ -304,6 +445,31 @@ def _print_result(result):
         "sample_previews:",
         result["artifacts"]["checkpoint_sample_previews"]["path"],
     )
+
+
+def _print_numerics_compare(result):
+    rows = result["results"]
+    print("=== NUMERICS_COMPARE ===")
+    print(
+        f"device={result['device']} n_train={result['n_train']} "
+        f"batch_cap={result['batch_cap']} n_steps={result['n_steps']}"
+    )
+    print(
+        f"{'precision':<10} {'avg_step_s':>11} {'peak_gb':>9} "
+        f"{'first_loss':>12} {'final_loss':>12} {'tf32':>6} {'autocast':>10}"
+    )
+    for row in rows:
+        first_loss = row["first_loss"]
+        final_loss = row["final_loss"]
+        print(
+            f"{row['precision']:<10} "
+            f"{row['avg_step_time_sec']:>11.4f} "
+            f"{row['peak_cuda_memory_gb']:>9.3f} "
+            f"{first_loss if first_loss is not None else float('nan'):>12.5g} "
+            f"{final_loss if final_loss is not None else float('nan'):>12.5g} "
+            f"{str(row['tf32_enabled']):>6} "
+            f"{row['autocast_dtype']:>10}"
+        )
 
 
 def _summarize_bundle(bundle):
