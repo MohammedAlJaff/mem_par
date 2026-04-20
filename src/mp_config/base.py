@@ -120,11 +120,10 @@ def get_base_config():
     outputs = config.outputs = ConfigDict()
     outputs.run_name = "run"
 
-    visual_sanity = config.visual_sanity = ConfigDict()
-    visual_sanity.enabled = False
-    visual_sanity.num_images = 8
-    visual_sanity.n_updates = 2
-    visual_sanity.show = True
+    generation_trace = config.generation_trace = ConfigDict()
+    generation_trace.enabled = False
+    generation_trace.num_images = 8
+    generation_trace.show = True
 
     tracking = config.tracking = ConfigDict()
 

@@ -21,18 +21,18 @@ def checkpoint_preview_figure_name(step):
     return f"checkpoint_samples_over_train_step_{int(step):06d}"
 
 
-def _visual_sanity_config(config):
-    visual = getattr(config, "visual_sanity", None) if config is not None else None
-    if visual is None or not bool(getattr(visual, "enabled", False)):
+def _generation_trace_config(config):
+    trace = getattr(config, "generation_trace", None) if config is not None else None
+    if trace is None or not bool(getattr(trace, "enabled", False)):
         return None
-    return visual
+    return trace
 
 
 def _preview_count(config, samples, train_tensor=None, count=None):
     if count is None:
-        visual = _visual_sanity_config(config)
-        if visual is not None:
-            count = int(getattr(visual, "num_images", DEFAULT_CHECKPOINT_PREVIEW_COUNT))
+        trace = _generation_trace_config(config)
+        if trace is not None:
+            count = int(getattr(trace, "num_images", DEFAULT_CHECKPOINT_PREVIEW_COUNT))
         else:
             evaluation = getattr(config, "evaluation", None) if config is not None else None
             count = int(
@@ -76,7 +76,7 @@ def collect_checkpoint_sample_preview_record(
     should_render = (
         bool(figure_enabled)
         if figure_enabled is not None
-        else _visual_sanity_config(config) is not None
+        else _generation_trace_config(config) is not None
     )
     if (
         should_render

@@ -282,10 +282,10 @@ class AttemptTracker:
             self._wandb_module.define_metric("train/*", step_metric="train/step")
             self._wandb_module.define_metric("eval/step")
             self._wandb_module.define_metric("eval/*", step_metric="eval/step")
-            self._wandb_module.define_metric("visual_sanity/update")
+            self._wandb_module.define_metric("generation_trace/step")
             self._wandb_module.define_metric(
-                "visual_sanity/*",
-                step_metric="visual_sanity/update",
+                "generation_trace/*",
+                step_metric="generation_trace/step",
             )
         except Exception as exc:
             self.warn(
@@ -299,8 +299,8 @@ class AttemptTracker:
         """
         if step is None:
             return metrics
-        if any(key.startswith("visual_sanity/") for key in metrics):
-            metrics.setdefault("visual_sanity/update", int(step))
+        if any(key.startswith("generation_trace/") for key in metrics):
+            metrics.setdefault("generation_trace/step", int(step))
         elif any(key.startswith("eval/") for key in metrics):
             metrics.setdefault("eval/step", int(step))
         elif any(key.startswith("train/") for key in metrics):

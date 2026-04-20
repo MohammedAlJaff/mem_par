@@ -105,15 +105,20 @@ class TestSrcPipeline(unittest.TestCase):
                 checkpoint_previews,
             )
             self.assertTrue(Path(checkpoint_previews[-1]["samples_path"]).is_file())
-            if bool(getattr(config.visual_sanity, "enabled", False)):
+            if bool(getattr(config.generation_trace, "enabled", False)):
                 figure_path = Path(checkpoint_previews[-1]["figure_path"])
                 self.assertTrue(figure_path.is_file())
                 figure_name = figure_path.stem
                 self.assertIn(figure_name, status["generated_figures"])
-                live_previews = run_summary["visual_sanity"]["live_checkpoint_samples"]
-                self.assertGreater(len(live_previews), 0)
-                self.assertTrue(Path(live_previews[-1]["path"]).is_file())
-                self.assertIn(Path(live_previews[-1]["path"]).stem, status["generated_figures"])
+                trace = run_summary["generation_trace"]
+                trace_previews = trace["checkpoint_samples"]
+                self.assertGreater(len(trace_previews), 0)
+                self.assertTrue(Path(trace_previews[-1]["path"]).is_file())
+                self.assertIn(
+                    Path(trace_previews[-1]["path"]).stem,
+                    status["generated_figures"],
+                )
+                self.assertTrue(Path(trace["z_init_path"]).is_file())
             self.assertIn("training_loss_vs_step", status["generated_figures"])
             self.assertGreater(len(metrics), 0)
 
@@ -197,10 +202,9 @@ class TestSrcPipeline(unittest.TestCase):
         config.evaluation.sample_panel_count = 2
         config.evaluation.chunk_size = 4
         config.sampling.n_steps = 2
-        config.visual_sanity.enabled = True
-        config.visual_sanity.num_images = 2
-        config.visual_sanity.n_updates = 0
-        config.visual_sanity.show = False
+        config.generation_trace.enabled = True
+        config.generation_trace.num_images = 2
+        config.generation_trace.show = False
         return config
 
     def test_memorization_metric_prefers_copies(self):

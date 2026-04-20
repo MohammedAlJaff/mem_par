@@ -25,7 +25,7 @@ class TestCheckpointPreviews(unittest.TestCase):
     def make_config(self):
         config = clone_config(get_base_config())
         config.evaluation.sample_panel_count = 3
-        config.visual_sanity.enabled = False
+        config.generation_trace.enabled = False
         return config
 
     def test_saves_tensor_preview_for_vector_samples(self):
@@ -48,10 +48,10 @@ class TestCheckpointPreviews(unittest.TestCase):
             saved = torch.load(record["samples_path"], map_location="cpu")
             self.assertTrue(torch.equal(saved, samples[:3]))
 
-    def test_saves_image_panel_when_visual_sanity_is_enabled(self):
+    def test_saves_image_panel_when_generation_trace_is_enabled(self):
         config = self.make_config()
-        config.visual_sanity.enabled = True
-        config.visual_sanity.num_images = 2
+        config.generation_trace.enabled = True
+        config.generation_trace.num_images = 2
         samples = torch.rand(4, 1, 8, 8)
         train = torch.rand(4, 1, 8, 8)
 
@@ -72,7 +72,7 @@ class TestCheckpointPreviews(unittest.TestCase):
 
     def test_skips_image_panel_for_non_image_tensors(self):
         config = self.make_config()
-        config.visual_sanity.enabled = True
+        config.generation_trace.enabled = True
         samples = torch.randn(4, 3)
         train = torch.randn(4, 3)
 

@@ -115,14 +115,32 @@ class TestArtifactLayout(unittest.TestCase):
                             ),
                         }
                     ],
-                    "visual_sanity": {
-                        "path": str(
+                    "generation_trace": {
+                        "z_init_path": str(
+                            (attempt / "artifacts" / "z_init.pt").resolve()
+                        ),
+                        "checkpoint_samples": [
+                            {
+                                "step": 1,
+                                "path": str(
+                                    (
+                                        attempt
+                                        / "figures"
+                                        / "generation_trace_samples_step_000001.png"
+                                    ).resolve()
+                                ),
+                                "z_init_path": str(
+                                    (attempt / "artifacts" / "z_init.pt").resolve()
+                                ),
+                            }
+                        ],
+                        "final_samples_path": str(
                             (
                                 attempt
                                 / "figures"
-                                / "visual_sanity_samples_over_train.png"
+                                / "generation_trace_samples_final.png"
                             ).resolve()
-                        )
+                        ),
                     },
                 },
             )
@@ -146,7 +164,9 @@ class TestArtifactLayout(unittest.TestCase):
             self.assertEqual(run_summary["attempt_id"], done_attempt.name)
             self.assertEqual(run_summary["original_attempt_id"], original_name)
             self.assertTrue(
-                run_summary["visual_sanity"]["path"].startswith(str(done_attempt.resolve()))
+                run_summary["generation_trace"]["checkpoint_samples"][0][
+                    "path"
+                ].startswith(str(done_attempt.resolve()))
             )
             self.assertTrue(
                 run_summary["checkpoint_sample_previews_path"].startswith(

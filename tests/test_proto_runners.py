@@ -110,11 +110,10 @@ def manual_projected_gmm(args):
 class TestProtoRunners(unittest.TestCase):
     def test_image_recipe_function_order_is_visible(self):
         expected_order = [
-            "def default_knobs(",
+            "def default_settings(",
             "def build_config(",
             "def build_data(",
             "def build_model(",
-            "def run_one_update(",
             "def inspect_metrics(",
             "def run_full_job(",
             "def parse_args(",
@@ -125,31 +124,119 @@ class TestProtoRunners(unittest.TestCase):
             positions = [text.index(marker) for marker in expected_order]
             self.assertEqual(positions, sorted(positions), name)
 
-    def test_image_default_knobs_build_expected_combo(self):
+    def test_image_default_settings_build_expected_combo(self):
         for name, module, dataset, arch in RECIPE_RUNNERS:
-            knobs = module.default_knobs()
-            config = module.build_config(knobs)
+            settings = module.default_settings()
+            config = module.build_config(settings)
             self.assertEqual(config.data.dataset, dataset, name)
             self.assertEqual(config.network.arch, arch, name)
-            self.assertEqual(config.training.batch_cap, knobs["batch_cap"])
-            self.assertEqual(config.training.batch_size, knobs["batch_cap"])
-            self.assertEqual(config.training.lr, 0.005)
+            self.assertEqual(config.training.batch_cap, settings["batch_cap"])
+            self.assertEqual(config.training.batch_size, settings["batch_cap"])
+            self.assertEqual(config.network.base_channels, 32)
+            self.assertEqual(tuple(config.network.channel_mult), (1, 2, 4))
+            self.assertEqual(tuple(config.network.attn_resolutions), (16, 8))
+            self.assertEqual(config.network.num_res_blocks, 2)
+            self.assertEqual(config.network.dropout, 0.1)
+            self.assertIsNone(config.network.time_emb_dim)
+            self.assertEqual(config.training.optimizer, "adam")
+            self.assertEqual(config.training.lr, 1.0e-4)
             self.assertEqual(config.tracking.wandb.project, "")
 
     def test_image_runner_exposes_train_loss_log_cadence(self):
-        knobs = image32_unet.default_knobs()
-        knobs["log_every"] = 7
-        config = image32_unet.build_config(knobs)
+        settings = image32_unet.default_settings()
+        settings["log_every"] = 7
+        config = image32_unet.build_config(settings)
         args = image32_unet.parse_args(["--log-every", "7"])
 
         self.assertEqual(config.training.log_every, 7)
         self.assertEqual(args.log_every, 7)
 
+    def test_image_runner_accepts_slim_cli_surface(self):
+        args = image32_unet.parse_args(
+            [
+                "--device",
+                "cpu",
+                "--out-dir",
+                "tmp/image32",
+                "--run-name",
+                "slim",
+                "--seed",
+                "3",
+                "--dataset",
+                "mnist",
+                "--config-preset",
+                "image32_32",
+                "--prediction-space",
+                "eps",
+                "--loss-space",
+                "eps",
+                "--n-train",
+                "12",
+                "--n-eval",
+                "10",
+                "--n-steps",
+                "5",
+                "--ckpt-every",
+                "2",
+                "--log-every",
+                "1",
+                "--batch-cap",
+                "4",
+                "--eval-samples",
+                "6",
+                "--sampling-steps",
+                "3",
+                "--root",
+                "data",
+                "--no-download",
+                "--no-wandb",
+                "--wandb-mode",
+                "offline",
+                "--wandb-project",
+                "proj",
+                "--wandb-name",
+                "name",
+                "--wandb-group",
+                "group",
+                "--wandb-tags",
+                "a,b",
+                "--generation-trace",
+                "--generation-trace-count",
+                "2",
+                "--no-generation-trace-show",
+            ]
+        )
+        config = image32_unet.build_config(vars(args))
+
+        self.assertEqual(args.prediction_space, "eps")
+        self.assertEqual(args.loss_space, "eps")
+        self.assertFalse(args.download)
+        self.assertFalse(args.wandb)
+        self.assertTrue(args.generation_trace)
+        self.assertEqual(config.generation_trace.num_images, 2)
+        self.assertFalse(config.generation_trace.show)
+        self.assertEqual(config.tracking.wandb.tags, ["a", "b"])
+
+    def test_image32_config_preset_owns_rare_geometry_and_architecture(self):
+        settings = image32_unet.default_settings()
+        settings.update({"dataset": "flowers102", "config_preset": "image32_128"})
+
+        config = image32_unet.build_config(settings)
+
+        self.assertEqual(config.data.dataset, "flowers102")
+        self.assertEqual(config.data.image_size, 128)
+        self.assertEqual(config.data.resize_size, 128)
+        self.assertEqual(config.data.image_channels, 3)
+        self.assertEqual(config.network.base_channels, 64)
+        self.assertEqual(tuple(config.network.channel_mult), (1, 2, 4, 4, 8))
+        self.assertEqual(tuple(config.network.attn_resolutions), (16,))
+        self.assertEqual(config.network.dropout, 0.0)
+
     def test_image_runners_accept_parameterization_spaces(self):
         for name, module, _, _ in RECIPE_RUNNERS:
             for space in ("x", "eps", "v"):
-                knobs = module.default_knobs()
-                knobs.update(
+                settings = module.default_settings()
+                settings.update(
                     {
                         "prediction_space": space,
                         "loss_space": space,
@@ -159,7 +246,7 @@ class TestProtoRunners(unittest.TestCase):
                         "ckpt_every": 1,
                     }
                 )
-                config = module.build_config(knobs)
+                config = module.build_config(settings)
                 self.assertEqual(config.framework.prediction_space, space)
                 self.assertEqual(config.framework.loss_space, space)
 
@@ -177,6 +264,32 @@ class TestProtoRunners(unittest.TestCase):
                     (module, ["--validate-only"]),
                     (module, ["--pred-space", "eps"]),
                     (module, ["--study-dir", "tmp/old"]),
+                    (module, ["--sanity-only"]),
+                    (module, ["--sanity-updates", "1"]),
+                    (module, ["--base-channels", "16"]),
+                    (module, ["--channel-mult", "1,2"]),
+                    (module, ["--attn-resolutions", "8"]),
+                    (module, ["--num-res-blocks", "1"]),
+                    (module, ["--dropout", "0.0"]),
+                    (module, ["--time-emb-dim", "16"]),
+                    (module, ["--dataset-subdir", "tmp"]),
+                    (module, ["--train-split", "train"]),
+                    (module, ["--reference-split", "valid"]),
+                    (module, ["--allow-same-source-reference"]),
+                    (module, ["--image-size", "16"]),
+                    (module, ["--image-channels", "1"]),
+                    (module, ["--resize-size", "16"]),
+                    (module, ["--balance-train-classes"]),
+                    (module, ["--balance-reference-classes"]),
+                    (module, ["--loss-eval-times", "0.5"]),
+                    (module, ["--wandb-entity", "entity"]),
+                    (module, ["--wandb-notes", "notes"]),
+                    (module, ["--wandb-strict"]),
+                    (module, ["--visual-sanity"]),
+                    (module, ["--visual-sanity-count", "2"]),
+                    (module, ["--visual-sanity-updates", "1"]),
+                    (module, ["--visual-sanity-show"]),
+                    (module, ["--generation-trace-updates", "1"]),
                 ]
             )
         for module, argv in removed:
@@ -251,8 +364,8 @@ class TestProtoRunners(unittest.TestCase):
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_image32_unet_recipe_steps_use_fake_mnist_dataset(self):
-        knobs = image32_unet.default_knobs()
-        knobs.update(
+        settings = image32_unet.default_settings()
+        settings.update(
             {
                 "dataset": "mnist",
                 "n_train": 10,
@@ -271,15 +384,13 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = image32_unet.build_config(knobs)
+        config = image32_unet.build_config(settings)
         data = image32_unet.build_data(config)
         model = image32_unet.build_model(config, "cpu")
-        update = image32_unet.run_one_update(model, data["train"], config, "cpu")
         metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [10, 1, 16, 16])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
-        self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
         self.assertIn("random_t_loss", metrics["loss_eval"])
         self.assertIn("loss_t_0_5", metrics["loss_eval"])
@@ -287,8 +398,8 @@ class TestProtoRunners(unittest.TestCase):
 
     @mock.patch("mp_data.celeba32.datasets.CelebA", FakeCelebA)
     def test_image32_unet_recipe_steps_use_fake_celeba_dataset(self):
-        knobs = image32_unet.default_knobs()
-        knobs.update(
+        settings = image32_unet.default_settings()
+        settings.update(
             {
                 "n_train": 4,
                 "n_eval": 4,
@@ -305,21 +416,19 @@ class TestProtoRunners(unittest.TestCase):
                 "download": False,
             }
         )
-        config = image32_unet.build_config(knobs)
+        config = image32_unet.build_config(settings)
         data = image32_unet.build_data(config)
         model = image32_unet.build_model(config, "cpu")
-        update = image32_unet.run_one_update(model, data["train"], config, "cpu")
         metrics = image32_unet.inspect_metrics(config, data, model, "cpu")
 
         self.assertEqual(list(data["train"].shape), [4, 1, 32, 32])
         self.assertEqual(model.net.__class__.__name__, "BonnaireUNet")
-        self.assertGreater(update["loss"], 0.0)
         self.assertIn("f_mem", metrics["reference_memory"])
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_image32_visual_sanity_full_run_writes_checkpoint_previews(self):
-        knobs = image32_unet.default_knobs()
-        knobs.update(
+    def test_image32_generation_trace_full_run_writes_checkpoint_previews(self):
+        settings = image32_unet.default_settings()
+        settings.update(
             {
                 "dataset": "mnist",
                 "n_train": 4,
@@ -339,13 +448,12 @@ class TestProtoRunners(unittest.TestCase):
                 "balance_train_classes": False,
                 "balance_reference_classes": False,
                 "wandb": False,
-                "visual_sanity": True,
-                "visual_sanity_count": 2,
-                "visual_sanity_updates": 0,
-                "visual_sanity_show": False,
+                "generation_trace": True,
+                "generation_trace_count": 2,
+                "generation_trace_show": False,
             }
         )
-        config = image32_unet.build_config(knobs)
+        config = image32_unet.build_config(settings)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -358,9 +466,14 @@ class TestProtoRunners(unittest.TestCase):
             self.assertTrue(Path(previews[-1]["figure_path"]).is_file())
             summary_path = Path(result["run_dir"]) / "artifacts" / "run_summary.json"
             run_summary = json.loads(summary_path.read_text())
-            live_previews = run_summary["visual_sanity"]["live_checkpoint_samples"]
-            self.assertGreater(len(live_previews), 0)
-            self.assertTrue(Path(live_previews[-1]["path"]).is_file())
+            trace = run_summary["generation_trace"]
+            self.assertTrue(Path(trace["z_init_path"]).is_file())
+            self.assertTrue(Path(trace["train_grid_path"]).is_file())
+            self.assertTrue(Path(trace["final_samples_path"]).is_file())
+            checkpoint_trace = trace["checkpoint_samples"]
+            self.assertGreater(len(checkpoint_trace), 0)
+            self.assertEqual(checkpoint_trace[0]["step"], 0)
+            self.assertTrue(Path(checkpoint_trace[-1]["path"]).is_file())
 
     def test_synthetic_tiny_full_run_writes_release_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -434,10 +547,9 @@ class TestProtoRunners(unittest.TestCase):
             "## 2. Config Construction",
             "## 3. Data Bundle",
             "## 4. Model Construction",
-            "## 5. One Forward Loss Update",
-            "## 6. Metric Calculation",
-            "## 7. Optional Full Job",
-            "## 8. Artifact Figure Loading",
+            "## 5. Metric Calculation",
+            "## 6. Optional Full Job",
+            "## 7. Artifact Figure Loading",
         ]
         synthetic_sections = [
             "## 0. Knobs",

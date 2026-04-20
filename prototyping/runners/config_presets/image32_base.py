@@ -29,12 +29,18 @@ def get_default_configs():
     # Model defaults.
     config.model = ConfigDict()
     config.model.arch = "unet"
-    config.model.base_channels = 64
-    config.model.channel_mult = (1, 2, 4, 4)
-    config.model.attn_resolutions = (8,)
+    config.model.base_channels = 32
+    config.model.channel_mult = (1, 2, 4)
+    config.model.attn_resolutions = (16, 8)
     config.model.num_res_blocks = 2
-    config.model.dropout = 0.0
+    config.model.dropout = 0.1
     config.model.time_emb_dim = None
+
+    # Preset-owned image geometry. Dataset profiles still own channel count,
+    # splits, and source directories.
+    config.data = ConfigDict()
+    config.data.image_size = 32
+    config.data.resize_size = 0
 
     # Training defaults.
     config.training = ConfigDict()
@@ -43,7 +49,7 @@ def get_default_configs():
     config.training.ckpt_every = 2000
     config.training.log_every = 200
     config.training.optimizer = "adam"
-    config.training.lr = 0.005
+    config.training.lr = 1.0e-4
     config.training.weight_decay = 0.0
 
     # Evaluation / sampling defaults.

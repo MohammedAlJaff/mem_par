@@ -83,6 +83,25 @@ def _balanced_seeded_indices(targets, count, seed, split_name):
     return indices[shuffle]
 
 
+def _resolve_class_balance(balance_classes, count, split_name):
+    """
+    Disable impossible balanced MNIST sampling while preserving subset size.
+    """
+    requested = bool(balance_classes)
+    count = int(count)
+    if not requested or count % MNIST_NUM_CLASSES == 0:
+        return requested, None
+
+    return False, {
+        "split": split_name,
+        "requested_count": count,
+        "num_classes": MNIST_NUM_CLASSES,
+        "requested_balance": True,
+        "actual_balance": False,
+        "reason": f"count is not divisible by {MNIST_NUM_CLASSES}",
+    }
+
+
 def _select_indices(targets, count, seed, balance_classes, split_name):
     """
     Pick deterministic MNIST subset indices, optionally enforcing class balance.
@@ -144,19 +163,38 @@ def load_mnist_bundle(config):
     train_data, train_targets = _load_mnist_split(root, train=True, download=download)
     test_data, test_targets = _load_mnist_split(root, train=False, download=download)
 
-    balance_train = bool(getattr(config.data, "balance_train_classes", False))
-    balance_reference = bool(getattr(config.data, "balance_reference_classes", False))
+    train_count = int(config.data.n_train)
+    reference_count = int(config.data.n_eval)
+    requested_balance_train = bool(getattr(config.data, "balance_train_classes", False))
+    requested_balance_reference = bool(
+        getattr(config.data, "balance_reference_classes", False)
+    )
+    balance_train, train_balance_adjustment = _resolve_class_balance(
+        requested_balance_train,
+        train_count,
+        "train",
+    )
+    balance_reference, reference_balance_adjustment = _resolve_class_balance(
+        requested_balance_reference,
+        reference_count,
+        "reference",
+    )
+    class_balance_adjustments = [
+        adjustment
+        for adjustment in (train_balance_adjustment, reference_balance_adjustment)
+        if adjustment is not None
+    ]
 
     train_indices = _select_indices(
         train_targets,
-        int(config.data.n_train),
+        train_count,
         int(config.training.seed),
         balance_train,
         "training subset",
     )
     reference_indices = _select_indices(
         test_targets,
-        int(config.data.n_eval),
+        reference_count,
         int(config.training.seed) + 1,
         balance_reference,
         "reference subset",
@@ -180,11 +218,14 @@ def load_mnist_bundle(config):
         "train": train_tensor.contiguous(),
         "train_labels": train_labels,
         "train_class_counts": _class_count_summary(train_labels),
+        "requested_balanced_train_classes": requested_balance_train,
         "balanced_train_classes": balance_train,
         "reference": reference_tensor.contiguous(),
         "reference_labels": reference_labels,
         "reference_class_counts": _class_count_summary(reference_labels),
+        "requested_balanced_reference_classes": requested_balance_reference,
         "balanced_reference_classes": balance_reference,
+        "class_balance_adjustments": class_balance_adjustments,
         "train_indices": train_indices,
         "reference_indices": reference_indices,
         "train_role": "train",

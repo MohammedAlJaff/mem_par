@@ -57,14 +57,36 @@ class TestMNISTLoader(unittest.TestCase):
         self.assertEqual(bundle["reference_source_id"], "torchvision_mnist:test")
         self.assertEqual(bundle["train_role"], "train")
         self.assertEqual(bundle["reference_role"], "heldout_reference")
+        self.assertTrue(bundle["requested_balanced_train_classes"])
+        self.assertTrue(bundle["requested_balanced_reference_classes"])
+        self.assertTrue(bundle["balanced_train_classes"])
+        self.assertTrue(bundle["balanced_reference_classes"])
+        self.assertEqual(bundle["class_balance_adjustments"], [])
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_balanced_selection_requires_divisibility_by_ten(self):
+    def test_non_divisible_balanced_requests_fall_back_to_seeded_subset(self):
         config = self.make_config()
         config.data.n_train = 21
+        config.data.n_eval = 23
 
-        with self.assertRaisesRegex(ValueError, "divisible by 10"):
-            load_mnist_bundle(config)
+        bundle = load_mnist_bundle(config)
+
+        self.assertEqual(bundle["train"].shape[0], 21)
+        self.assertEqual(bundle["reference"].shape[0], 23)
+        self.assertTrue(bundle["requested_balanced_train_classes"])
+        self.assertTrue(bundle["requested_balanced_reference_classes"])
+        self.assertFalse(bundle["balanced_train_classes"])
+        self.assertFalse(bundle["balanced_reference_classes"])
+        self.assertEqual(
+            [item["split"] for item in bundle["class_balance_adjustments"]],
+            ["train", "reference"],
+        )
+        self.assertTrue(
+            all(
+                item["reason"] == "count is not divisible by 10"
+                for item in bundle["class_balance_adjustments"]
+            )
+        )
 
 
 if __name__ == "__main__":

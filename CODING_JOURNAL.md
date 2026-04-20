@@ -1041,3 +1041,59 @@ grids easy to watch without changing the noise source across checkpoints.
 - Run the Image32 CUDA smoke with `--visual-sanity --visual-sanity-count 20
   --ckpt-every 200 --log-every 1`; confirm W&B `train/loss` points and
   `eval/live_checkpoint_samples_over_train` media at checkpoint steps.
+
+## 2026-04-20T02:10:00Z - Bonnaire-Close Image32 Runner Cleanup
+
+### Context
+The prototype Image32 runner had grown too much CLI surface and still carried
+sanity/update terminology that no longer matched the training workflow.
+
+### Intent
+Keep the runner simple for paper experiments: Bonnaire-close 32px defaults,
+few CLI knobs, fixed-noise generation visuals across training, and clear
+definitions for the run-size knobs.
+
+### Changed / Observed
+- Removed Image32 sanity-only/update paths and old visual-sanity naming.
+- Renamed the live visual path to `generation_trace`, with fixed `z_init.pt`
+  panels at step 0, each checkpoint, and final model.
+- Updated W&B logging for trace figures to
+  `generation_trace/samples_over_train` with explicit `generation_trace/step`.
+- Set the default 32px/Image32 UNet profile close to Bonnaire:
+  `base_channels=32`, `channel_mult=(1, 2, 4)`,
+  `attn_resolutions=(16, 8)`, `num_res_blocks=2`, `dropout=0.1`,
+  `time_emb_dim=None`, Adam, and `lr=1e-4`.
+- Slimmed the Image32 CLI to real sweep/prototype knobs; rare architecture and
+  data-shape knobs now live in dataset profiles or config presets.
+- Added plain comments/help text explaining:
+  - `n_train`: real images used for optimization.
+  - `n_eval`: real held-out/reference images loaded for evaluation.
+  - `eval_samples`: generated samples per checkpoint and `z_init.pt` size.
+  - `sampling_steps`: solver steps used to generate images from `z_init`.
+- Confirmed Bonnaire uses sinusoidal time embeddings expanded to
+  `base_channels * 4` and injected into ResNet blocks.
+- Kept checkpoint preview figures alongside generation trace figures for now;
+  they serve the post-training metric/evaluation bundle.
+
+### Commands / Checks
+- `git diff --check`
+- `python -m py_compile ...` for changed Image32 runner/config/trainer files.
+- `python -m unittest tests.test_proto_runners`
+- `python -m unittest tests.test_mp_data_mnist`
+- `python -m unittest tests.test_checkpoint_previews tests.test_experiment_pipeline tests.test_artifact_layout tests.test_tracking`
+
+### Results
+- Whitespace and syntax checks passed.
+- Focused test suites passed:
+  - `tests.test_proto_runners`: 16 tests.
+  - `tests.test_mp_data_mnist`: 2 tests.
+  - Shared artifact/tracking suites: 15 tests.
+- Only existing `torch.load(weights_only=False)` FutureWarnings appeared.
+
+### Blockers
+- `gh` is not installed in this shell, so PR automation is unavailable.
+- CUDA/W&B online smoke still needs to run from a GPU-visible session.
+
+### Next
+- Run the proper Image32 CUDA run with `--generation-trace`; inspect both
+  `generation_trace_*` training panels and checkpoint metric previews.

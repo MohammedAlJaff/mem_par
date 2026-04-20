@@ -133,11 +133,11 @@ if __name__ == "__main__":
         image_size=32,
         image_channels=1,
         base_channels=32,
-        channel_mult=(1, 2, 4, 4),
+        channel_mult=(1, 2, 4),
         num_res_blocks=2,
-        attn_resolutions=(8,),
-        dropout=0.0,
-        time_emb_dim=32,
+        attn_resolutions=(16, 8),
+        dropout=0.1,
+        time_emb_dim=None,
     )
     z = torch.randn(2, 1, 32, 32)
     t = torch.linspace(0.1, 0.9, z.shape[0])

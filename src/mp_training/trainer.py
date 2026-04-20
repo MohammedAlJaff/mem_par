@@ -202,21 +202,24 @@ def _save_training_loss_figure(history, figures_dir):
     return figure_path
 
 
-def _visual_sanity_config(config):
+def _generation_trace_config(config):
     """
-    Return the optional visual sanity config section, if enabled.
+    Return the optional generation trace config section, if enabled.
     """
-    visual = getattr(config, "visual_sanity", None)
-    if visual is None or not bool(getattr(visual, "enabled", False)):
+    trace = getattr(config, "generation_trace", None)
+    if trace is None or not bool(getattr(trace, "enabled", False)):
         return None
-    return visual
+    return trace
 
 
-def _visual_sanity_count(config, train_tensor):
-    visual = _visual_sanity_config(config)
-    if visual is None:
+def _generation_trace_count(config, train_tensor):
+    trace = _generation_trace_config(config)
+    if trace is None:
         return 0
-    return max(1, min(int(getattr(visual, "num_images", 8)), int(train_tensor.shape[0])))
+    return max(
+        1,
+        min(int(getattr(trace, "num_images", 8)), int(train_tensor.shape[0])),
+    )
 
 
 def _fork_rng_devices_for(device):
@@ -234,69 +237,30 @@ def _fork_rng_devices_for(device):
     return [int(torch_device.index)]
 
 
-def _save_visual_train_grid(config, train_tensor, run_dir, tracker):
+def _save_generation_trace_train_grid(config, train_tensor, run_dir, tracker):
     """
     Save/log the train grid before any model is constructed.
     """
-    visual = _visual_sanity_config(config)
-    if visual is None:
+    trace = _generation_trace_config(config)
+    if trace is None:
         return None
     if not is_image_batch(train_tensor):
         tracker.warn(
-            "visual sanity train grid skipped: expected image tensor shaped [B,C,H,W]"
+            "generation trace train grid skipped: expected image tensor shaped [B,C,H,W]"
         )
         return None
 
-    count = _visual_sanity_count(config, train_tensor)
-    figure_path = run_dir / "figures" / "visual_sanity_train_grid_before_model.png"
+    count = _generation_trace_count(config, train_tensor)
+    figure_path = run_dir / "figures" / "generation_trace_train_grid.png"
     save_image_rows_figure(
         [train_tensor[:count]],
         ["train"],
         figure_path,
         title=model_context_title(config, "Train grid before model creation"),
     )
-    tracker.register_figure("visual_sanity_train_grid_before_model", figure_path)
-    maybe_display_figure(figure_path, bool(getattr(visual, "show", True)))
+    tracker.register_figure("generation_trace_train_grid", figure_path)
+    maybe_display_figure(figure_path, bool(getattr(trace, "show", True)))
     return figure_path
-
-
-def _run_visual_sanity_updates(model, train_tensor, config, device, n_updates):
-    """
-    Run a small throwaway update loop for visual sanity sampling.
-    """
-    n_updates = int(n_updates)
-    if n_updates < 1:
-        return []
-
-    model.train()
-    batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
-    batch = train_tensor[:batch_size].to(device)
-    optimizer = _build_optimizer(config, model)
-    records = []
-
-    for update_index in range(n_updates):
-        eps = torch.randn_like(batch)
-        t = torch.linspace(
-            float(config.schedule.t_min),
-            float(config.schedule.t_max),
-            batch_size,
-            device=batch.device,
-        )
-
-        optimizer.zero_grad(set_to_none=True)
-        loss = model.compute_loss(batch, eps=eps, t=t)
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0e9)
-        optimizer.step()
-        records.append(
-            {
-                "update": update_index + 1,
-                "loss": float(loss.detach().cpu().item()),
-                "grad_norm": float(grad_norm.detach().cpu().item()),
-            }
-        )
-
-    return records
 
 
 def _save_samples_over_train_figure(
@@ -316,7 +280,7 @@ def _save_samples_over_train_figure(
         return None
 
     count = min(
-        _visual_sanity_count(config, train_tensor),
+        _generation_trace_count(config, train_tensor),
         int(z_init.shape[0]),
     )
     if count < 1:
@@ -343,92 +307,20 @@ def _save_samples_over_train_figure(
     )
 
 
-def _run_visual_sanity_preflight(config, train_tensor, z_init, run_dir, device, tracker):
-    """
-    Train a throwaway model for a couple of updates and log sample grids.
-    """
-    visual = _visual_sanity_config(config)
-    if visual is None:
-        return {}
-
-    n_updates = int(getattr(visual, "n_updates", 2))
-    if n_updates < 1:
-        return {}
-    if not is_image_batch(train_tensor):
-        tracker.warn(
-            "visual sanity sample grid skipped: expected image tensor shaped [B,C,H,W]"
-        )
-        return {}
-
-    tracker.note(
-        f"visual sanity preflight started updates={n_updates}",
-        event_type="visual_sanity_started",
-        updates=n_updates,
-    )
-    with torch.random.fork_rng(devices=_fork_rng_devices_for(device), enabled=True):
-        torch.manual_seed(int(config.training.seed) + 1009)
-        visual_model = GDFM(config).to(device)
-        update_records = _run_visual_sanity_updates(
-            visual_model,
-            train_tensor,
-            config,
-            device,
-            n_updates,
-        )
-        for record in update_records:
-            tracker.note(
-                (
-                    "visual sanity update "
-                    f"{record['update']}/{n_updates} "
-                    f"loss={record['loss']:.6f} "
-                    f"grad={record['grad_norm']:.6f}"
-                ),
-                event_type="visual_sanity_update",
-                **record,
-            )
-            tracker.log_metrics(
-                {
-                    "visual_sanity/preflight_loss": record["loss"],
-                    "visual_sanity/preflight_grad_norm": record["grad_norm"],
-                },
-                step=int(record["update"]),
-            )
-
-        figure_path = _save_samples_over_train_figure(
-            visual_model,
-            train_tensor,
-            z_init,
-            config,
-            device,
-            run_dir / "figures" / "visual_sanity_samples_over_train.png",
-            title=model_context_title(
-                config,
-                "Visual sanity samples over train images",
-                extra=f"sanity_updates={n_updates}",
-            ),
-        )
-        del visual_model
-
-    if device != "cpu" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    if figure_path is None:
-        return {"updates": update_records}
-
-    tracker.register_figure("visual_sanity_samples_over_train", figure_path)
-    maybe_display_figure(figure_path, bool(getattr(visual, "show", True)))
-    return {
-        "updates": update_records,
-        "samples_over_train_path": str(Path(figure_path).resolve()),
-    }
-
-
-def _save_final_visual_samples(config, model, train_tensor, z_init, run_dir, device, tracker):
+def _save_final_generation_trace_samples(
+    config,
+    model,
+    train_tensor,
+    z_init,
+    run_dir,
+    device,
+    tracker,
+):
     """
     Save/log the final trained model sample row above train images.
     """
-    visual = _visual_sanity_config(config)
-    if visual is None:
+    trace = _generation_trace_config(config)
+    if trace is None:
         return None
     if not is_image_batch(train_tensor):
         return None
@@ -441,18 +333,28 @@ def _save_final_visual_samples(config, model, train_tensor, z_init, run_dir, dev
             z_init,
             config,
             device,
-            run_dir / "figures" / "final_samples_over_train.png",
-            title=model_context_title(config, "Final model samples over train images"),
+            run_dir / "figures" / "generation_trace_samples_final.png",
+            title=model_context_title(config, "Final generation trace samples"),
         )
     if figure_path is None:
         return None
 
-    tracker.register_figure("final_samples_over_train", figure_path)
-    maybe_display_figure(figure_path, bool(getattr(visual, "show", True)))
+    step = int(config.training.n_steps)
+    tracker.register_figure(
+        "generation_trace_samples_final",
+        figure_path,
+        log_to_wandb=False,
+    )
+    tracker.log_figure_metric(
+        "generation_trace/samples_over_train",
+        figure_path,
+        step=step,
+    )
+    maybe_display_figure(figure_path, bool(getattr(trace, "show", True)))
     return figure_path
 
 
-def _save_live_checkpoint_visual_samples(
+def _save_generation_trace_checkpoint_samples(
     config,
     model,
     train_tensor,
@@ -463,16 +365,16 @@ def _save_live_checkpoint_visual_samples(
     step,
 ):
     """
-    Save/log a live checkpoint sample grid from the fixed saved z_init bank.
+    Save/log a checkpoint sample grid from the fixed saved z_init bank.
     """
-    visual = _visual_sanity_config(config)
-    if visual is None:
+    trace = _generation_trace_config(config)
+    if trace is None:
         return None
     if not is_image_batch(train_tensor):
         return None
 
     step = int(step)
-    figure_name = f"live_checkpoint_samples_over_train_step_{step:06d}"
+    figure_name = f"generation_trace_samples_step_{step:06d}"
     figure_path = _save_samples_over_train_figure(
         model,
         train_tensor,
@@ -482,7 +384,7 @@ def _save_live_checkpoint_visual_samples(
         run_dir / "figures" / f"{figure_name}.png",
         title=model_context_title(
             config,
-            "Live checkpoint samples over train images",
+            "Generation trace samples over train images",
             checkpoint_step=step,
             extra="fixed_z_init",
         ),
@@ -492,10 +394,11 @@ def _save_live_checkpoint_visual_samples(
 
     tracker.register_figure(figure_name, figure_path, log_to_wandb=False)
     tracker.log_figure_metric(
-        "eval/live_checkpoint_samples_over_train",
+        "generation_trace/samples_over_train",
         figure_path,
         step=step,
     )
+    maybe_display_figure(figure_path, bool(getattr(trace, "show", True)))
     return {
         "step": step,
         "path": str(Path(figure_path).resolve()),
@@ -639,8 +542,15 @@ def train_run(config, study_dir, device="cpu"):
             "reference_shape": list(reference_tensor.shape),
             "train_class_counts": data_bundle.get("train_class_counts"),
             "reference_class_counts": data_bundle.get("reference_class_counts"),
+            "requested_balanced_train_classes": data_bundle.get(
+                "requested_balanced_train_classes"
+            ),
+            "requested_balanced_reference_classes": data_bundle.get(
+                "requested_balanced_reference_classes"
+            ),
             "balanced_train_classes": data_bundle.get("balanced_train_classes"),
             "balanced_reference_classes": data_bundle.get("balanced_reference_classes"),
+            "class_balance_adjustments": data_bundle.get("class_balance_adjustments"),
             "train_split": data_bundle.get("train_split"),
             "reference_split": data_bundle.get("reference_split")
             or getattr(config.data, "reference_split", None),
@@ -666,26 +576,18 @@ def train_run(config, study_dir, device="cpu"):
             batching=batching,
         )
 
-        visual_sanity = {}
-        train_grid_path = _save_visual_train_grid(config, train_tensor, run_dir, tracker)
+        generation_trace = {
+            "z_init_path": str((run_dir / "artifacts" / "z_init.pt").resolve())
+        }
+        train_grid_path = _save_generation_trace_train_grid(
+            config,
+            train_tensor,
+            run_dir,
+            tracker,
+        )
         if train_grid_path is not None:
-            visual_sanity["train_grid_before_model_path"] = str(
-                Path(train_grid_path).resolve()
-            )
-        visual_sanity.update(
-            _run_visual_sanity_preflight(
-                config,
-                train_tensor,
-                z_init,
-                run_dir,
-                device,
-                tracker,
-            )
-        )
-        live_checkpoint_samples = visual_sanity.setdefault(
-            "live_checkpoint_samples",
-            [],
-        )
+            generation_trace["train_grid_path"] = str(Path(train_grid_path).resolve())
+        checkpoint_trace_samples = generation_trace.setdefault("checkpoint_samples", [])
 
         # -----------------------------------------------------------------
         # Phase 5: build the model and optimizer.
@@ -713,7 +615,7 @@ def train_run(config, study_dir, device="cpu"):
         checkpoint_path = save_checkpoint(run_dir, 0, model, optimizer)
         tracker.checkpoint_saved(step=0, checkpoint_path=checkpoint_path)
         try:
-            live_visual = _save_live_checkpoint_visual_samples(
+            trace_record = _save_generation_trace_checkpoint_samples(
                 config,
                 model,
                 train_tensor,
@@ -723,11 +625,11 @@ def train_run(config, study_dir, device="cpu"):
                 tracker,
                 step=0,
             )
-            if live_visual is not None:
-                live_checkpoint_samples.append(live_visual)
+            if trace_record is not None:
+                checkpoint_trace_samples.append(trace_record)
         except Exception as exc:
             tracker.warn(
-                "live checkpoint sample grid skipped "
+                "generation trace sample grid skipped "
                 f"step=0: {type(exc).__name__}: {exc}"
             )
         train_start = time.perf_counter()
@@ -801,7 +703,7 @@ def train_run(config, study_dir, device="cpu"):
                     checkpoint_path = save_checkpoint(run_dir, step, model, optimizer)
                     tracker.checkpoint_saved(step=step, checkpoint_path=checkpoint_path)
                     try:
-                        live_visual = _save_live_checkpoint_visual_samples(
+                        trace_record = _save_generation_trace_checkpoint_samples(
                             config,
                             model,
                             train_tensor,
@@ -811,11 +713,11 @@ def train_run(config, study_dir, device="cpu"):
                             tracker,
                             step=step,
                         )
-                        if live_visual is not None:
-                            live_checkpoint_samples.append(live_visual)
+                        if trace_record is not None:
+                            checkpoint_trace_samples.append(trace_record)
                     except Exception as exc:
                         tracker.warn(
-                            "live checkpoint sample grid skipped "
+                            "generation trace sample grid skipped "
                             f"step={int(step)}: {type(exc).__name__}: {exc}"
                         )
         finally:
@@ -838,7 +740,7 @@ def train_run(config, study_dir, device="cpu"):
         if training_figure_path is not None:
             tracker.register_figure("training_loss_vs_step", training_figure_path)
             generated_figures = dict(tracker.status.get("generated_figures") or {})
-        final_visual_path = _save_final_visual_samples(
+        final_trace_path = _save_final_generation_trace_samples(
             config,
             model,
             train_tensor,
@@ -847,9 +749,9 @@ def train_run(config, study_dir, device="cpu"):
             device,
             tracker,
         )
-        if final_visual_path is not None:
-            visual_sanity["final_samples_over_train_path"] = str(
-                Path(final_visual_path).resolve()
+        if final_trace_path is not None:
+            generation_trace["final_samples_path"] = str(
+                Path(final_trace_path).resolve()
             )
             generated_figures = dict(tracker.status.get("generated_figures") or {})
 
@@ -879,7 +781,7 @@ def train_run(config, study_dir, device="cpu"):
             "status_path": str((run_dir / "status.json").resolve()),
             "attempt_log_path": str((run_dir / "logs" / "attempt.log").resolve()),
             "generated_figures": generated_figures,
-            "visual_sanity": visual_sanity,
+            "generation_trace": generation_trace,
             "wandb": tracker.status.get("wandb"),
         }
         save_json(run_dir / "artifacts" / "run_summary.json", run_summary)
@@ -907,7 +809,7 @@ def train_run(config, study_dir, device="cpu"):
             run_summary_path=str((run_dir / "artifacts" / "run_summary.json").resolve()),
             train_history_path=str((run_dir / "metrics" / "train_history.json").resolve()),
             generated_figures=generated_figures,
-            visual_sanity=visual_sanity,
+            generation_trace=generation_trace,
         )
         run_dir = mark_attempt_done(run_dir)
         tracker.attempt_dir = run_dir

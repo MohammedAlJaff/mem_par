@@ -52,13 +52,13 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --ckpt-every 50 \
   --no-download
 
-# Run a lightweight sanity check before deciding on a full job.
+# Run the same full pipeline with tiny step counts before submitting a long job.
 PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --device cuda \
   --dataset flowers102_128 \
-  --visual-sanity \
-  --visual-sanity-count 8 \
-  --visual-sanity-updates 2 \
+  --generation-trace \
+  --generation-trace-count 8 \
+  --no-generation-trace-show \
   --batch-cap 4 \
   --n-train 8 \
   --n-eval 8 \
@@ -66,9 +66,20 @@ PYTHONPATH=src:. python -m prototyping.runners.image32_unet \
   --ckpt-every 1
 ```
 
-The public runner CLI uses `--prediction-space`, `--loss-space`,
-`--batch-cap`, and `--out-dir`. Legacy aliases and validate-only modes have
-been removed; component checks now live in tests and notebooks.
+The Image32 CLI is intentionally slim. It exposes run identity, dataset/preset,
+prediction/loss spaces, selected dataset sizes, training cadence, sampling
+count, data root/download, W&B basics, and `--generation-trace`. Architecture
+and low-level data variants live in named presets selected by `--config-preset`
+or in dataset profiles such as `flowers102_128`.
+
+The core Image32 size knobs mean exactly this:
+
+| Flag | Config field | Meaning |
+| --- | --- | --- |
+| `--n-train` | `config.data.n_train` | Number of real images used for optimization. |
+| `--n-eval` | `config.data.n_eval` | Number of real held-out/reference images loaded for evaluation. |
+| `--eval-samples` | `config.evaluation.n_samples` | Number of generated samples per checkpoint; also the size of `artifacts/z_init.pt`. |
+| `--sampling-steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
 
 ## Artifacts
 
@@ -89,16 +100,36 @@ Checkpoint evaluation writes `metrics/loss_eval.json` with held-out random-`t`
 loss probes and fixed-`t` probes at `0.5` and `0.75`.
 Checkpoint evaluation also writes `metrics/checkpoint_sample_previews.json` and
 small preview tensors under `metrics/checkpoint_sample_previews/`. When
-`--visual-sanity` is enabled, image runners also save train/sample grids under
-`figures/`, including one `checkpoint_samples_over_train_step_*.png` panel for
-every saved checkpoint, and log those panels to W&B when tracking is active.
+`--generation-trace` is enabled, image runners save `artifacts/z_init.pt` once
+and sample from that same fixed noise bank at step 0, every checkpoint, and the
+final model. The panels are written under `figures/generation_trace_*.png` and
+logged to W&B as `generation_trace/samples_over_train` against
+`generation_trace/step` when tracking is active.
 Canonical attempt folders receive a `DONE_` prefix after training artifacts are
 successfully written, so completed-training folders are visible from the
 filesystem while failed or aborted attempts keep their original names.
+
+## Bonnaire-Close Image32 Defaults
+
+The default 32px/Image32 profile is kept close to Bonnaire's UNet setup:
+`base_channels=32`, `channel_mult=(1, 2, 4)`, `num_res_blocks=2`,
+`dropout=0.1`, `time_emb_dim=None` (resolved by the model to
+`base_channels * 4`), and `attn_resolutions=(16, 8)`. Training keeps Adam with
+`lr=1e-4` and the framework family remains continuous-flow matching.
+
+Bonnaire does use time embeddings: their vendor UNet defines
+`SinusoidalPositionEmbeddings` in
+`baselines/bonnaire/vendor/Experiments/src/Utils/Unet.py`, expands the time
+embedding to `base_channels * 4`, and injects it into each ResNet block.
+Remaining intentional differences are that Bonnaire uses integer DDPM
+timesteps with epsilon-noise MSE, while this runner uses continuous FM time and
+configurable prediction/loss spaces; Bonnaire adds time embeddings into blocks,
+while our `SmallUNet`/Bonnaire adapter uses scale/shift conditioning; and the
+training loop, artifacts, and W&B tracking stay on the canonical `src/` stack.
 
 ## Notebook Map
 
 The notebooks in `notebooks/` import their sibling runner modules and mirror
 the same steps interactively. They cover config construction, data inspection,
-model construction, one optimizer update, metric inspection, optional full
-runs, and artifact loading.
+model construction, metric inspection, optional short/full runs, and artifact
+loading.

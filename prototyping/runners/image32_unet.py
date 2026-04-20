@@ -13,7 +13,6 @@ if __package__ in {None, ""}:
 from prototyping.runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
-    as_int_tuple,
     count_parameters,
 )
 from prototyping.runners.config_presets import list_presets
@@ -28,9 +27,7 @@ from prototyping.runners.image32_unet_config_builder import (
     list_datasets as _list_datasets,
 )
 
-import torch
 from gdfm import GDFM
-from mp_config import config_to_dict
 from mp_data import build_data_bundle
 from mp_training import train_run
 
@@ -38,11 +35,6 @@ from mp_training import train_run
 def default_settings():
     """Return the canonical Image32 default settings for this recipe."""
     return _default_settings()
-
-
-def default_knobs():
-    """Backward-compatible alias for notebook/test recipe settings."""
-    return default_settings()
 
 
 def build_config(settings):
@@ -58,66 +50,6 @@ def build_data(config):
 def build_model(config, device):
     """Build the canonical GDFM wrapper and its UNet backbone."""
     return GDFM(config).to(device)
-
-
-def run_one_update(model, train_tensor, config, device):
-    """Run one visible optimizer update against the first mini-batch."""
-    model.train()
-    # This diagnostic is deterministic; full training uses canonical sampling.
-    batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
-    batch = train_tensor[:batch_size].to(device)
-    return run_sanity_updates(model, train_tensor, config, device, n_updates=1)[-1]
-
-
-def run_sanity_updates(model, train_tensor, config, device, n_updates=1):
-    """Run a small number of optimizer steps for command-line sanity checks."""
-    if n_updates is None:
-        n_updates = 1
-    if int(n_updates) < 1:
-        raise ValueError(f"n_updates must be >= 1, got {n_updates}")
-
-    model.train()
-    batch_size = min(int(config.training.batch_cap), int(train_tensor.shape[0]))
-    if batch_size < 1:
-        raise ValueError("Sanity updates require at least one training sample.")
-
-    tensor = train_tensor.to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=float(config.training.lr),
-        weight_decay=float(config.training.weight_decay),
-    )
-    results = []
-    base_seed = int(config.training.seed)
-    for step in range(int(n_updates)):
-        torch.manual_seed(base_seed + step)
-        batch = tensor[:batch_size]
-        eps = torch.randn_like(batch)
-        t = torch.linspace(
-            float(config.schedule.t_min),
-            float(config.schedule.t_max),
-            batch_size,
-            device=batch.device,
-        )
-
-        optimizer.zero_grad(set_to_none=True)
-        loss = model.compute_loss(batch, eps=eps, t=t)
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0e9)
-        optimizer.step()
-
-        results.append(
-            {
-                "step": step + 1,
-                "batch_shape": list(batch.shape),
-                "loss": float(loss.detach().cpu().item()),
-                "grad_norm": float(grad_norm.detach().cpu().item()),
-                "optimizer": "adam",
-                "prediction_space": str(config.framework.prediction_space),
-                "loss_space": str(config.framework.loss_space),
-            }
-        )
-    return results
 
 
 def inspect_metrics(config, data_bundle, model=None, device="cpu"):
@@ -143,37 +75,6 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
             fixed_times=tuple(config.evaluation.loss_eval_times),
         )
     return result
-
-
-def _coerce_mnist_class_balance(settings):
-    """
-    Avoid hard failures when MNIST class-balanced sampling gets non-multiple counts.
-
-    MNIST loaders require class-balanced counts to be divisible by 10.
-    If a user asks for non-divisible counts with balancing enabled, keep the
-    requested size but disable balancing to preserve the run intent and avoid
-    dataset loader crashes.
-    """
-    if str(settings.get("dataset")).lower() != "mnist":
-        return
-
-    fixes = []
-    if bool(settings.get("balance_train_classes", False)) and int(settings.get("n_train", 0)) % 10 != 0:
-        settings["balance_train_classes"] = False
-        fixes.append(
-            f"MNIST train subset balancing disabled: n-train={settings['n_train']} is not divisible by 10."
-        )
-    if bool(settings.get("balance_reference_classes", False)) and int(settings.get("n_eval", 0)) % 10 != 0:
-        settings["balance_reference_classes"] = False
-        fixes.append(
-            f"MNIST reference balancing disabled: n-eval={settings['n_eval']} is not divisible by 10."
-        )
-    if not fixes:
-        return
-
-    print("run setup:")
-    for fix in fixes:
-        print("  - {}".format(fix))
 
 
 def run_full_job(config, out_dir, device, evaluate=True):
@@ -209,32 +110,20 @@ def _print_model_summary(config, model=None, model_param_summary=None):
     framework = config.framework
 
     model_desc = f"GDFM + {str(network.arch).upper()} ({str(network.arch)})"
-    print(
-        "{:<18} {}".format(
-            "model creation:",
-            model_desc,
-        )
+    topology = (
+        f"base_ch={int(network.base_channels)} "
+        f"channel_mult={tuple(network.channel_mult)} "
+        f"attn={tuple(network.attn_resolutions)} "
+        f"res_blocks={int(network.num_res_blocks)} "
+        f"dropout={float(network.dropout)} "
+        f"time_emb={network.time_emb_dim}"
     )
-    print(
-        "{:<18} pred={} loss={}".format(
-            "model parameterization:",
-            str(framework.prediction_space),
-            str(framework.loss_space),
-        )
+    _print_kv("model creation:", model_desc)
+    _print_kv(
+        "model parameterization:",
+        f"pred={framework.prediction_space} loss={framework.loss_space}",
     )
-    print(
-        "{:<18} {}".format(
-            "model topology:",
-            "base_ch={} channel_mult={} attn={} res_blocks={} dropout={} time_emb={}".format(
-                int(network.base_channels),
-                tuple(network.channel_mult),
-                tuple(network.attn_resolutions),
-                int(network.num_res_blocks),
-                float(network.dropout),
-                network.time_emb_dim,
-            ),
-        )
-    )
+    _print_kv("model topology:", topology)
 
     if model is None and model_param_summary is None:
         return
@@ -242,12 +131,9 @@ def _print_model_summary(config, model=None, model_param_summary=None):
         params = count_parameters(model)
     else:
         params = dict(model_param_summary)
-    print(
-        "{:<18} {:,} total | {:,} trainable".format(
-            "model params:",
-            params["total"],
-            params["trainable"],
-        )
+    _print_kv(
+        "model params:",
+        f"{params['total']:,} total | {params['trainable']:,} trainable",
     )
 
 
@@ -255,142 +141,152 @@ def parse_args(argv=None):
     """Parse the Image32 UNet command line."""
     settings = default_settings()
     parser = argparse.ArgumentParser(description="Image32 UNet prototype recipe.")
+
+    # Run identity.
     parser.add_argument("--device", default=settings["device"])
     parser.add_argument("--out-dir", default=settings["out_dir"])
     parser.add_argument("--run-name", default=settings["run_name"])
     parser.add_argument("--seed", type=int, default=settings["seed"])
-    parser.add_argument("--dataset", choices=tuple(_list_datasets()), default=settings["dataset"])
+
+    # Config selection.
+    parser.add_argument(
+        "--dataset",
+        choices=tuple(_list_datasets()),
+        default=settings["dataset"],
+    )
     parser.add_argument(
         "--config-preset",
         choices=tuple(list_presets()),
         default=settings.get("config_preset"),
         help="Optional explicit UNet preset (overrides dataset default).",
     )
-    parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=settings["prediction_space"])
-    parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=settings["loss_space"])
-    parser.add_argument("--n-train", type=int, default=settings["n_train"])
-    parser.add_argument("--n-eval", type=int, default=settings["n_eval"])
-    parser.add_argument("--n-steps", type=int, default=settings["n_steps"])
-    parser.add_argument("--ckpt-every", type=int, default=settings["ckpt_every"])
-    parser.add_argument("--log-every", type=int, default=settings["log_every"])
-    parser.add_argument("--batch-cap", type=int, default=settings["batch_cap"])
-    parser.add_argument("--eval-samples", type=int, default=settings["eval_samples"])
-    parser.add_argument("--sampling-steps", type=int, default=settings["sampling_steps"])
+
+    # Objective/sweep knobs.
+    parser.add_argument(
+        "--prediction-space",
+        choices=PARAMETERIZATION_CHOICES,
+        default=settings["prediction_space"],
+    )
+    parser.add_argument(
+        "--loss-space",
+        choices=PARAMETERIZATION_CHOICES,
+        default=settings["loss_space"],
+    )
+    parser.add_argument(
+        "--n-train",
+        type=int,
+        default=settings["n_train"],
+        help="Number of real images used for training.",
+    )
+    parser.add_argument(
+        "--n-eval",
+        type=int,
+        default=settings["n_eval"],
+        help="Number of real held-out/reference images used for evaluation.",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=settings["n_steps"],
+        help="Number of optimizer steps.",
+    )
+    parser.add_argument(
+        "--ckpt-every",
+        type=int,
+        default=settings["ckpt_every"],
+        help="Save/evaluate a checkpoint every this many optimizer steps.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=settings["log_every"],
+        help="Print/log training loss every this many optimizer steps.",
+    )
+    parser.add_argument(
+        "--batch-cap",
+        type=int,
+        default=settings["batch_cap"],
+        help="Maximum minibatch size; smaller datasets use the dataset size.",
+    )
+    parser.add_argument(
+        "--eval-samples",
+        type=int,
+        default=settings["eval_samples"],
+        help="Number of generated samples per checkpoint; also z_init.pt size.",
+    )
+    parser.add_argument(
+        "--sampling-steps",
+        type=int,
+        default=settings["sampling_steps"],
+        help="Solver steps used to generate images from z_init.",
+    )
+
+    # Data location.
     parser.add_argument("--root", default=settings["root"])
-    parser.add_argument("--dataset-subdir", default=settings["dataset_subdir"])
-    parser.add_argument("--download", action=argparse.BooleanOptionalAction, default=settings["download"])
-    parser.add_argument("--train-split", default=settings["train_split"])
-    parser.add_argument("--reference-split", default=settings["reference_split"])
-    parser.add_argument("--allow-same-source-reference", action=argparse.BooleanOptionalAction, default=settings["allow_same_source_reference"])
-    parser.add_argument("--image-size", type=int, default=settings["image_size"])
-    parser.add_argument("--image-channels", type=int, choices=(1, 3), default=settings["image_channels"])
-    parser.add_argument("--resize-size", type=int, default=settings["resize_size"])
-    parser.add_argument("--balance-train-classes", action=argparse.BooleanOptionalAction, default=settings["balance_train_classes"])
-    parser.add_argument("--balance-reference-classes", action=argparse.BooleanOptionalAction, default=settings["balance_reference_classes"])
-    parser.add_argument("--loss-eval-times", default=",".join(str(item) for item in settings["loss_eval_times"]))
-    parser.add_argument("--base-channels", type=int, default=settings["base_channels"])
-    parser.add_argument("--channel-mult", default=",".join(str(item) for item in settings["channel_mult"]))
-    parser.add_argument("--attn-resolutions", default=",".join(str(item) for item in settings["attn_resolutions"]))
-    parser.add_argument("--num-res-blocks", type=int, default=settings["num_res_blocks"])
-    parser.add_argument("--dropout", type=float, default=settings["dropout"])
-    parser.add_argument("--time-emb-dim", type=int, default=settings["time_emb_dim"])
-    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=settings["wandb"])
-    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=settings["wandb_mode"])
+    parser.add_argument(
+        "--download",
+        action=argparse.BooleanOptionalAction,
+        default=settings["download"],
+    )
+
+    # W&B basics.
+    parser.add_argument(
+        "--wandb",
+        action=argparse.BooleanOptionalAction,
+        default=settings["wandb"],
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("offline", "online"),
+        default=settings["wandb_mode"],
+    )
     parser.add_argument("--wandb-project", default=settings["wandb_project"])
-    parser.add_argument("--wandb-entity", default=settings["wandb_entity"])
-    parser.add_argument("--wandb-notes", default=settings["wandb_notes"])
     parser.add_argument("--wandb-name", default=settings["wandb_name"])
     parser.add_argument("--wandb-group", default=settings["wandb_group"])
     parser.add_argument("--wandb-tags", default=settings["wandb_tags"])
+
+    # Fixed-noise generation trace.
     parser.add_argument(
-        "--wandb-strict",
+        "--generation-trace",
         action=argparse.BooleanOptionalAction,
-        default=settings["wandb_strict"],
-    )
-    parser.add_argument("--sanity-updates", type=int, default=settings["sanity_updates"])
-    parser.add_argument(
-        "--sanity-only", action=argparse.BooleanOptionalAction, default=settings["sanity_only"]
-    )
-    parser.add_argument(
-        "--visual-sanity",
-        action=argparse.BooleanOptionalAction,
-        default=settings["visual_sanity"],
+        default=settings["generation_trace"],
         help="Save/display train and generated-sample image grids and log them to W&B.",
     )
     parser.add_argument(
-        "--visual-sanity-count",
+        "--generation-trace-count",
         type=int,
-        default=settings["visual_sanity_count"],
-        help="Number of images per row in visual sanity grids.",
+        default=settings["generation_trace_count"],
+        help="Number of images per row in generation trace grids.",
     )
     parser.add_argument(
-        "--visual-sanity-updates",
-        type=int,
-        default=settings["visual_sanity_updates"],
-        help="Throwaway optimizer updates for the visual sanity sample panel.",
-    )
-    parser.add_argument(
-        "--visual-sanity-show",
+        "--generation-trace-show",
         action=argparse.BooleanOptionalAction,
-        default=settings["visual_sanity_show"],
-        help="Display visual sanity figures inline when running from a notebook.",
+        default=settings["generation_trace_show"],
+        help="Display generation trace figures inline when running from a notebook.",
     )
-    args = parser.parse_args(argv)
-    args.channel_mult = as_int_tuple(args.channel_mult)
-    args.attn_resolutions = as_int_tuple(args.attn_resolutions)
-    args.loss_eval_times = _as_float_tuple(args.loss_eval_times)
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv=None):
     """CLI entrypoint for the Image32 UNet recipe."""
     args = parse_args(argv)
-    settings = {**default_settings(), **vars(args)}
-    _coerce_mnist_class_balance(settings)
+    settings = vars(args)
     config = build_config(settings)
-    model_param_summary = None
 
-    if args.sanity_updates is None:
-        args.sanity_updates = 0
-    if args.sanity_only and args.sanity_updates < 1:
-        args.sanity_updates = 1
-    if args.sanity_updates < 0:
-        raise ValueError(f"sanity-updates must be >= 0, got {args.sanity_updates}")
     if args.log_every is not None and args.log_every < 1:
         raise ValueError(f"log-every must be >= 1, got {args.log_every}")
-    if args.visual_sanity_count < 1:
+    if args.generation_trace_count < 1:
         raise ValueError(
-            f"visual-sanity-count must be >= 1, got {args.visual_sanity_count}"
+            f"generation-trace-count must be >= 1, got {args.generation_trace_count}"
         )
-    if args.visual_sanity_updates < 0:
-        raise ValueError(
-            f"visual-sanity-updates must be >= 0, got {args.visual_sanity_updates}"
-        )
-
-    if args.sanity_updates > 0:
-        data_bundle = build_data(config)
-        model = build_model(config, args.device)
-        model_param_summary = count_parameters(model)
-        updates = run_sanity_updates(model, data_bundle["train"], config, args.device, args.sanity_updates)
-        metrics = inspect_metrics(config, data_bundle, model, args.device)
-        result = {
-            "sanity_updates": args.sanity_updates,
-            "update_records": updates,
-            "metrics": metrics,
-            "data": _summarize_bundle(data_bundle),
-        }
-        if args.sanity_only:
-            _print_model_summary(config, model)
-        _print_sanity_result(result)
-        if args.sanity_only:
-            return result
-        del model
 
     result = run_full_job(config, args.out_dir, args.device, evaluate=True)
-    if model_param_summary is not None:
-        result["model_param_summary"] = model_param_summary
     _print_result(result)
     return result["run_dir"]
+
+
+def _print_kv(label, value):
+    print(f"{label:<18} {value}")
 
 
 def _print_result(result):
@@ -399,46 +295,15 @@ def _print_result(result):
         result["config"],
         model_param_summary=result.get("model_param_summary"),
     )
-    print("{:<18} {}".format("run_dir:", result["run_dir"]))
-    print("{:<18} {}".format("checkpoints:", result["artifacts"]["checkpoints"]["path"]))
-    print("{:<18} {}".format("figures:", result["artifacts"]["figures"]["path"]))
-    print("{:<18} {}".format("metrics:", result["artifacts"]["checkpoint_metrics"]["path"]))
-    print("{:<18} {}".format("loss_eval:", result["artifacts"]["loss_eval"]["path"]))
-    print(
-        "{:<18} {}".format(
-            "sample_previews:",
-            result["artifacts"]["checkpoint_sample_previews"]["path"],
-        )
+    _print_kv("run_dir:", result["run_dir"])
+    _print_kv("checkpoints:", result["artifacts"]["checkpoints"]["path"])
+    _print_kv("figures:", result["artifacts"]["figures"]["path"])
+    _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
+    _print_kv("loss_eval:", result["artifacts"]["loss_eval"]["path"])
+    _print_kv(
+        "sample_previews:",
+        result["artifacts"]["checkpoint_sample_previews"]["path"],
     )
-
-
-def _print_sanity_result(result):
-    # Sanity run summaries focus on a stable small set of diagnostics.
-    print("{:<18} {}".format("sanity_updates:", result["sanity_updates"]))
-    print("{:<18} {}".format("train_shape:", result["data"]["train_shape"]))
-    for update in result["update_records"]:
-        print(
-            "{:<18} step={} loss={:.6f} grad={:.6f}".format(
-                "update:",
-                update["step"],
-                update["loss"],
-                update["grad_norm"],
-            )
-        )
-
-
-def _config_sections(config):
-    payload = config_to_dict(config)
-    return {
-        "study": payload["study"],
-        "framework": payload["framework"],
-        "data": payload["data"],
-        "network": payload["network"],
-        "training": payload["training"],
-        "evaluation": payload["evaluation"],
-        "sampling": payload["sampling"],
-        "outputs": payload["outputs"],
-    }
 
 
 def _summarize_bundle(bundle):
@@ -451,6 +316,15 @@ def _summarize_bundle(bundle):
         "reference_role": bundle.get("reference_role"),
         "display_shape": bundle.get("display_shape"),
         "data_validation": bundle.get("data_validation"),
+        "requested_balanced_train_classes": bundle.get(
+            "requested_balanced_train_classes"
+        ),
+        "requested_balanced_reference_classes": bundle.get(
+            "requested_balanced_reference_classes"
+        ),
+        "balanced_train_classes": bundle.get("balanced_train_classes"),
+        "balanced_reference_classes": bundle.get("balanced_reference_classes"),
+        "class_balance_adjustments": bundle.get("class_balance_adjustments"),
         "train_indices_preview": _preview_tensor(bundle.get("train_indices")),
         "reference_indices_preview": _preview_tensor(bundle.get("reference_indices")),
     }
@@ -467,14 +341,6 @@ def _preview_tensor(tensor, limit=10):
     if tensor is None:
         return None
     return [int(item) for item in tensor.flatten()[:limit].tolist()]
-
-
-def _as_float_tuple(value):
-    if isinstance(value, (tuple, list)):
-        return tuple(float(item) for item in value)
-    if value is None or str(value).strip() == "":
-        return ()
-    return tuple(float(item.strip()) for item in str(value).split(",") if item.strip())
 
 
 if __name__ == "__main__":
