@@ -2,7 +2,7 @@
 GDFM package.
 
 This package is the canonical home for the first-party GDFM model core, the
-network modules, the network factory, and the external sampler sidecar.
+network modules, the network factory, and standalone sampler utilities.
 """
 
 from gdfm.core import GDFM, print_forward_shapes, print_model_summary

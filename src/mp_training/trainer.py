@@ -4,7 +4,7 @@ Canonical training loop for first-party studies.
 Read this file in three layers:
 
 1. Small helpers above `train_run(...)`
-   These are boring on purpose: choose an optimizer, resolve DataLoader
+   These are intentionally small: choose an optimizer, resolve DataLoader
    batching, create shared evaluation noise, and save a simple loss figure.
 
 2. `train_run(...)`
@@ -19,20 +19,22 @@ Read this file in three layers:
 
 The most important contract in this module:
     `train_run(...)` returns an attempt directory whose files are later consumed
-    by `mp_metrics.evaluate_run(...)`.
+    by `mp_runners.evaluate_checkpoints.evaluate_run(...)`.
 
 Study-specific sweep logic and plotting decisions should live outside this
 module. This file should stay focused on the common training lifecycle.
 """
 
+import io
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from gdfm import GDFM
+from gdfm import GDFM, print_model_summary
 from mp_artifacts import (
     create_run_layout,
     load_attempt_status,
@@ -45,14 +47,17 @@ from mp_artifacts import (
 )
 from mp_data import build_data_bundle
 from mp_runtime import autocast_context, configure_torch_runtime
-from mp_tracking import AttemptTracker
+from mp_training.checkpoint_schedule import (
+    checkpoint_schedule_metadata,
+    resolve_checkpoint_steps,
+)
+from mp_tracking import AttemptTracker, resolve_wandb_identity
 from mp_visualization import (
     is_image_batch,
     maybe_display_figure,
     model_context_title,
     prepare_matplotlib_cache,
     save_image_rows_figure,
-    save_samples_over_train_panel,
 )
 
 
@@ -137,6 +142,210 @@ def _batching_metadata(config, train_tensor):
     }
 
 
+def _count_parameters(model):
+    """Count total and trainable model parameters."""
+    total = sum(parameter.numel() for parameter in model.parameters())
+    trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
+    return {"total": int(total), "trainable": int(trainable)}
+
+
+def _model_summary(config, model):
+    """
+    Return the model summary printed right after model construction.
+
+    This is intentionally tied to the actual constructed object, not only the
+    config, so the printed backbone class and parameter count match the run.
+    """
+    net = getattr(model, "net", None)
+    network = config.network
+    framework = config.framework
+    params = _count_parameters(model)
+    summary = {
+        "model": "GDFM",
+        "backbone": type(net).__name__ if net is not None else None,
+        "network_arch": str(network.arch),
+        "prediction_space": str(framework.prediction_space),
+        "loss_space": str(framework.loss_space),
+        "total_parameters": params["total"],
+        "trainable_parameters": params["trainable"],
+    }
+    if str(network.arch) == "mlp":
+        summary.update(
+            {
+                "hidden_dim": int(network.hidden_dim),
+                "n_layers": int(network.n_layers),
+                "time_emb_dim": int(network.time_emb_dim),
+            }
+        )
+    else:
+        summary.update(
+            {
+                "base_channels": int(network.base_channels),
+                "channel_mult": list(network.channel_mult),
+                "attn_resolutions": list(network.attn_resolutions),
+                "num_res_blocks": int(network.num_res_blocks),
+                "dropout": float(network.dropout),
+                "time_emb_dim": getattr(network, "time_emb_dim", None),
+            }
+        )
+    return summary
+
+
+def _log_model_summary(tracker, model, summary):
+    """Print and persist the existing GDFM model summary."""
+    stream = io.StringIO()
+    with redirect_stdout(stream):
+        print_model_summary(model)
+    message = "model summary\n" + stream.getvalue().rstrip()
+    tracker.note(
+        message,
+        event_type="model_summary",
+        model_summary=summary,
+    )
+
+
+def _data_summary(config, data_bundle, train_tensor, reference_tensor, batching):
+    """Return the data summary printed after bundle construction."""
+    summary = {
+        "dataset_key": str(getattr(config.study, "dataset_key", "")),
+        "dataset": str(config.data.dataset),
+        "root": str(config.data.root),
+        "train_shape": list(train_tensor.shape),
+        "reference_shape": list(reference_tensor.shape),
+        "display_shape": data_bundle.get("display_shape"),
+        "train_split": data_bundle.get("train_split"),
+        "reference_split": data_bundle.get("reference_split")
+        or getattr(config.data, "reference_split", None),
+        "train_role": data_bundle.get("train_role"),
+        "reference_role": data_bundle.get("reference_role"),
+        "train_source_id": data_bundle.get("train_source_id"),
+        "reference_source_id": data_bundle.get("reference_source_id"),
+        "train_class_counts": data_bundle.get("train_class_counts"),
+        "reference_class_counts": data_bundle.get("reference_class_counts"),
+        "train_labels_shape": _tensor_shape(data_bundle.get("train_labels")),
+        "reference_labels_shape": _tensor_shape(data_bundle.get("reference_labels")),
+        "data_validation": data_bundle.get("data_validation"),
+        "batching": batching,
+    }
+    geometry = data_bundle.get("geometry")
+    if isinstance(geometry, dict):
+        summary["geometry_keys"] = sorted(str(key) for key in geometry.keys())
+    return summary
+
+
+def _log_data_summary(tracker, summary):
+    """Print and persist the data summary in a readable block."""
+    validation = summary.get("data_validation") or {}
+    lines = [
+        "data summary",
+        _format_readout_row(
+            "dataset",
+            (
+                f"key={summary['dataset_key']} internal={summary['dataset']} "
+                f"root={summary['root']}"
+            ),
+        ),
+        _format_readout_row("display_shape", summary["display_shape"]),
+        _format_readout_row(
+            "data train",
+            _format_fields(
+                [
+                    ("shape", summary["train_shape"]),
+                    ("split", summary["train_split"]),
+                    ("source", summary["train_source_id"]),
+                    ("role", summary["train_role"]),
+                ]
+            ),
+        ),
+        _format_readout_row(
+            "data reference",
+            _format_fields(
+                [
+                    ("shape", summary["reference_shape"]),
+                    ("split", summary["reference_split"]),
+                    ("source", summary["reference_source_id"]),
+                    ("role", summary["reference_role"]),
+                ]
+            ),
+        ),
+        _format_readout_row(
+            "data leakage_check",
+            _format_fields(
+                [
+                    ("same_source", validation.get("same_source")),
+                    ("overlap_checked", validation.get("overlap_checked")),
+                    ("overlap_count", validation.get("overlap_count")),
+                    ("same_source_allowed", validation.get("same_source_allowed")),
+                ]
+            ),
+        ),
+        _format_readout_row(
+            "data batching",
+            _format_fields(
+                [
+                    ("batch_cap", summary["batching"]["batch_cap"]),
+                    ("effective", summary["batching"]["effective_batch_size"]),
+                    ("drop_last", summary["batching"]["drop_last"]),
+                    ("steps_per_epoch", summary["batching"]["steps_per_epoch"]),
+                ]
+            ),
+        ),
+    ]
+    if summary.get("train_class_counts") is not None:
+        lines.append(
+            _format_readout_row(
+                "data class_counts",
+                (
+                    f"train={summary['train_class_counts']} "
+                    f"reference={summary['reference_class_counts']}"
+                ),
+            )
+        )
+    if summary.get("geometry_keys") is not None:
+        lines.append(_format_readout_row("data geometry_keys", summary["geometry_keys"]))
+    _emit_readout_block(
+        tracker,
+        "DATA BUILDER SUMMARY",
+        lines,
+        event_type="data_summary",
+        event_fields={"data_summary": summary},
+    )
+
+
+def _format_readout_row(label, value):
+    """Return one aligned terminal-summary row."""
+    return f"  {str(label):<18} {value}"
+
+
+def _format_fields(pairs):
+    """Format short key/value fields on one line."""
+    return " ".join(f"{key}={value}" for key, value in pairs)
+
+
+def _emit_readout_block(tracker, title, lines, *, event_type, event_fields):
+    """Emit a compact multi-line readout to terminal, log, and events."""
+    width = max(72, len(str(title)) + 8)
+    border = "-" * width
+    block_lines = [border, f"{str(title).center(width)}", border, *lines, border]
+    message = "\n".join(block_lines)
+    tracker.note(
+        message,
+        event_type=event_type,
+        **event_fields,
+    )
+
+
+def _tensor_shape(value):
+    """Return a tensor shape as a JSON-friendly list."""
+    if value is None:
+        return None
+    if torch.is_tensor(value):
+        return list(value.shape)
+    return None
+
+
 def _build_train_loader(train_tensor, batching, generator, *, pin_memory=False):
     """
     Build a shuffled DataLoader over the already-materialized training tensor.
@@ -214,13 +423,29 @@ def _generation_trace_config(config):
     return trace
 
 
-def _generation_trace_count(config, train_tensor):
+def _generation_trace_train_count(config, train_tensor):
+    """
+    Return the number of train examples used in the dataset grid.
+    """
     trace = _generation_trace_config(config)
     if trace is None:
         return 0
     return max(
         1,
         min(int(getattr(trace, "num_images", 8)), int(train_tensor.shape[0])),
+    )
+
+
+def _generation_trace_sample_count(config, z_init):
+    """
+    Return the number of generated samples shown in generation trace figures.
+    """
+    trace = _generation_trace_config(config)
+    if trace is None:
+        return 0
+    return max(
+        1,
+        min(int(getattr(trace, "num_images", 8)), int(z_init.shape[0])),
     )
 
 
@@ -242,6 +467,9 @@ def _fork_rng_devices_for(device):
 def _save_generation_trace_train_grid(config, train_tensor, run_dir, tracker):
     """
     Save/log the train grid before any model is constructed.
+
+    This records what the selected training subset looks like before generated
+    samples are added to the same figure style.
     """
     trace = _generation_trace_config(config)
     if trace is None:
@@ -252,7 +480,7 @@ def _save_generation_trace_train_grid(config, train_tensor, run_dir, tracker):
         )
         return None
 
-    count = _generation_trace_count(config, train_tensor)
+    count = _generation_trace_train_count(config, train_tensor)
     figure_path = run_dir / "figures" / "generation_trace_train_grid.png"
     save_image_rows_figure(
         [train_tensor[:count]],
@@ -265,9 +493,8 @@ def _save_generation_trace_train_grid(config, train_tensor, run_dir, tracker):
     return figure_path
 
 
-def _save_samples_over_train_figure(
+def _save_generation_trace_samples_figure(
     model,
-    train_tensor,
     z_init,
     config,
     device,
@@ -276,15 +503,12 @@ def _save_samples_over_train_figure(
     title,
 ):
     """
-    Sample from a model and save generated images above a row of train images.
+    Sample from a model and save a generated-only image grid.
     """
-    if not is_image_batch(train_tensor):
+    if not is_image_batch(z_init):
         return None
 
-    count = min(
-        _generation_trace_count(config, train_tensor),
-        int(z_init.shape[0]),
-    )
+    count = _generation_trace_sample_count(config, z_init)
     if count < 1:
         return None
 
@@ -301,11 +525,10 @@ def _save_samples_over_train_figure(
     if was_training:
         model.train()
 
-    return save_samples_over_train_panel(
-        samples,
-        train_tensor,
+    return save_image_rows_figure(
+        [samples],
+        ["generated"],
         figure_path,
-        count=count,
         title=title,
     )
 
@@ -320,19 +543,21 @@ def _save_final_generation_trace_samples(
     tracker,
 ):
     """
-    Save/log the final trained model sample row above train images.
+    Save/log final generated images from the fixed saved z_init bank.
+
+    The fixed saved `z_init` is reused here so the final panel is comparable to
+    checkpoint panels from the same run.
     """
     trace = _generation_trace_config(config)
     if trace is None:
         return None
-    if not is_image_batch(train_tensor):
+    if not is_image_batch(z_init):
         return None
 
     with torch.random.fork_rng(devices=_fork_rng_devices_for(device), enabled=True):
         torch.manual_seed(int(config.training.seed) + 2003)
-        figure_path = _save_samples_over_train_figure(
+        figure_path = _save_generation_trace_samples_figure(
             model,
-            train_tensor,
             z_init,
             config,
             device,
@@ -349,7 +574,7 @@ def _save_final_generation_trace_samples(
         log_to_wandb=False,
     )
     tracker.log_figure_metric(
-        "generation_trace/samples_over_train",
+        "generation_trace/samples",
         figure_path,
         step=step,
     )
@@ -368,26 +593,25 @@ def _save_generation_trace_checkpoint_samples(
     step,
 ):
     """
-    Save/log a checkpoint sample grid from the fixed saved z_init bank.
+    Save/log generated checkpoint samples from the fixed saved z_init bank.
     """
     trace = _generation_trace_config(config)
     if trace is None:
         return None
-    if not is_image_batch(train_tensor):
+    if not is_image_batch(z_init):
         return None
 
     step = int(step)
     figure_name = f"generation_trace_samples_step_{step:06d}"
-    figure_path = _save_samples_over_train_figure(
+    figure_path = _save_generation_trace_samples_figure(
         model,
-        train_tensor,
         z_init,
         config,
         device,
         run_dir / "figures" / f"{figure_name}.png",
         title=model_context_title(
             config,
-            "Generation trace samples over train images",
+            "Generation trace samples",
             checkpoint_step=step,
             extra="fixed_z_init",
         ),
@@ -397,7 +621,7 @@ def _save_generation_trace_checkpoint_samples(
 
     tracker.register_figure(figure_name, figure_path, log_to_wandb=False)
     tracker.log_figure_metric(
-        "generation_trace/samples_over_train",
+        "generation_trace/samples",
         figure_path,
         step=step,
     )
@@ -455,6 +679,12 @@ def train_run(config, study_dir, device="cpu"):
         # the saved config and W&B config include the exact runtime settings.
         runtime = configure_torch_runtime(config, device)
 
+        checkpoint_steps = resolve_checkpoint_steps(config)
+        checkpoint_step_set = set(checkpoint_steps)
+        checkpoint_schedule = checkpoint_schedule_metadata(config, checkpoint_steps)
+        config.training.resolved_ckpt_steps = tuple(checkpoint_steps)
+        resolve_wandb_identity(config)
+
         # -----------------------------------------------------------------
         # Phase 2: start operator-facing tracking.
         #
@@ -503,7 +733,7 @@ def train_run(config, study_dir, device="cpu"):
         save_tensor(run_dir / "artifacts" / "reference_tensor.pt", reference_tensor)
         save_tensor(run_dir / "artifacts" / "z_init.pt", z_init)
 
-        # Optional labels are present for MNIST, CelebA, and GMM cluster IDs.
+        # Optional labels are present for image classes and GMM cluster IDs.
         # They are not used by the unconditional GDFM training loop, but they
         # are useful for later diagnostics and balanced-subset checks.
         if data_bundle.get("train_labels") is not None:
@@ -531,9 +761,9 @@ def train_run(config, study_dir, device="cpu"):
                 data_bundle["reference_indices"],
             )
 
-        # Synthetic GMM runs carry the planted subspace basis and cluster means.
-        # Saving geometry here lets metrics explain ambient-vs-latent behavior
-        # without reconstructing hidden state from seeds.
+        # Synthetic runs carry planted geometry such as a GMM basis or torus
+        # radii. Saving geometry here lets metrics explain ambient-vs-intrinsic
+        # behavior without reconstructing hidden state from seeds.
         if data_bundle.get("geometry") is not None:
             save_tensor(run_dir / "artifacts" / "geometry.pt", data_bundle["geometry"])
 
@@ -570,6 +800,13 @@ def train_run(config, study_dir, device="cpu"):
             "runtime": runtime,
         }
         save_json(run_dir / "artifacts" / "data_meta.json", data_meta)
+        data_summary = _data_summary(
+            config,
+            data_bundle,
+            train_tensor,
+            reference_tensor,
+            batching,
+        )
         tracker.stage(
             "data_prepared",
             message=(
@@ -583,7 +820,9 @@ def train_run(config, study_dir, device="cpu"):
             data_meta_path=str((run_dir / "artifacts" / "data_meta.json").resolve()),
             batching=batching,
             runtime=runtime,
+            data_summary=data_summary,
         )
+        _log_data_summary(tracker, data_summary)
 
         generation_trace = {
             "z_init_path": str((run_dir / "artifacts" / "z_init.pt").resolve())
@@ -605,6 +844,20 @@ def train_run(config, study_dir, device="cpu"):
         # build the configured backbone: MLP, UNet, or JiT.
         # -----------------------------------------------------------------
         model = GDFM(config).to(device)
+        model_summary = _model_summary(config, model)
+        tracker.stage(
+            "model_created",
+            message=(
+                "model created "
+                f"backbone={model_summary['backbone']} "
+                f"arch={model_summary['network_arch']} "
+                f"prediction_space={model_summary['prediction_space']} "
+                f"loss_space={model_summary['loss_space']} "
+                f"trainable_parameters={model_summary['trainable_parameters']:,}"
+            ),
+            model_summary=model_summary,
+        )
+        _log_model_summary(tracker, model, model_summary)
         optimizer = _build_optimizer(config, model)
 
         # This generator controls the DataLoader shuffle order only. The
@@ -652,6 +905,7 @@ def train_run(config, study_dir, device="cpu"):
             message=(
                 "training started "
                 f"steps={int(config.training.n_steps)} "
+                f"checkpoints={len(checkpoint_steps)} "
                 f"batch_cap={batching['batch_cap']} "
                 f"effective_batch_size={batching['effective_batch_size']} "
                 f"drop_last={batching['drop_last']} "
@@ -659,6 +913,7 @@ def train_run(config, study_dir, device="cpu"):
             ),
             batching=batching,
             runtime=runtime,
+            checkpoint_schedule=checkpoint_schedule,
         )
         progress = tqdm(
             range(1, int(config.training.n_steps) + 1),
@@ -715,10 +970,7 @@ def train_run(config, study_dir, device="cpu"):
                 # Checkpoints include both model and optimizer state. The final
                 # checkpoint is always saved even if `n_steps` is not divisible
                 # by `ckpt_every`.
-                if (
-                    step % int(config.training.ckpt_every) == 0
-                    or step == int(config.training.n_steps)
-                ):
+                if int(step) in checkpoint_step_set:
                     checkpoint_path = save_checkpoint(run_dir, step, model, optimizer)
                     tracker.checkpoint_saved(step=step, checkpoint_path=checkpoint_path)
                     try:
@@ -783,13 +1035,16 @@ def train_run(config, study_dir, device="cpu"):
             "attempt_id": run_dir.name,
             "seed": int(config.training.seed),
             "n_steps": n_steps,
+            "checkpoint_schedule": checkpoint_schedule,
             "n_train": int(config.data.n_train),
             "n_eval": int(config.data.n_eval),
             "batching": batching,
+            "data_summary": data_summary,
             "batch_cap": int(batching["batch_cap"]),
             "effective_batch_size": int(batching["effective_batch_size"]),
             "drop_last": bool(batching["drop_last"]),
             "optimizer": str(config.training.optimizer),
+            "model_summary": model_summary,
             "runtime": runtime,
             "training_wall_time_sec": training_wall_time_sec,
             "training_seconds_per_step": (
@@ -831,6 +1086,7 @@ def train_run(config, study_dir, device="cpu"):
             generated_figures=generated_figures,
             generation_trace=generation_trace,
             runtime=runtime,
+            checkpoint_schedule=checkpoint_schedule,
         )
         run_dir = mark_attempt_done(run_dir)
         tracker.attempt_dir = run_dir
@@ -918,7 +1174,7 @@ if __name__ == "__main__":
 
     # Run into a temporary directory so the example is safe to execute anywhere.
     with tempfile.TemporaryDirectory() as tmpdir:
-        # This is the same call used by experiments and prototype runners:
+        # This is the same call used by experiments and canonical runners:
         # pass a resolved config, choose an experiment root, and pick a device.
         run_dir = train_run(config, Path(tmpdir) / "trainer_demo", device="cpu")
 

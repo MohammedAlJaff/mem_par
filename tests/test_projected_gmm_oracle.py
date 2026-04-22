@@ -3,23 +3,19 @@ import unittest
 
 try:
     import torch
-    from prototyping.metrics_synthetic_controlled import (
-        component_coverage_metrics,
-        gmm_latent_log_prob,
-        latent_frechet_distance,
-        latent_sliced_w2,
-        oracle_gmm_metrics,
+    from mp_metrics.synthetic import (
+        gmm_intrinsic_log_prob,
+        gmm_intrinsic_metrics,
+        intrinsic_sliced_w2,
         project_to_subspace,
     )
     from mp_config import clone_config, get_base_config
     from mp_data import build_data_bundle
 except ModuleNotFoundError:
     torch = None
-    component_coverage_metrics = None
-    gmm_latent_log_prob = None
-    latent_frechet_distance = None
-    latent_sliced_w2 = None
-    oracle_gmm_metrics = None
+    gmm_intrinsic_log_prob = None
+    gmm_intrinsic_metrics = None
+    intrinsic_sliced_w2 = None
     project_to_subspace = None
     clone_config = None
     get_base_config = None
@@ -30,7 +26,7 @@ except ModuleNotFoundError:
     torch is None or build_data_bundle is None,
     "torch and the projected GMM data stack are required",
 )
-class TestProjectedGMMOracle(unittest.TestCase):
+class TestProjectedGMMIntrinsicMetrics(unittest.TestCase):
     def make_config(self, sigma_eta=1.0e-3):
         config = clone_config(get_base_config())
         config.data.dataset = "gmm_subspace"
@@ -107,101 +103,74 @@ class TestProjectedGMMOracle(unittest.TestCase):
         self.assertTrue(torch.equal(basis, canonical["geometry"]["basis"]))
         self.assertTrue(torch.equal(means, canonical["geometry"]["means"]))
 
-    def test_projection_and_residual_shapes_for_subspace_case(self):
+    def test_projection_shapes_for_subspace_case(self):
         bundle = build_data_bundle(self.make_config())
         train = bundle["train"]
         basis = bundle["geometry"]["basis"]
         parts = project_to_subspace(train, basis)
 
-        self.assertEqual(tuple(parts["latent"].shape), (10, 2))
+        self.assertEqual(tuple(parts["intrinsic"].shape), (10, 2))
         self.assertEqual(tuple(parts["projected"].shape), (10, 8))
-        self.assertEqual(tuple(parts["residual"].shape), (10, 8))
-        self.assertEqual(tuple(parts["residual_norm"].shape), (10,))
 
-    def test_full_oracle_nll_is_finite_when_ambient_noise_is_positive(self):
+    def test_intrinsic_gmm_nll_is_finite_when_ambient_noise_is_positive(self):
         config = self.make_config(sigma_eta=1.0e-3)
         bundle = build_data_bundle(config)
         samples = bundle["reference"]
         basis = bundle["geometry"]["basis"]
         means = bundle["geometry"]["means"]
-        latent = project_to_subspace(samples, basis)["latent"]
+        intrinsic = project_to_subspace(samples, basis)["intrinsic"]
         directions = torch.eye(int(config.data.intrinsic_dim))
 
-        metrics = oracle_gmm_metrics(
+        metrics = gmm_intrinsic_metrics(
             samples,
             basis,
             means,
             float(config.data.sigma_z),
             float(config.data.sigma_eta),
-            latent,
+            intrinsic,
             directions,
         )
 
-        self.assertIsNotNone(metrics["oracle_full_nll_mean"])
-        self.assertTrue(math.isfinite(metrics["oracle_full_nll_mean"]))
-        self.assertTrue(math.isfinite(metrics["oracle_latent_nll_mean"]))
+        self.assertTrue(math.isfinite(metrics["intrinsic_gmm_nll_mean"]))
+        self.assertTrue(math.isfinite(metrics["intrinsic_sliced_w2"]))
 
-    def test_full_oracle_nll_is_undefined_for_singular_subspace(self):
+    def test_intrinsic_gmm_nll_is_finite_for_singular_subspace(self):
         config = self.make_config(sigma_eta=0.0)
         bundle = build_data_bundle(config)
         samples = bundle["reference"]
         basis = bundle["geometry"]["basis"]
         means = bundle["geometry"]["means"]
-        latent = project_to_subspace(samples, basis)["latent"]
+        intrinsic = project_to_subspace(samples, basis)["intrinsic"]
         directions = torch.eye(int(config.data.intrinsic_dim))
 
-        metrics = oracle_gmm_metrics(
+        metrics = gmm_intrinsic_metrics(
             samples,
             basis,
             means,
             float(config.data.sigma_z),
             float(config.data.sigma_eta),
-            latent,
+            intrinsic,
             directions,
         )
 
-        self.assertTrue(math.isfinite(metrics["oracle_latent_nll_mean"]))
-        self.assertIsNone(metrics["oracle_full_nll_mean"])
+        self.assertTrue(math.isfinite(metrics["intrinsic_gmm_nll_mean"]))
+        self.assertNotIn("oracle_full_nll_mean", metrics)
 
-    def test_latent_nll_prefers_points_near_true_components(self):
+    def test_intrinsic_nll_prefers_points_near_true_components(self):
         means = torch.tensor([[0.0, 0.0], [4.0, 0.0]])
         near = torch.tensor([[0.05, -0.05], [4.05, 0.03]])
         far = torch.tensor([[12.0, 12.0], [-10.0, 9.0]])
 
-        near_log_prob, _ = gmm_latent_log_prob(near, means, variance=0.1)
-        far_log_prob, _ = gmm_latent_log_prob(far, means, variance=0.1)
+        near_log_prob = gmm_intrinsic_log_prob(near, means, variance=0.1)
+        far_log_prob = gmm_intrinsic_log_prob(far, means, variance=0.1)
 
         self.assertLess(float((-near_log_prob).mean().item()), float((-far_log_prob).mean().item()))
 
-    def test_component_coverage_detects_balanced_and_collapsed_samples(self):
-        balanced = torch.tensor(
-            [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.0, 0.0, 1.0],
-            ]
-        )
-        collapsed = torch.tensor(
-            [
-                [1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-            ]
-        )
-
-        balanced_metrics = component_coverage_metrics(balanced)
-        collapsed_metrics = component_coverage_metrics(collapsed)
-
-        self.assertAlmostEqual(balanced_metrics["component_weight_l1"], 0.0, places=6)
-        self.assertGreater(collapsed_metrics["component_weight_l1"], balanced_metrics["component_weight_l1"])
-        self.assertGreater(collapsed_metrics["component_weight_kl"], balanced_metrics["component_weight_kl"])
-
-    def test_latent_distribution_distances_are_zero_for_exact_matches(self):
+    def test_intrinsic_sliced_w2_is_zero_for_exact_matches(self):
         means = torch.tensor([[-1.0, 0.0], [1.0, 0.0], [0.0, 2.0]])
         directions = torch.eye(2)
 
-        self.assertAlmostEqual(latent_sliced_w2(means, means, directions), 0.0, places=7)
-        self.assertAlmostEqual(latent_frechet_distance(means, means, latent_var=0.0), 0.0, places=6)
+        self.assertAlmostEqual(intrinsic_sliced_w2(means, means, directions), 0.0, places=7)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """
-Canonical loaders for external image collections used in prototype studies.
+Canonical loaders for external image collections used in research runs.
 
 The datasets here share the same downstream tensor contract as MNIST and
 CelebA32: deterministic train/reference subsets, optional labels, source
@@ -20,6 +20,9 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def _image_channels(config):
+    """
+    Read and validate the configured image channel count.
+    """
     channels = int(config.data.image_channels)
     if channels not in (1, 3):
         raise ValueError(
@@ -31,7 +34,10 @@ def _image_channels(config):
 
 def _build_transform(config):
     """
-    Build a square image transform for already-aligned external datasets.
+    Build a square image transform for external image datasets.
+
+    The transform returns tensors in `[-1, 1]`, matching the model input range
+    used by the image runner.
     """
     image_size = int(config.data.image_size)
     if image_size <= 0:
@@ -65,6 +71,9 @@ def _build_transform(config):
 def _stack_subset(dataset, indices):
     """
     Materialize transformed samples selected by integer indices.
+
+    The training loop expects a dense tensor, not a lazy torchvision dataset.
+    This also makes the exact selected subset available as a saved artifact.
     """
     images = []
     labels = []
@@ -107,6 +116,9 @@ def _resolve_existing_dir(root, candidates, dataset_name):
 class RecursiveImageDataset(Dataset):
     """
     Minimal image dataset for folders without class subdirectories.
+
+    FFHQ thumbnails are treated as one unlabeled image collection. Labels are
+    fixed to zero because class labels are not part of that study.
     """
 
     def __init__(self, root, transform=None):
@@ -134,6 +146,10 @@ class RecursiveImageDataset(Dataset):
 def load_flowers102_bundle(config):
     """
     Return a deterministic Oxford Flowers102 train/reference bundle.
+
+    The runner profiles use the official large test split for training and the
+    official train split as held-out reference data. This gives enough training
+    images while keeping train/reference sources distinct.
     """
     root = config.data.root
     transform = _build_transform(config)
@@ -193,6 +209,9 @@ def load_flowers102_bundle(config):
 def load_afhq_v2_bundle(config):
     """
     Return a deterministic AFHQ-v2 train/reference bundle.
+
+    AFHQ-v2 is read from local ImageFolder-style splits. The returned bundle
+    follows the same tensor/label/index contract as torchvision datasets.
     """
     root = config.data.root
     subdir = str(getattr(config.data, "dataset_subdir", "") or "afhq_v2")
@@ -256,7 +275,9 @@ def load_ffhq128_bundle(config):
 
     FFHQ does not ship with train/validation splits. We therefore draw one
     disjoint seeded partition from the full image collection and mark the
-    bundle as a same-source holdout through matching source ids.
+    bundle as a same-source holdout through matching source ids. The common
+    leakage guard then verifies that the saved train/reference indices are
+    disjoint.
     """
     root = config.data.root
     subdir = str(
@@ -306,3 +327,8 @@ def load_ffhq128_bundle(config):
             int(config.data.image_size),
         ),
     }
+
+
+if __name__ == "__main__":
+    print("mp_data.image_collections example")
+    print("supported loaders: flowers102, afhq_v2, ffhq128")

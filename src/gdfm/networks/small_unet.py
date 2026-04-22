@@ -8,6 +8,10 @@ The architecture stays the same:
     - residual UNet with adaptive time conditioning
     - self-attention at selected resolutions
     - stride-2 downsampling and nearest-neighbor upsampling
+
+The public image runner usually constructs this model through
+`gdfm.networks.unet.BonnaireUNet`. Read this file when you want the layer-level
+image backbone.
 """
 
 import math
@@ -172,6 +176,10 @@ class SmallUNet(nn.Module):
 
     The channel schedule is controlled by `base_channels` and `channel_mults`.
     Attention is applied only at the requested spatial resolutions.
+
+    Input and output tensors both have shape `[B, C, H, W]`. GDFM requires this
+    shape preservation because the network prediction must live in the same
+    ambient image space as the noisy input.
     """
 
     def __init__(
@@ -266,6 +274,12 @@ class SmallUNet(nn.Module):
         self._attention_resolutions = set(attention_resolutions)
 
     def forward(self, x, t):
+        """
+        Run the encoder, middle block, and decoder for one image batch.
+
+        Skip tensors are saved during the encoder and concatenated into the
+        decoder, which is the usual UNet information path across resolutions.
+        """
         if t.dim() == 2:
             t = t.squeeze(1)
 

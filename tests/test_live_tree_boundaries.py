@@ -35,11 +35,21 @@ class TestLiveTreeBoundaries(unittest.TestCase):
                         msg=f"{path}:{node.lineno} imports study-layer module {module}",
                     )
 
-    def test_live_and_legacy_layout_match_submission_repo_split(self):
-        self.assertTrue(Path("experiments").exists())
-        self.assertFalse(Path("reference").exists())
-        self.assertTrue(Path("archives/legacy_experiments_20260416.zip").exists())
-        self.assertTrue(Path("archives/legacy_reference_20260416.zip").exists())
+    def test_active_runners_live_under_src(self):
+        self.assertTrue(Path("src/mp_runners/synthetic_runner.py").is_file())
+        self.assertTrue(Path("src/mp_runners/image_runner.py").is_file())
+        self.assertTrue(Path("src/mp_metrics/synthetic.py").is_file())
+        self.assertTrue(Path("src/mp_metrics/images.py").is_file())
+
+        removed_active_paths = [
+            "prototyping/runners/synthetic_runner.py",
+            "prototyping/runners/image_runner.py",
+            "prototyping/runners/metrics_synthetic.py",
+            "prototyping/runners/metrics_synthetic_controlled.py",
+            "prototyping/runners/metrics_image32.py",
+        ]
+        for path in removed_active_paths:
+            self.assertFalse(Path(path).exists(), path)
 
 
 if __name__ == "__main__":

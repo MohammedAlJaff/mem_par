@@ -1,35 +1,12 @@
 """
-Tiny utilities shared by the readable prototype runner recipes.
+Small helpers shared by canonical runner modules.
 
-This file deliberately stays small. It sets import paths, formats JSON, counts
-parameters, resolves batch sizing, and points at artifact files. Data loading,
-model building, metrics, training, and config choices live directly in each
-runner recipe.
+Keep this module limited to direct runner utilities: parameter counts,
+batch-cap handling, JSON printing, and standard artifact path summaries.
 """
 
 import json
-import sys
 from pathlib import Path
-
-
-def find_repo_root(start=None):
-    """Find the checkout root from a module, notebook, or script location."""
-    if start is None:
-        start = Path(__file__).resolve()
-    start = Path(start).resolve()
-    for candidate in (start, *start.parents):
-        if (candidate / "src").is_dir() and (candidate / "prototyping").is_dir():
-            return candidate
-    raise RuntimeError("Could not find repo root from {}".format(start))
-
-
-REPO_ROOT = find_repo_root()
-SRC_ROOT = REPO_ROOT / "src"
-# Runners are often launched from notebooks or `python -m`; make imports stable
-# without requiring an editable install during early prototyping.
-for _path in (REPO_ROOT, SRC_ROOT):
-    if str(_path) not in sys.path:
-        sys.path.insert(0, str(_path))
 
 
 PARAMETERIZATION_CHOICES = ("x", "eps", "v")
@@ -59,10 +36,10 @@ def count_parameters(model):
 
 
 def resolve_batch_cap(knobs):
-    """Resolve the public B-cap knob for runner recipes."""
+    """Resolve the public batch-cap setting for runner recipes."""
     batch_cap = knobs.get("batch_cap")
     if batch_cap is None:
-        raise ValueError("Runner knobs must define batch_cap.")
+        raise ValueError("Runner settings must define batch_cap.")
     batch_cap = int(batch_cap)
     if batch_cap < 1:
         raise ValueError(f"batch_cap must be >= 1, got {batch_cap}")
@@ -80,7 +57,12 @@ def resolve_batch_size(n_train, batch_cap):
 
 
 def artifact_paths(attempt_dir):
-    """Return the standard files to inspect under one attempt directory."""
+    """
+    Return the standard files to inspect under one attempt directory.
+
+    Runner printouts use these paths so a user can find checkpoints, metrics,
+    figures, logs, and summaries without knowing the full experiment layout.
+    """
     attempt_dir = Path(attempt_dir)
     paths = {
         "attempt_dir": attempt_dir,
@@ -150,3 +132,8 @@ def latest_completed_attempt(study_dir):
     if not candidates:
         return None
     return sorted(candidates, key=lambda item: item[0])[-1][1]
+
+
+if __name__ == "__main__":
+    print("mp_runners.common example")
+    print("parameterization choices:", ", ".join(PARAMETERIZATION_CHOICES))

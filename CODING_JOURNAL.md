@@ -1,5 +1,52 @@
 # Coding Journal
 
+## 2026-04-22T01:36:40Z - Image Data Bundle Gaps
+
+### Context
+The user asked to address missing image data-bundle support around Flowers102
+64px, count validation, and a user-facing data summary.
+
+### Changed / Observed
+- Added `flowers102_64` as a public image runner dataset key.
+- Added `image32_64` as the matching UNet preset.
+- Added config-time count validation for known dataset splits.
+- Added `--data-summary` to materialize and print the selected data bundle
+  without training.
+
+### Commands / Checks
+- `python -m py_compile src/mp_runners/image_config.py src/mp_runners/image_presets.py src/mp_runners/image_runner.py tests/test_proto_runners.py`
+- `python -m unittest tests.test_proto_runners`
+- `python -m mp_runners.image_runner --help`
+- `git diff --check`
+
+### Results
+- Runner tests passed: 29 tests.
+- Help now lists `flowers102_64`, `image32_64`, and `--data-summary`.
+
+### Next
+- Use `--data-summary` before long image runs when checking subset sizes and
+  train/reference split choices.
+
+## 2026-04-22T01:28:56Z - Short Response Preference
+
+### Context
+The user clarified that responses should not be long-winded.
+
+### Changed / Observed
+- Updated `AGENT.md` and `CLAUDE.md` communication rules.
+- New rule: keep answers short by default, answer first, and add detail only
+  when requested or needed to avoid ambiguity.
+
+### Commands / Checks
+- `rg -n "short|long|slang|research|wording|terminology|communication|preference" AGENT.md CLAUDE.md CODING_JOURNAL.md .codex 2>/dev/null`
+
+### Results
+- The short-answer preference is recorded with the existing research wording
+  preference.
+
+### Next
+- Use short answers by default.
+
 This journal is the shared session log for the repo. Use UTC ISO timestamps,
 keep entries practical, and record enough context to resume work without
 rereading the whole codebase.
@@ -1212,3 +1259,429 @@ replayed later from finished `DONE_...` attempts.
 ### Next
 - Run a tiny CUDA train-only job, then replay it with `--eval-run-dir` to verify
   W&B resume behavior in the UI.
+
+## 2026-04-21T23:16:56Z - Status Check Synthetic Torus Worktree
+
+### Context
+Performed a read-only status pass across the repo, current journal, and active
+synthetic-runner work before deciding what to touch next.
+
+### Intent
+Separate landed image-runner history from the current dirty synthetic/torus
+work, verify whether the active tree is runnable, and record the chosen cleanup
+policy.
+
+### Changed / Observed
+- Current branch is `main` at `fafa28b Make image runner final eval replayable`,
+  tracking `origin/main`.
+- Active dirty work is focused on controlled synthetic runs: `torus3d` data
+  loading, synthetic final-eval replay from `DONE_...` attempts, canonical
+  `train_run(...)` usage in `synthetic_mlp`, and dataset-neutral
+  `intrinsic_*` metrics with compatibility aliases.
+- The untracked `dunno/` notes outline a broader synthetic benchmark agenda
+  around GMM versus torus, support distance, calibrated copy rate, PRDC/MMD/LID,
+  and checkpoint-wise evaluation.
+- Decision: skip synthetic notebook wording cleanup for now, leave `dunno/` and
+  `prototyping/archive/` untouched as TBD, and only record this journal entry.
+
+### Commands / Checks
+- `git status --short --branch`
+- `git log -5 --oneline --decorate`
+- `git diff --stat`
+- Read `README.md`, `AGENT.md`, `src/README.md`, `prototyping/runners/README.md`,
+  `CODING_JOURNAL.md`, and the `dunno/` notes.
+- `module load Mambaforge && mamba activate mem_param_env && MPLCONFIGDIR=/tmp/matplotlib PYTHONPATH=src:. python -m unittest tests.test_torus_synthetic tests.test_proto_runners tests.test_projected_gmm_oracle`
+- `git diff --check`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m py_compile src/mp_data/torus.py prototyping/runners/metrics_synthetic.py prototyping/runners/metrics_synthetic_controlled.py prototyping/runners/figures.py prototyping/runners/synthetic_mlp.py tests/test_torus_synthetic.py tests/test_proto_runners.py tests/test_projected_gmm_oracle.py`
+- `module load Mambaforge && mamba activate mem_param_env && python -m json.tool prototyping/runners/notebooks/synthetic_mlp.ipynb`
+
+### Results
+- Focused synthetic/torus/prototype suite passed: 40 tests in 18.945 seconds.
+- Whitespace check, byte-compile check, and notebook JSON validation passed.
+- Only known `torch.load(weights_only=False)` FutureWarnings appeared.
+
+### Blockers
+- No blocker for the active synthetic/torus code path found in the focused
+  checks.
+- Root README and `src/README.md` still mention an `experiments/` surface that
+  is not present in this checkout; this is separate documentation drift.
+
+### Next
+- Continue from the current dirty synthetic/torus worktree without polishing
+  the synthetic notebook wording yet.
+- Decide later whether `dunno/` and `prototyping/archive/` should become tracked
+  source material, local references, or cleanup candidates.
+
+## 2026-04-21T23:26:28Z - Proto Src Functionality Deep Dive
+
+### Context
+Mapped live functionality in `src/` and `prototyping/runners/` to prepare for a
+later audit of whether tests protect real behavior or only cosmetic structure.
+
+### Intent
+Create a subsystem and flow handoff that names the canonical model core,
+training/evaluation pipeline, synthetic and image runner surfaces, behavior
+contracts, and current stale-test signals.
+
+### Changed / Observed
+- Added `PROTO_SRC_FUNCTIONALITY_DEEP_DIVE.md`.
+- Documented `GDFM`, model setup/backbones, sampler conversions, config/data,
+  training artifacts, status handling, checkpoint evaluation, runtime/tracking,
+  image runner replay, and synthetic GMM/torus metrics.
+- Included the active dirty `torus3d` path and synthetic replay work as live
+  functionality.
+- Left synthetic notebook wording, `dunno/`, and `prototyping/archive/`
+  untouched.
+
+### Commands / Checks
+- `rg --files src prototyping/runners tests`
+- `rg -n "^(def|class) " src prototyping/runners tests`
+- Focused file reads across `src/gdfm`, `src/mp_*`, and
+  `prototyping/runners`.
+- `module load Mambaforge && mamba activate mem_param_env && MPLCONFIGDIR=/tmp/matplotlib PYTHONPATH=src:. python -m unittest discover tests`
+
+### Results
+- Deep-dive handoff captures subsystem responsibilities, end-to-end flows,
+  behavior contracts, risk areas for the later test audit, and evidence.
+- Full unittest discovery currently ran 104 tests and failed with 3 failures
+  and 3 errors.
+- Failures/errors are from stale `prototyping/gdfm_components.py` tests,
+  missing `experiments/`, and docstring/main-block policy checks.
+
+### Blockers
+- No blocker for creating the functionality map.
+- The later test-quality audit should treat the current full-suite failures as
+  stale/policy context before judging the rest of the suite.
+
+### Next
+- Classify tests by subsystem and by value: behavioral, smoke, contract,
+  cosmetic, or stale/dead.
+
+## 2026-04-22T00:02:40Z - Communication Preference
+
+### Context
+The user clarified the preferred communication style for all future work.
+
+### Intent
+Record the preference in repo-visible guidance so future assistants and
+contributors use the correct wording.
+
+### Changed / Observed
+- Added a communication rule to `AGENT.md`.
+- Added the same rule to `CLAUDE.md`.
+- Preference: the user is a researcher; use simple wording and precise
+  research terminology. Do not use slang, hype wording, playful labels, or
+  informal phrases.
+- Added explicit examples to the repo guidance:
+  - Avoid: "Got it - let's clean this up."
+    Use: "Understood. I will remove the unused metric fields and update the call sites."
+  - Avoid: "This is a nice little smoke test."
+    Use: "This is a short runtime test that checks whether the path executes without errors."
+  - Avoid: "The code has some weird leftovers."
+    Use: "The code still contains stale compatibility aliases from the previous metric interface."
+  - Avoid: "This metric is doing oracle shit."
+    Use: "This metric uses the known synthetic data-generating distribution."
+  - Avoid: "The runner wires everything together."
+    Use: "The runner constructs the config, launches training, and optionally runs checkpoint evaluation."
+  - Avoid: "This is probably cosmetic test coverage."
+    Use: "This test checks structure or naming, but does not verify behavioral correctness."
+  - Avoid: "We can hard prune this."
+    Use: "We can remove this interface without preserving backward compatibility."
+  - Avoid: "The old names are noisy."
+    Use: "The old names are ambiguous because they do not state the measured quantity or comparison set."
+  - Avoid: "The figure plumbing is now aligned."
+    Use: "The figure filenames, figure map keys, run summary entries, and W&B keys now use the same names."
+
+### Commands / Checks
+- Read `AGENT.md`, `CLAUDE.md`, and `CODING_JOURNAL.md`.
+- Ran `date -u +%Y-%m-%dT%H:%M:%SZ` to timestamp this entry.
+
+### Results
+- The communication preference is now recorded in the repo guide and journal.
+
+### Blockers
+- None.
+
+## 2026-04-22T03:56:49Z - Prepare Push Branch
+
+### Context
+The user asked to push the current work and ensure the journal is updated.
+
+### Changed / Observed
+- Prepared branch `codex/runner-metric-cleanup-and-image-resolver` from `main`.
+- Staged the repo changes from the runner move, metric cleanup, checkpoint
+  schedule work, W&B identity changes, and image dataset/size/model resolver.
+- Left local-only `.codex` and `tea_debug.log` unstaged.
+- `gh` is not installed in this environment, so a PR cannot be opened here.
+
+### Commands / Checks
+- `git status -sb`
+- `git diff --stat`
+- `git switch -c codex/runner-metric-cleanup-and-image-resolver`
+- `git add -A`
+- `git restore --staged .codex tea_debug.log`
+
+### Results
+- Branch is ready for commit and push.
+
+### Blockers
+- PR creation is blocked by missing `gh`; pushing the branch with `git` can
+  still proceed.
+
+## 2026-04-22T03:52:34Z - Image Runner Dataset Size Model Resolver
+
+### Context
+The user wanted image runs to be configured from only dataset, image size, and
+model, with the remaining profile choices resolved automatically.
+
+### Changed / Observed
+- Added `--image-size` and `--model` to `mp_runners.image_runner`.
+- Added image config resolution so `--dataset flowers102 --image-size 64
+  --model unet` resolves to the `flowers102_64` profile.
+- Kept older dataset profile keys such as `flowers102_128`.
+- Added dynamic simple profiles for scalable datasets such as MNIST, so
+  `--dataset mnist --image-size 64 --model unet` resolves to `mnist_64`.
+- Kept programmatic custom image sizes valid for small tests and debugging.
+- Updated runner docs and tests.
+
+### Commands / Checks
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m unittest tests.test_proto_runners`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m unittest tests.test_proto_runners tests.test_tracking`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m py_compile src/mp_runners/image_config.py src/mp_runners/image_runner.py tests/test_proto_runners.py`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m mp_runners.image_runner --help`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m unittest tests.test_src_docstrings tests.test_src_examples`
+- Manual resolver check for Flowers102-64 and MNIST-64.
+- `git diff --check`
+
+### Results
+- Focused runner/tracking tests passed: 41 tests.
+- Docstring/example policy tests passed: 5 tests.
+- Byte-compile and image runner help passed.
+- Manual resolver check printed:
+  - `flowers102_64 flowers102 64 unet 64`
+  - `mnist_64 mnist 64 unet 64`
+- `git diff --check` passed.
+
+### Blockers
+- None.
+
+### Next
+- Apply this communication style in all future responses and repo notes.
+
+## 2026-04-22T00:30:44Z - Runner Move And Metric Simplification
+
+### Context
+The active prototype runners and runner metric code were promoted into `src`.
+The user asked for a clean, simple layout before reducing duplicated code.
+
+### Intent
+Keep runner workflow code separate from metric definitions:
+- metrics define what is measured;
+- runners define how an experiment is run;
+- small duplicated helper code is acceptable when it keeps files readable.
+
+### Changed / Observed
+- Added canonical runner modules under `src/mp_runners`.
+- Simplified metric layout to `mp_metrics/loss_eval.py`,
+  `mp_metrics/synthetic.py`, and `mp_metrics/images.py`.
+- Moved generic checkpoint replay workflow to `mp_runners.evaluate_checkpoints`.
+- Removed active prototype runner and metric source files from
+  `prototyping/runners`.
+- Updated tests, runner notebooks, and runner README to use `mp_runners` and
+  canonical metric modules.
+
+### Commands / Checks
+- `rg -n "prototyping\\.runners|mp_metrics\\.(memorization|checkpoints|checkpoint_previews)" src tests`
+- `python -m py_compile src/mp_metrics/*.py src/mp_runners/*.py`
+- `python -m mp_runners.synthetic_mlp --help`
+- `python -m mp_runners.image_runner --help`
+- `python -m unittest discover tests`
+
+### Results
+- Static import grep passed for `src` and `tests`; only a negative assertion in
+  `tests/test_proto_runners.py` still mentions the old image32 path.
+- `python3.11 -m py_compile src/mp_metrics/*.py src/mp_runners/*.py` passed.
+- `git diff --check` passed.
+- Focused runner/metric tests ran 52 tests, all skipped because this shell does
+  not have `torch`.
+- Full unittest discovery ran 115 tests with 107 skips, 12 failures, and 1
+  error. Failures are from missing local dependencies (`torch`, `numpy`,
+  `ml_collections`), missing `experiments/`, and pre-existing docstring/main
+  policy checks outside the moved runner files.
+
+### Blockers
+- None expected.
+
+## 2026-04-22T03:41:26Z - Automatic W&B Identity From Config
+
+### Context
+W&B project/name/group should be automatic unless the CLI explicitly provides
+`--wandb-project`, `--wandb-name`, or `--wandb-group`. Runs are compared within
+datasets; normal sweep axes are prediction/loss spaces, batch cap, seed, and
+`N`.
+
+### Changed / Observed
+- Added config-derived W&B identity resolution in `src/mp_tracking.py`.
+- Default project is `memparam-{dataset_key}-{model_arch}`.
+- Default run name now includes dataset, model, `N`, batch cap,
+  prediction/loss spaces, training steps, and seed.
+- Default group is dataset, model, and training steps only, so `x`, `eps`,
+  `v`, batch-size, seed, and `N` sweeps remain comparable inside one group.
+- Preserved explicit W&B project/name/group values exactly.
+- Removed silent `WANDB_PROJECT` override for automatic project selection.
+- Recorded the rule in `README.md`, `PYTHON_STYLE.md`, `AGENT.md`,
+  `CLAUDE.md`, and `prototyping/runners/README.md`.
+
+### Commands / Checks
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m unittest tests.test_tracking tests.test_proto_runners`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m py_compile src/mp_tracking.py src/mp_training/trainer.py src/mp_runners/image_config.py src/mp_runners/image_presets.py src/mp_runners/synthetic_runner.py tests/test_tracking.py tests/test_proto_runners.py`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m mp_runners.synthetic_runner --help`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m mp_runners.image_runner --help`
+- Manual config identity check for Flowers102-64 and torus3d settings.
+- `git diff --check`
+
+### Results
+- Focused tracking and runner tests passed: 39 tests.
+- Byte-compile passed for changed Python files.
+- Synthetic and image runner CLI help passed.
+- Manual config identity check produced dataset/model projects, detailed run
+  names, and dataset/model/steps groups.
+- `git diff --check` passed.
+
+### Blockers
+- None.
+
+## 2026-04-22T02:49:18Z - Rename Synthetic Runner Module
+
+### Context
+The canonical image runner uses the general module name `image_runner`. The
+synthetic runner still used `synthetic_mlp`, which mixed the workflow name with
+one model choice.
+
+### Changed / Observed
+- Renamed `src/mp_runners/synthetic_mlp.py` to
+  `src/mp_runners/synthetic_runner.py`.
+- Updated the runner name and default output directory to `synthetic_runner`.
+- Updated live tests, runner docs, and the synthetic runner notebook import to
+  use `mp_runners.synthetic_runner`.
+
+### Commands / Checks
+- `python -m py_compile src/mp_runners/synthetic_runner.py tests/test_proto_runners.py tests/test_torus_synthetic.py tests/test_live_tree_boundaries.py`
+- `python -m unittest tests.test_proto_runners tests.test_torus_synthetic tests.test_live_tree_boundaries tests.test_src_docstrings tests.test_src_examples`
+- `PYTHONPATH=src python -m mp_runners.synthetic_runner --help`
+- `python -m json.tool prototyping/runners/notebooks/synthetic_runner.ipynb`
+- `rg -n "synthetic_mlp|mp_runners\\.synthetic_mlp" src tests prototyping/runners README.md PROTO_SRC_FUNCTIONALITY_DEEP_DIVE.md --glob '!**/__pycache__/**'`
+- `git diff --check`
+
+### Results
+- Byte-compile passed.
+- Focused runner, torus, live-boundary, docstring, and example tests passed:
+  42 tests.
+- New CLI help passed for `mp_runners.synthetic_runner`.
+- Synthetic runner notebook JSON is valid.
+- Active-code/docs grep found no `synthetic_mlp` references.
+- `git diff --check` passed.
+
+### Next
+- Audit tests for behavioral value after the runner move is stable.
+
+## 2026-04-22T02:09:04Z - Image Metric Notation Cleanup
+
+### Context
+The image metric code needed to match the paper notation before larger
+experiment sweeps.
+
+### Intent
+- Use paper symbols in metric code and records: `rho`, `r`, `d1`, `d2`, `N`,
+  `tau`, and `t`.
+- Remove duplicate memorization aliases from image metric return dictionaries
+  and W&B payloads.
+- Keep the compatibility config field `evaluation.ratio_threshold`, but resolve
+  it to `rho` inside metric code.
+
+### Changed / Observed
+- Updated `src/mp_metrics/images.py` to return canonical keys only for image
+  memorization metrics: `rho`, `N`, `mean_r`, `median_r`, `median_d1`,
+  `median_d2`, and `nn_idx`.
+- Added `delta_f_mem` and rho-sweep fields for `rho` values 0.3, 0.5, and 0.7
+  in image checkpoint records and W&B logs.
+- Removed the unused `DEFAULT_FEATURE_ENCODER` export rather than changing
+  default image metric behavior.
+- Added an `image_range='auto'` warning and debug logging for dict tensor
+  payload key selection.
+- Updated shared evaluation/tracking code to use `mean_r`, `median_r`, and
+  `delta_f_mem`.
+- Added the math-first naming rule to `PYTHON_STYLE.md`, `AGENT.md`, and
+  `CLAUDE.md`.
+
+### Commands / Checks
+- `python -m unittest tests.test_mp_metrics`
+- `python -m py_compile src/mp_metrics/images.py src/mp_metrics/__init__.py src/mp_tracking.py src/mp_runners/evaluate_checkpoints.py tests/test_mp_metrics.py`
+- `git diff --check`
+- `python -m unittest tests.test_src_docstrings`
+- `python -m unittest tests.test_experiment_pipeline`
+- `python -m unittest tests.test_proto_runners`
+- `rg -n "DEFAULT_FEATURE_ENCODER|compute_f_mem_by_threshold|mean_nn_ratio|std_nn_ratio|nn_ratio|\"ratios\"|\"indices\"|ratio_threshold" src/mp_metrics/images.py src/mp_metrics/__init__.py src/mp_tracking.py src/mp_runners/evaluate_checkpoints.py tests/test_mp_metrics.py AGENT.md CLAUDE.md PYTHON_STYLE.md`
+
+### Results
+- `tests.test_mp_metrics` passed: 12 tests.
+- Byte-compile passed for the touched Python files.
+- `git diff --check` passed.
+- `tests.test_src_docstrings` passed: 4 tests.
+- `tests.test_experiment_pipeline` passed: 5 tests.
+- `tests.test_proto_runners` passed: 29 tests.
+- The grep only reports the compatibility config field
+  `evaluation.ratio_threshold` and explicit style/test text that mentions
+  deprecated alias names.
+
+### Blockers
+- None.
+
+### Next
+- Apply the same notation cleanup to synthetic metrics separately if desired.
+
+## 2026-04-22T02:40:05Z - Metric Module Boundary Refactor
+
+### Context
+The metric modules had grown to include checkpoint replay, file loading,
+preview artifacts, figure generation, run-summary updates, and tracking payload
+formatting.
+
+### Intent
+- Keep `mp_metrics` limited to metric computation from in-memory tensors or
+  feature matrices.
+- Move saved-run evaluation to `mp_runners`.
+- Move figure generation to `mp_visualization`.
+- Move folder/file metric convenience wrappers outside `mp_metrics`.
+- Move tracker payload naming outside metric computation.
+
+### Changed / Observed
+- Added image and synthetic evaluation modules under `src/mp_runners`.
+- Moved image checkpoint previews and image reference-memory collection out of
+  `mp_metrics.images`.
+- Moved synthetic checkpoint replay out of `mp_metrics.synthetic`.
+- Moved synthetic figure generation into `src/mp_visualization.py`.
+- Moved folder/file metric wrappers into `src/mp_runners/metric_io.py`.
+- Moved `loss_eval_metric_payload` from `mp_metrics.loss_eval` to
+  `mp_tracking`.
+- Updated the style guides with the metric-boundary rule.
+
+### Commands / Checks
+- `python -m py_compile src/mp_metrics/*.py src/mp_runners/*.py src/mp_visualization.py src/mp_tracking.py`
+- `python -m unittest tests.test_mp_metrics tests.test_loss_eval tests.test_checkpoint_previews`
+- `python -m unittest tests.test_experiment_pipeline tests.test_proto_runners tests.test_torus_synthetic tests.test_src_docstrings`
+- `python -m unittest tests.test_projected_gmm_oracle tests.test_src_examples`
+- `PYTHONPATH=src python -m mp_runners.synthetic_mlp --help`
+- `PYTHONPATH=src python -m mp_runners.image_runner --help`
+- `rg -n "evaluate_.*run|make_.*figures|checkpoint_preview|run_summary|compute_.*folder|_load_collection|load_metric_collection|loss_eval_metric_payload" src/mp_metrics`
+- `git diff --check`
+
+### Results
+- Byte-compile passed.
+- Focused metric, runner, torus, docstring, and example tests passed.
+- Runner CLI help passed when `PYTHONPATH=src` was set for this checkout.
+- The `src/mp_metrics` boundary grep returned no matches.
+- `git diff --check` passed.
+
+### Blockers
+- None expected.

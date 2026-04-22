@@ -15,7 +15,9 @@ class TestSrcExamples(unittest.TestCase):
         "gdfm.samplers",
         "gdfm.networks.jit",
         "mp_config.base",
-        "mp_metrics.memorization",
+        "mp_metrics.synthetic",
+        "mp_metrics.images",
+        "mp_runners.common",
         "mp_artifacts.artifacts",
         "mp_data.gmm",
     )

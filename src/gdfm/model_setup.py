@@ -118,8 +118,8 @@ def _normalize_network_config(cfg):
     Convert mixed config layouts into one canonical backbone spec.
 
     The returned `spec` is the internal contract consumed by
-    `build_network(...)`. This is where we pay the complexity cost of legacy
-    alias handling once, so the actual constructor logic can stay clean.
+    `build_network(...)`. Alias handling stays here so the actual constructor
+    logic can stay direct and readable.
     """
     arch = _network_name(cfg)
     network_cfg = _named_section(cfg, "network")
@@ -297,6 +297,9 @@ def build_network(cfg):
         - dict-like configs
         - legacy aliases such as model.*, channel_mults, attention_resolutions,
           num_heads, in_channels, resolution, D, depth, and time_embed_dim
+
+    The factory is intentionally explicit: each supported architecture has a
+    visible constructor call and a small validated argument set.
     """
     spec = _normalize_network_config(cfg)
     network_name = spec["arch"]

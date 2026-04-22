@@ -1,9 +1,7 @@
 # src
 
-This folder is the canonical home for reusable first-party code.
-
-Live paper-study workflows now live in `experiments/`. `src/` stays focused on
-the reusable kernel those studies build on top of.
+This folder is the canonical home for reusable first-party code and the active
+research runners.
 
 ## Packages
 
@@ -17,10 +15,13 @@ the reusable kernel those studies build on top of.
   Canonical dataset loaders and deterministic subset logic.
 
 - `mp_metrics/`
-  Memorization metrics and checkpoint evaluation.
-  The canonical `f_mem` threshold lives at `config.evaluation.ratio_threshold`
-  and is respected by direct tensor metrics, folder-based metrics, and
-  checkpoint evaluation.
+  Metric definitions. Keep this package simple: `loss_eval.py`,
+  `synthetic.py`, and `images.py`.
+
+- `mp_runners/`
+  Runnable workflows and CLI entry points. Use
+  `python -m mp_runners.synthetic_runner` and
+  `python -m mp_runners.image_runner`.
 
 - `mp_artifacts/`
   Experiment/run/seed/attempt layout, config snapshots, checkpoints, tensors,
@@ -30,15 +31,14 @@ the reusable kernel those studies build on top of.
   Shared training-loop scaffolding and optimizer setup.
 
 - `mp_tracking.py`
-  Shared observability glue for console summaries, `logs/attempt.log`,
+  Shared observability support for console summaries, `logs/attempt.log`,
   structured events, figure registration, live `status.json` progress, and
   optional offline-first W&B logging.
 
 ## Boundary
 
-`src/` should stay reusable and study-agnostic.
-
-Runnable study workflows belong in `experiments/`, not in `src/`.
+`src/` should stay readable and direct. Metrics answer what is measured;
+runners answer how an experiment is run.
 
 If functionality from the archived trees is needed again, bring the minimum
 needed implementation into `src/` deliberately. Do not recreate imports from

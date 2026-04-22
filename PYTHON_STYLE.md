@@ -62,6 +62,24 @@ Use it as the reference for:
 
 ## Naming And Notation
 
+- Code variable names should match paper symbols when the paper defines the
+  quantity. Use one canonical name per quantity.
+- Inline comments for named mathematical quantities should state the formula or
+  definition, not restate the Python operation.
+- Reserved memorization notation:
+  - `tau`: gradient update step index
+  - `t`: diffusion or flow time
+  - `rho`: nearest-neighbor ratio threshold
+  - `r`: nearest-neighbor ratio `d1 / d2`
+  - `d1`, `d2`: first and second nearest-neighbor distances
+  - `N`: training set size
+- Use canonical metric keys in return dictionaries, JSON, and W&B logs:
+  `rho`, `r`, `d1`, `d2`, `nn_idx`, `f_mem`, `delta_f_mem`, `mean_r`,
+  `median_r`, and `N`.
+- Do not add duplicate alias keys such as `nn_ratio`, `ratios`,
+  `ratio_threshold`, or `n_reference` in memorization metric records. The config
+  field `evaluation.ratio_threshold` may remain for backward compatibility, but
+  metric code should resolve it to `rho`.
 - Use `eps`, never `epsilon`.
 - Use `z_t`, `v_t`, `a(t)`, `b(t)`, `a'(t)`, and `b'(t)` consistently in prose
   and code-adjacent explanation.
@@ -84,6 +102,32 @@ Use it as the reference for:
   type-level signaling.
 - Prefer direct `if/elif` logic and compact helper functions over generic
   registries or abstraction layers unless they are already stable.
+
+## Metric Module Boundaries
+
+- `mp_metrics` modules compute metric values from in-memory tensors or feature
+  matrices only.
+- File loading, folder wrappers, checkpoint replay, run-summary updates,
+  figure generation, and W&B payload formatting do not belong in `mp_metrics`.
+- Put saved-run evaluation in `mp_runners`, figure writing in
+  `mp_visualization`, artifact layout and file writes in `mp_artifacts`, and
+  tracker key formatting in `mp_tracking`.
+- Prefer clear local metric code over generic dispatch. Small repeated helpers
+  are acceptable when they make the metric definition easier to read.
+
+## W&B Run Identity
+
+- Omitted W&B identity fields mean automatic config-derived values.
+- Default project: `memparam-{dataset_key}-{model_arch}`. Use the
+  user-facing dataset key, such as `flowers102_128`, so different datasets do
+  not share one project.
+- Default run name: include dataset, model, `N`, batch cap,
+  prediction/loss spaces, training steps, and seed.
+- Default group: dataset, model, and training steps only. Do not include
+  `N`, batch cap, seed, or prediction/loss spaces, because those are normal
+  sweep axes to compare inside the same group.
+- Preserve explicit `--wandb-project`, `--wandb-name`, and `--wandb-group`
+  values exactly.
 
 ## Numerics And Scientific Conventions
 

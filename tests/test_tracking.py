@@ -93,7 +93,7 @@ class TestAttemptTracker(unittest.TestCase):
                     step=7,
                 )
                 tracker.log_figure_metric(
-                    "generation_trace/samples_over_train",
+                    "generation_trace/samples",
                     figure_path,
                     step=9,
                 )
@@ -103,9 +103,9 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertEqual(fake.init_calls[0]["project"], "memparam-gmm_subspace-mlp")
                 self.assertEqual(
                     fake.init_calls[0]["name"],
-                    "gmm_subspace-mlp-N256-x_x-s3",
+                    "gmm_subspace-mlp-N256-B64-x_x-steps200-s3",
                 )
-                self.assertEqual(fake.init_calls[0]["group"], make_run_id(config))
+                self.assertEqual(fake.init_calls[0]["group"], "gmm_subspace-mlp-steps200")
                 self.assertEqual(fake.init_calls[0]["mode"], "offline")
                 self.assertTrue(fake.init_calls[0]["dir"].endswith("logs/wandb"))
                 self.assertEqual(
@@ -130,7 +130,7 @@ class TestAttemptTracker(unittest.TestCase):
                     fake.runs[0].logs[3],
                     (
                         {
-                            "generation_trace/samples_over_train": {
+                            "generation_trace/samples": {
                                 "image_path": str(figure_path.resolve()),
                                 "caption": "generation_trace | grad_step=9",
                             },
@@ -147,8 +147,9 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertEqual(status["wandb"]["run_id"], attempt_dir.name)
                 self.assertEqual(
                     status["wandb"]["run_name"],
-                    "gmm_subspace-mlp-N256-x_x-s3",
+                    "gmm_subspace-mlp-N256-B64-x_x-steps200-s3",
                 )
+                self.assertEqual(status["wandb"]["group"], "gmm_subspace-mlp-steps200")
                 self.assertEqual(status["generated_figures"]["demo"], str(figure_path.resolve()))
 
                 replay_tracker = AttemptTracker(config, attempt_dir)
@@ -157,7 +158,7 @@ class TestAttemptTracker(unittest.TestCase):
         finally:
             self.restore_wandb(old_module)
 
-    def test_wandb_project_env_and_explicit_overrides(self):
+    def test_wandb_auto_identity_and_explicit_overrides(self):
         config = self.make_config()
         config.tracking.wandb.enabled = True
         config.tracking.wandb.mode = "offline"
@@ -182,19 +183,26 @@ class TestAttemptTracker(unittest.TestCase):
                     attempt_dir = create_run_layout(experiment_dir, config)
                     tracker = AttemptTracker(config, attempt_dir)
                     tracker.close()
-                self.assertEqual(fake.init_calls[-1]["project"], "env_project")
+                self.assertEqual(fake.init_calls[-1]["project"], "memparam-gmm_subspace-mlp")
+                self.assertEqual(
+                    fake.init_calls[-1]["name"],
+                    "gmm_subspace-mlp-N256-B64-x_x-steps200-s3",
+                )
+                self.assertEqual(fake.init_calls[-1]["group"], "gmm_subspace-mlp-steps200")
 
                 explicit = self.make_config()
                 explicit.tracking.wandb.enabled = True
                 explicit.tracking.wandb.mode = "offline"
                 explicit.tracking.wandb.project = "manual_project"
                 explicit.tracking.wandb.name = "manual_name"
+                explicit.tracking.wandb.group = "manual_group"
                 with mock.patch.dict("os.environ", {"WANDB_PROJECT": "env_project"}):
                     attempt_dir = create_run_layout(experiment_dir, explicit)
                     tracker = AttemptTracker(explicit, attempt_dir)
                     tracker.close()
                 self.assertEqual(fake.init_calls[-1]["project"], "manual_project")
                 self.assertEqual(fake.init_calls[-1]["name"], "manual_name")
+                self.assertEqual(fake.init_calls[-1]["group"], "manual_group")
         finally:
             self.restore_wandb(old_module)
 
@@ -223,6 +231,35 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertIn("warning: W&B initialization failed", (attempt_dir / "logs" / "attempt.log").read_text())
         finally:
             self.restore_wandb(old_module)
+
+    def test_interactive_progress_keeps_summaries_out_of_terminal(self):
+        config = self.make_config()
+        config.tracking.console.enabled = True
+        config.tracking.wandb.enabled = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            experiment_dir = Path(tmpdir) / "tracking_demo"
+            attempt_dir = create_run_layout(experiment_dir, config)
+            tracker = AttemptTracker(config, attempt_dir)
+            tracker.interactive_progress = True
+
+            with mock.patch("builtins.print") as printed:
+                tracker.training_progress(
+                    step=1,
+                    total_steps=4,
+                    loss=1.25,
+                    elapsed_sec=0.5,
+                    force=True,
+                )
+                tracker.checkpoint_saved(
+                    step=1,
+                    checkpoint_path=attempt_dir / "checkpoints" / "step_000001.pt",
+                )
+
+            printed.assert_not_called()
+            attempt_log = (attempt_dir / "logs" / "attempt.log").read_text()
+            self.assertIn("train step=1/4", attempt_log)
+            self.assertIn("saved checkpoint step=1", attempt_log)
 
 
 if __name__ == "__main__":

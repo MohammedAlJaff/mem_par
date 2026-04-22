@@ -1,19 +1,17 @@
-# Prototype Runner Lab
+# Runner Notebooks And Examples
 
-This folder is a release-clean lab for paper-relevant runner components. The
-synthetic MLP runner keeps a direct, visible training loop. Image runners keep a
-small recipe shape and delegate full training/evaluation to the canonical
-`src/` stack.
+The active runners now live in `src/mp_runners`. This folder keeps the runner
+notebooks and command examples only.
 
-Each runner is meant to be read top to bottom: knobs, config, data, model,
-training, metrics, and artifacts.
+Each runner module is meant to be read top to bottom: knobs, config, data,
+model, training, metrics, and artifacts.
 
 ## Runner Matrix
 
 | Name | Dataset | Backbone | Style | Module | Notebook |
 | --- | --- | --- | --- | --- | --- |
-| `synthetic_mlp` | `gmm_subspace` | `mlp` | direct script | `prototyping.runners.synthetic_mlp` | `notebooks/synthetic_mlp.ipynb` |
-| `image_runner` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `prototyping.runners.image_runner` | `notebooks/image_runner.ipynb` |
+| `synthetic_runner` | `gmm_subspace`, `torus3d` | `mlp` | recipe functions | `mp_runners.synthetic_runner` | `notebooks/synthetic_runner.ipynb` |
+| `image_runner` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `mp_runners.image_runner` | `notebooks/image_runner.ipynb` |
 
 ## Command Examples
 
@@ -24,27 +22,47 @@ module load Mambaforge
 mamba activate mem_param_env
 ```
 
-Synthetic direct run:
+Synthetic recipe run:
 
 ```bash
-PYTHONPATH=src:. python -m prototyping.runners.synthetic_mlp \
+PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
   --device cpu \
-  --out-dir outputs/prototype_runners/synthetic_mlp \
+  --out-dir outputs/runners/synthetic_runner \
   --prediction-space v \
   --loss-space v \
+  --ambient-dim 8 \
+  --intrinsic-data-dim 2 \
   --batch-cap 64 \
   --n-steps 200 \
-  --metric-every 50 \
   --ckpt-every 50
+
+# Run train+eval immediately for a tiny smoke.
+PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
+  --device cpu \
+  --dataset torus3d \
+  --ambient-dim 3 \
+  --n-train 16 \
+  --n-eval 32 \
+  --batch-cap 8 \
+  --n-steps 2 \
+  --ckpt-every 1 \
+  --final-eval
+
+# Replay synthetic checkpoint metrics later from a finished training attempt.
+PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
+  --device cuda \
+  --eval-run-dir outputs/runners/synthetic_runner/runs/.../DONE_...
 ```
 
 Image recipe run:
 
 ```bash
-PYTHONPATH=src:. python -m prototyping.runners.image_runner \
+PYTHONPATH=src:. python -m mp_runners.image_runner \
   --device cuda \
-  --out-dir outputs/prototype_runners/image_runner \
+  --out-dir outputs/runners/image_runner \
   --dataset celeba32_grey \
+  --image-size 32 \
+  --model unet \
   --prediction-space v \
   --loss-space v \
   --batch-cap 64 \
@@ -53,9 +71,11 @@ PYTHONPATH=src:. python -m prototyping.runners.image_runner \
   --no-download
 
 # Run the same full train+eval pipeline with tiny step counts before submitting a long job.
-PYTHONPATH=src:. python -m prototyping.runners.image_runner \
+PYTHONPATH=src:. python -m mp_runners.image_runner \
   --device cuda \
-  --dataset flowers102_128 \
+  --dataset flowers102 \
+  --image-size 128 \
+  --model unet \
   --generation-trace \
   --generation-trace-count 8 \
   --no-generation-trace-show \
@@ -67,17 +87,16 @@ PYTHONPATH=src:. python -m prototyping.runners.image_runner \
   --final-eval
 
 # Replay checkpoint metrics later from a finished training attempt.
-PYTHONPATH=src:. python -m prototyping.runners.image_runner \
+PYTHONPATH=src:. python -m mp_runners.image_runner \
   --device cuda \
-  --eval-run-dir outputs/prototype_runners/image_runner/runs/.../DONE_...
+  --eval-run-dir outputs/runners/image_runner/runs/.../DONE_...
 ```
 
-The image runner CLI is intentionally slim. It exposes run identity, dataset/preset,
-prediction/loss spaces, selected dataset sizes, training cadence, sampling
-count, data root/download, W&B basics, `--generation-trace`, and optional
-checkpoint evaluation. Architecture and low-level data variants live in named
-presets selected by `--config-preset` or in dataset profiles such as
-`flowers102_128`.
+The image runner CLI is intentionally slim. For normal runs, pass dataset,
+image size, and model; the runner chooses the matching data/profile defaults.
+For example, `--dataset flowers102 --image-size 64 --model unet` resolves to
+the `flowers102_64` data/model profile. Older profile keys such as
+`flowers102_128` still work.
 
 `image_runner` is the single-process image entrypoint. Future multi-GPU/DDP
 experiments should live in a separate script such as `image_runner_ddp`, launched
@@ -87,6 +106,9 @@ The core image-runner size knobs mean exactly this:
 
 | Flag | Config field | Meaning |
 | --- | --- | --- |
+| `--dataset` | `config.study.dataset_key`, `config.data.dataset` | User-facing dataset choice. Base keys such as `flowers102` can be paired with `--image-size`. |
+| `--image-size` | `config.data.image_size` | Image resolution; standard CLI sizes are 32, 64, 128, and 256. |
+| `--model` | `config.network.arch` | Model family. Currently `unet`. |
 | `--n-train` | `config.data.n_train` | Number of real images used for optimization. |
 | `--n-eval` | `config.data.n_eval` | Number of real held-out/reference images loaded for evaluation. |
 | `--eval-samples` | `config.evaluation.n_samples` | Number of generated samples per checkpoint; also the size of `artifacts/z_init.pt`. |
@@ -99,7 +121,12 @@ The core image-runner size knobs mean exactly this:
 W&B projects default to the user-facing dataset key plus model arch:
 `memparam-flowers102_128-unet`, `memparam-mnist-unet`, etc. The old broad
 `memparam-image32-unet` value is treated as auto so copied commands stop mixing
-datasets into one W&B project.
+datasets into one W&B project. Default W&B run names include dataset, model,
+`N`, batch cap, prediction/loss spaces, training steps, and seed. Default W&B
+groups include only dataset, model, and training steps, so `x`, `eps`, `v`,
+batch-size, seed, and `N` sweeps stay comparable. Explicit
+`--wandb-project`, `--wandb-name`, and `--wandb-group` flags override these
+automatic values.
 
 Flowers102 profiles intentionally train on the large official `test` split and
 use the small official `train` split as the held-out/reference split. The
@@ -137,6 +164,20 @@ tracking is active.
 Canonical attempt folders receive a `DONE_` prefix after training artifacts are
 successfully written, so completed-training folders are visible from the
 filesystem while failed or aborted attempts keep their original names.
+
+Synthetic MLP runners now use the same checkpoint-first lifecycle. Training
+always saves the canonical attempt tree plus controlled geometry. Immediate
+checkpoint metrics are opt-in with `--final-eval`; otherwise replay them later
+with `--eval-run-dir`. Public synthetic metric names use `intrinsic_*` for true
+low-dimensional metric coordinates across both projected GMM and torus data.
+For projected GMM runs, `--ambient-dim` is the observed vector dimension `D`
+and `--intrinsic-data-dim` is the controlled linear subspace dimension `d`; the
+old `--data-dim` and `--intrinsic-dim` flags remain compatibility aliases. For
+`torus3d`, `--ambient-dim` embeds a canonical 3D torus into observed dimension
+`D`; the local manifold dimension is fixed at 2 and `--intrinsic-data-dim` is
+rejected because there is no configurable global linear intrinsic space.
+Held-out true-data checks use the `holdout_*` prefix. Old `latent_*`,
+`baseline_*`, and component-coverage metric aliases are removed.
 
 ## Bonnaire-Close Image32 Defaults
 

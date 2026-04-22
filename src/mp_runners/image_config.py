@@ -1,20 +1,33 @@
-"""Configuration builder for the image UNet runner."""
+"""
+Configuration builder for the image UNet runner.
+
+The runner receives simple CLI/settings values. This module turns them into the
+canonical nested config used by data loading, model construction, training,
+evaluation, runtime precision, and tracking.
+"""
 
 import copy
 import os
 import re
 
-from prototyping.runners.common import resolve_batch_cap
-from prototyping.runners.config_presets import get_default_configs
 from mp_config import clone_config, get_base_config
-from prototyping.runners.metrics_image32 import DEFAULT_FIXED_TIMES
+from mp_metrics.loss_eval import DEFAULT_LOSS_EVAL_TIMES
+from mp_runners.common import resolve_batch_cap
+from mp_runners.image_presets import get_default_configs
+from mp_training.checkpoint_schedule import (
+    parse_checkpoint_steps,
+    resolve_checkpoint_steps,
+)
+from mp_tracking import resolve_wandb_identity
 
 
 RUNNER_NAME = "image_runner"
-DEFAULT_STUDY_DIR = "outputs/prototype_runners/image_runner"
+DEFAULT_STUDY_DIR = "outputs/runners/image_runner"
+MODEL_CHOICES = ("unet",)
 
 
 def _default_wandb_entity(fallback):
+    """Return the environment W&B entity or a fallback."""
     entity = os.getenv("WANDB_ENTITY", "").strip()
     return entity if entity else fallback
 
@@ -26,18 +39,21 @@ _LEGACY_BROAD_WANDB_PROJECTS = {
 
 
 def _wandb_slug(value, fallback):
+    """Normalize a W&B slug component."""
     text = str(value or "").strip().lower()
     text = re.sub(r"[^a-z0-9._-]+", "-", text).strip("-")
     return text or fallback
 
 
 def _dataset_model_wandb_project(dataset_key, model_arch):
+    """Build the default W&B project name for a dataset/model pair."""
     dataset = _wandb_slug(dataset_key, "dataset")
     model = _wandb_slug(model_arch, "model")
     return f"memparam-{dataset}-{model}"
 
 
 def _resolve_wandb_project(raw_project, dataset_key, model_arch):
+    """Resolve explicit, legacy, and automatic W&B project names."""
     requested = str(raw_project or "").strip()
     canonical = _dataset_model_wandb_project(dataset_key, model_arch)
     if not requested or requested.lower() in _LEGACY_BROAD_WANDB_PROJECTS:
@@ -56,6 +72,14 @@ _UNET_PROFILES = {
         "dropout": 0.1,
         "time_emb_dim": None,
     },
+    64: {
+        "base_channels": 64,
+        "channel_mult": (1, 2, 4, 4),
+        "attn_resolutions": (16,),
+        "num_res_blocks": 2,
+        "dropout": 0.0,
+        "time_emb_dim": None,
+    },
     128: {
         "base_channels": 64,
         "channel_mult": (1, 2, 4, 4, 8),
@@ -72,6 +96,13 @@ _UNET_PROFILES = {
         "dropout": 0.0,
         "time_emb_dim": None,
     },
+}
+
+
+_KNOWN_SPLIT_SIZES = {
+    "mnist": {"train": 60000, "test": 10000},
+    "celeba32_grey": {"train": 162770, "valid": 19867, "test": 19962},
+    "flowers102": {"train": 1020, "val": 1020, "valid": 1020, "test": 6149},
 }
 
 
@@ -112,6 +143,21 @@ DATASET_DEFAULTS = {
         "allow_same_source_reference": False,
         "dataset_subdir": "",
         **_UNET_PROFILES[32],
+    },
+    "flowers102_64": {
+        "dataset": "flowers102",
+        "config_profile": "image32_64",
+        "image_size": 64,
+        "image_channels": 3,
+        "resize_size": 64,
+        # Flowers102's official train split has only 1,020 images.
+        # For generative runs we train on the large official test split and use
+        # the small official train split as the held-out/reference set.
+        "train_split": "test",
+        "reference_split": "train",
+        "allow_same_source_reference": False,
+        "dataset_subdir": "",
+        **_UNET_PROFILES[64],
     },
     "flowers102_128": {
         "dataset": "flowers102",
@@ -168,6 +214,12 @@ DATASET_DEFAULTS = {
 }
 
 
+SCALABLE_IMAGE_DATASETS = {"mnist", "flowers102", "afhq_v2"}
+DATASET_ALIASES = {
+    "ffhq": "ffhq128",
+}
+
+
 DEFAULT_SETTINGS = {
     # Run identity and reproducibility.
     "device": "cpu",
@@ -175,9 +227,10 @@ DEFAULT_SETTINGS = {
     "run_name": RUNNER_NAME,
     "seed": 0,
 
-    # Data/model recipe selection.
+    # Data/model runner selection.
     "dataset": "celeba32_grey",
     "config_preset": None,
+    "model": "unet",
     "prediction_space": "v",
     "loss_space": "v",
 
@@ -190,6 +243,8 @@ DEFAULT_SETTINGS = {
     # Training schedule.
     "n_steps": 30000,
     "ckpt_every": 2000,
+    "ckpt_schedule": "bonnaire-1m",
+    "ckpt_steps": "",
     "log_every": None,
     "batch_cap": 64,
 
@@ -197,6 +252,7 @@ DEFAULT_SETTINGS = {
     # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
     "precision": "fp32",
     "compare_numerics": False,
+    "data_summary": False,
     "final_eval": False,
     "eval_run_dir": None,
 
@@ -211,16 +267,16 @@ DEFAULT_SETTINGS = {
     "dataset_subdir": None,
     "download": False,
 
-    # Dataset-profile fields. These are intentionally no longer CLI knobs.
+    # Dataset-profile fields. These are intentionally no longer CLI settings.
     "train_split": "train",
     "reference_split": None,
     "allow_same_source_reference": None,
-    "image_size": 32,
+    "image_size": None,
     "image_channels": 1,
     "resize_size": 0,
     "balance_train_classes": True,
     "balance_reference_classes": True,
-    "loss_eval_times": DEFAULT_FIXED_TIMES,
+    "loss_eval_times": DEFAULT_LOSS_EVAL_TIMES,
     "base_channels": 32,
     "channel_mult": (1, 2, 4),
     "attn_resolutions": (16, 8),
@@ -287,10 +343,21 @@ def get_default_settings():
 
 def list_datasets():
     """Return supported dataset keys for this runner."""
-    return tuple(DATASET_DEFAULTS.keys())
+    return tuple(sorted(set(DATASET_DEFAULTS.keys()) | set(DATASET_ALIASES.keys())))
+
+
+def list_models():
+    """Return supported image model names."""
+    return MODEL_CHOICES
+
+
+def list_image_sizes():
+    """Return supported automatic image sizes."""
+    return tuple(sorted(_UNET_PROFILES.keys()))
 
 
 def _coalesce(value, fallback=None):
+    """Return fallback for None or empty strings."""
     if isinstance(value, str) and not value.strip():
         return fallback
     if value is None:
@@ -309,9 +376,9 @@ def _raw_overrides_default(raw_settings, key):
 
 def _merge_settings(raw_settings, dataset_defaults):
     """
-    Merge defaults without letting default-valued rare knobs clobber profiles.
+    Merge defaults without letting default-valued rare settings override profiles.
 
-    The CLI now exposes only sweep/prototype fields. Some notebook/tests still
+    The CLI now exposes only sweep fields. Some notebook/tests still
     start from `default_settings()` and update a few rare fields directly; those
     explicit non-default updates remain honored.
     """
@@ -327,7 +394,149 @@ def _merge_settings(raw_settings, dataset_defaults):
     return merged
 
 
+def _resolve_model(raw_model):
+    """Resolve the user-facing model name."""
+    model = str(_coalesce(raw_model, DEFAULT_SETTINGS["model"])).lower()
+    if model not in MODEL_CHOICES:
+        raise ValueError(
+            f"Unknown image model: {model}. Supported models: {', '.join(MODEL_CHOICES)}"
+        )
+    return model
+
+
+def _resolve_requested_image_size(raw_size):
+    """Return the requested image size, or None when the dataset default should apply."""
+    if raw_size is None:
+        return None
+    if isinstance(raw_size, str) and not raw_size.strip():
+        return None
+    size = int(raw_size)
+    if size < 1:
+        raise ValueError(f"image_size must be positive, got {size}")
+    return size
+
+
+def _profile_key_for_size(dataset, image_size):
+    """Return the user-facing dataset key for a base dataset and image size."""
+    candidate = f"{dataset}_{int(image_size)}"
+    if candidate in DATASET_DEFAULTS:
+        return candidate
+    default_size = int(DATASET_DEFAULTS[dataset]["image_size"])
+    if int(image_size) == default_size:
+        return dataset
+    return candidate
+
+
+def _sized_dataset_defaults(dataset, image_size):
+    """Build dataset defaults for a supported base dataset at a requested size."""
+    image_size = int(image_size)
+    defaults = copy.deepcopy(DATASET_DEFAULTS[dataset])
+    if image_size in _UNET_PROFILES:
+        defaults.update(_UNET_PROFILES[image_size])
+        defaults["config_profile"] = f"image32_{image_size}"
+    defaults["image_size"] = image_size
+    defaults["resize_size"] = 0 if image_size == 32 else image_size
+    return defaults
+
+
+def _resolve_dataset_profile(raw_settings):
+    """
+    Resolve dataset, image size, and model into one concrete dataset profile.
+
+    This is the main convenience path for the image runner: callers can pass a
+    base dataset such as `flowers102`, an image size such as `64`, and a model
+    such as `unet`; the runner chooses the matching data/model defaults.
+    """
+    model = _resolve_model(raw_settings.get("model", DEFAULT_SETTINGS["model"]))
+    raw_dataset = str(_coalesce(raw_settings.get("dataset"), DEFAULT_SETTINGS["dataset"]))
+    dataset = DATASET_ALIASES.get(raw_dataset, raw_dataset)
+    if dataset not in DATASET_DEFAULTS:
+        raise ValueError(f"Unknown image runner dataset: {raw_dataset}")
+
+    image_size = _resolve_requested_image_size(raw_settings.get("image_size"))
+    defaults = DATASET_DEFAULTS[dataset]
+    if image_size is None:
+        return dataset, defaults, model
+
+    default_size = int(defaults["image_size"])
+    if int(image_size) == default_size:
+        return dataset, defaults, model
+
+    if dataset != str(defaults["dataset"]):
+        raise ValueError(
+            f"Dataset key {dataset!r} already fixes image_size={default_size}. "
+            f"Use --dataset {defaults['dataset']} --image-size {int(image_size)}."
+        )
+
+    if dataset not in SCALABLE_IMAGE_DATASETS:
+        raise ValueError(
+            f"Dataset {dataset!r} does not support automatic image_size={int(image_size)}."
+        )
+
+    profile_key = _profile_key_for_size(dataset, image_size)
+    if profile_key in DATASET_DEFAULTS:
+        return profile_key, DATASET_DEFAULTS[profile_key], model
+    return profile_key, _sized_dataset_defaults(dataset, image_size), model
+
+
+def _validate_positive_count(name, value):
+    """Require a positive integer count."""
+    if int(value) < 1:
+        raise ValueError(f"{name} must be >= 1, got {value}")
+
+
+def _validate_split_count(config, *, field_name, split_name, count):
+    """Validate a requested subset count when the split size is known."""
+    dataset_name = str(config.data.dataset)
+    split_sizes = _KNOWN_SPLIT_SIZES.get(dataset_name)
+    if split_sizes is None:
+        return
+
+    split_key = str(split_name)
+    if split_key == "val":
+        split_key = "valid"
+    split_size = split_sizes.get(split_key)
+    if split_size is None:
+        return
+    if int(count) > int(split_size):
+        raise ValueError(
+            f"{field_name}={int(count)} exceeds {dataset_name} split "
+            f"{split_name!r} size {int(split_size)}"
+        )
+
+
+def _validate_image_counts(config):
+    """
+    Validate image subset and run counts before dataset construction.
+
+    This catches impossible train/reference sizes before torchvision or local
+    folder loaders begin materializing images.
+    """
+    _validate_positive_count("n_train", config.data.n_train)
+    _validate_positive_count("n_eval", config.data.n_eval)
+    _validate_positive_count("eval_samples", config.evaluation.n_samples)
+    _validate_positive_count("n_steps", config.training.n_steps)
+    _validate_positive_count("ckpt_every", config.training.ckpt_every)
+    _validate_positive_count("batch_cap", config.training.batch_cap)
+    _validate_positive_count("sampling_steps", config.sampling.n_steps)
+    _validate_positive_count("generation_trace_count", config.generation_trace.num_images)
+
+    _validate_split_count(
+        config,
+        field_name="n_train",
+        split_name=getattr(config.data, "train_split", "train"),
+        count=config.data.n_train,
+    )
+    _validate_split_count(
+        config,
+        field_name="n_eval",
+        split_name=getattr(config.data, "reference_split", "test"),
+        count=config.data.n_eval,
+    )
+
+
 def _preset_value(defaults, section_name, key, fallback):
+    """Read a value from a preset section with a fallback."""
     section = getattr(defaults, section_name, None)
     if section is None:
         return fallback
@@ -339,13 +548,19 @@ def _preset_value(defaults, section_name, key, fallback):
 
 
 def build_config(settings):
-    """Build the canonical image UNet config from merged run settings."""
+    """
+    Build the canonical image UNet config from merged run settings.
+
+    Precedence is: base defaults, dataset profile, optional explicit preset,
+    then user-provided sweep values. Dataset-owned fields such as image size and
+    split choice stay with the profile unless a caller explicitly overrides
+    them outside the normal CLI path.
+    """
     raw_settings = dict(settings)
-    dataset = str(_coalesce(raw_settings.get("dataset"), DEFAULT_SETTINGS["dataset"]))
-    if dataset not in DATASET_DEFAULTS:
-        raise ValueError(f"Unknown image runner dataset: {dataset}")
-    dataset_defaults = DATASET_DEFAULTS[dataset]
+    dataset, dataset_defaults, model = _resolve_dataset_profile(raw_settings)
     settings = _merge_settings(raw_settings, dataset_defaults)
+    settings["dataset"] = dataset
+    settings["model"] = model
 
     explicit_preset = _coalesce(raw_settings.get("config_preset"), None) is not None
     preset_name = str(
@@ -376,7 +591,7 @@ def build_config(settings):
 
     # Study metadata.
     config.study.name = RUNNER_NAME
-    config.study.description = f"{dataset} image GDFM/UNet prototype recipe."
+    config.study.description = f"{dataset} image GDFM/UNet runner."
     config.study.dataset_key = dataset
     config.outputs.run_name = str(settings["run_name"])
 
@@ -419,7 +634,7 @@ def build_config(settings):
     )
 
     # Model / network.
-    config.network.arch = defaults.model.arch
+    config.network.arch = model
     config.network.base_channels = int(model_setting("base_channels"))
     config.network.channel_mult = tuple(
         _coalesce(model_setting("channel_mult"), defaults.model.channel_mult)
@@ -435,6 +650,9 @@ def build_config(settings):
     config.training.seed = int(settings["seed"])
     config.training.n_steps = int(settings["n_steps"])
     config.training.ckpt_every = int(settings["ckpt_every"])
+    config.training.ckpt_schedule = str(settings["ckpt_schedule"])
+    config.training.ckpt_steps = parse_checkpoint_steps(settings["ckpt_steps"])
+    config.training.resolved_ckpt_steps = tuple(resolve_checkpoint_steps(config))
     log_every = settings.get("log_every")
     if log_every is None:
         config.training.log_every = max(1, min(500, int(config.training.ckpt_every)))
@@ -505,10 +723,22 @@ def build_config(settings):
     )
     config.tracking.wandb.enabled = bool(settings["wandb"])
     config.tracking.wandb.mode = str(settings["wandb_mode"])
-    config.tracking.wandb.project = _resolve_wandb_project(
-        settings["wandb_project"],
-        dataset,
-        config.network.arch,
+    if bool(settings.get("wandb_project_provided", False)):
+        config.tracking.wandb.project = str(settings["wandb_project"])
+    else:
+        config.tracking.wandb.project = _resolve_wandb_project(
+            settings["wandb_project"],
+            dataset,
+            config.network.arch,
+        )
+    config.tracking.wandb.project_explicit = bool(
+        settings.get("wandb_project_provided", False)
+    )
+    config.tracking.wandb.name_explicit = bool(
+        settings.get("wandb_name_provided", False)
+    )
+    config.tracking.wandb.group_explicit = bool(
+        settings.get("wandb_group_provided", False)
     )
     wandb_entity = (
         raw_settings["wandb_entity"]
@@ -535,4 +765,12 @@ def build_config(settings):
         if item.strip()
     ]
     config.tracking.wandb.strict = bool(wandb_strict)
+    resolve_wandb_identity(config)
+
+    _validate_image_counts(config)
     return config
+
+
+if __name__ == "__main__":
+    print("mp_runners.image_config example")
+    print("datasets:", ", ".join(list_datasets()))

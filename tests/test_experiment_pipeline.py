@@ -7,7 +7,8 @@ from unittest import mock
 try:
     import torch
     from mp_config import clone_config, get_base_config
-    from mp_metrics import compute_memorization_metrics, evaluate_run
+    from mp_metrics import compute_memorization_metrics
+    from mp_runners.evaluate_checkpoints import evaluate_run
     from mp_training import train_run
     from mp_training.trainer import _batching_metadata
 except ModuleNotFoundError:
@@ -75,10 +76,11 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertTrue((run_dir / "logs" / "attempt.log").exists())
             self.assertTrue((run_dir / "figures" / "training_loss_vs_step.png").exists())
             self.assertTrue((run_dir / "figures" / "f_mem_vs_tau.png").exists())
-            self.assertTrue((run_dir / "figures" / "nn_ratio_vs_tau.png").exists())
+            self.assertTrue((run_dir / "figures" / "mean_r_vs_tau.png").exists())
             status = loads((run_dir / "status.json").read_text())
             data_meta = loads((run_dir / "artifacts" / "data_meta.json").read_text())
             run_summary = loads((run_dir / "artifacts" / "run_summary.json").read_text())
+            attempt_log = (run_dir / "logs" / "attempt.log").read_text()
             train_history = loads((run_dir / "metrics" / "train_history.json").read_text())
             loss_eval = loads((run_dir / "metrics" / "loss_eval.json").read_text())
             checkpoint_previews = loads(
@@ -89,10 +91,19 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertIn("evaluation_progress", status)
             self.assertIn("latest_metrics", status)
             self.assertIn("batching", status)
+            self.assertIn("data_summary", status)
+            self.assertIn("model_summary", status)
             self.assertIn("batching", data_meta)
             self.assertIn("batching", run_summary)
+            self.assertIn("data_summary", run_summary)
+            self.assertIn("model_summary", run_summary)
             self.assertEqual(status["batching"], data_meta["batching"])
             self.assertEqual(run_summary["batching"], data_meta["batching"])
+            self.assertIn("data summary", attempt_log)
+            self.assertIn("data train", attempt_log)
+            self.assertIn("data reference", attempt_log)
+            self.assertIn("model created", attempt_log)
+            self.assertIn("model summary", attempt_log)
             self.assertEqual(train_history[-1]["step"], int(config.training.n_steps))
             self.assertGreater(len(loss_eval), 0)
             self.assertIn("random_t_loss", loss_eval[-1])

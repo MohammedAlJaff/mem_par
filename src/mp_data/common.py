@@ -17,6 +17,10 @@ Canonical bundle contract:
     reference_source_id: stable identifier for the held-out source split/corpus
     display_shape:      optional original image shape for plotting utilities
     geometry:           optional dataset-specific structure such as GMM basis
+
+The rest of the pipeline assumes this contract. Training reads `train`;
+checkpoint evaluation reads `train`, `reference`, and saved metadata; metrics
+use optional labels, indices, and geometry when they are present.
 """
 
 import torch
@@ -73,6 +77,10 @@ def validate_data_bundle(bundle, config):
     a different source split/corpus unless a study explicitly opts into using
     disjoint indices from the same source via
     `config.data.allow_same_source_reference = True`.
+
+    This guard protects memorization metrics. If train and reference overlap,
+    a generated sample can look non-memorized only because the baseline is
+    contaminated by training examples.
     """
     for key in ("train", "reference", "train_source_id", "reference_source_id"):
         if key not in bundle:
@@ -142,6 +150,10 @@ def build_data_bundle(config):
         from mp_data.gmm import load_gmm_subspace_bundle
 
         bundle = load_gmm_subspace_bundle(config)
+    elif dataset_name == "torus3d":
+        from mp_data.torus import load_torus3d_bundle
+
+        bundle = load_torus3d_bundle(config)
     elif dataset_name == "celeba32_grey":
         from mp_data.celeba32 import load_celeba32_bundle
 

@@ -1,11 +1,14 @@
 """
-Shared checkpoint loss-evaluation probes.
+Loss probes for checkpoint evaluation.
 
-These helpers evaluate the model loss on held-out/reference tensors at the same
-checkpoint steps used for memorization metrics.
+These helpers evaluate model loss on the saved held-out/reference tensor at the
+same checkpoint steps used for memorization metrics. They report two kinds of
+loss:
+
+1. random-time loss, which follows the model's usual training-time sampling;
+2. fixed-time losses, which hold `t` fixed so checkpoints can be compared at
+   the same noise levels.
 """
-
-from __future__ import annotations
 
 import torch
 
@@ -38,6 +41,7 @@ def loss_eval_times(config, fixed_times=None):
 
 
 def _loss_eval_batch_size(config, eval_tensor):
+    """Resolve the batch size used for loss evaluation."""
     evaluation = getattr(config, "evaluation", None)
     requested = int(getattr(evaluation, "loss_eval_batch_size", 0) or 0)
     if requested <= 0:
@@ -46,6 +50,7 @@ def _loss_eval_batch_size(config, eval_tensor):
 
 
 def _fork_rng_devices_for(device):
+    """Return CUDA devices that need RNG isolation for loss evaluation."""
     torch_device = torch.device(device)
     if torch_device.type != "cuda" or not torch.cuda.is_available():
         return []
@@ -64,7 +69,11 @@ def collect_loss_eval_record(
     fixed_times=None,
 ):
     """
-    Evaluate random-t and fixed-t losses on a held-out eval/reference tensor.
+    Evaluate random-t and fixed-t losses on a held-out reference tensor.
+
+    The RNG is forked and seeded from run seed plus checkpoint step. That keeps
+    loss probes reproducible without changing the caller's surrounding random
+    state.
     """
     step = int(step)
     batch_size = _loss_eval_batch_size(config, eval_tensor)
@@ -111,23 +120,15 @@ def collect_loss_eval_record(
     return record
 
 
-def loss_eval_metric_payload(record):
-    """
-    Build W&B/local tracker metric names for one loss-eval record.
-    """
-    payload = {
-        "eval/random_t_loss": record.get("random_t_loss"),
-        "eval/fixed_t_loss_mean": record.get("fixed_t_loss_mean"),
-    }
-    for key, value in (record.get("fixed_t") or {}).items():
-        payload[f"eval/loss_t_{key}"] = value
-    return payload
-
-
 __all__ = [
     "DEFAULT_LOSS_EVAL_TIMES",
     "collect_loss_eval_record",
-    "loss_eval_metric_payload",
     "loss_eval_times",
     "time_key",
 ]
+
+
+if __name__ == "__main__":
+    print("mp_metrics.loss_eval example")
+    print("default fixed times:", DEFAULT_LOSS_EVAL_TIMES)
+    print("time key for 0.5:", time_key(0.5))

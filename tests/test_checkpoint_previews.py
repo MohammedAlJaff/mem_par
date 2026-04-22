@@ -5,7 +5,7 @@ from pathlib import Path
 try:
     import torch
     from mp_config import clone_config, get_base_config
-    from mp_metrics.checkpoint_previews import (
+    from mp_runners.image_eval import (
         checkpoint_preview_figure_name,
         collect_checkpoint_sample_preview_record,
     )

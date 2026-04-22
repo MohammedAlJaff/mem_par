@@ -2,6 +2,8 @@
 Filesystem helpers for experiment/run/seed/attempt artifacts.
 
 This module owns the on-disk layout used by saved first-party experiments.
+Training and evaluation code should not invent paths directly when a helper in
+this module already defines the contract.
 
 Canonical layout:
     <experiment_dir>/
@@ -69,6 +71,9 @@ def _run_signature_payload(config):
     The goal is for one run identifier to be stable across reruns of the same
     hyperparameter configuration while ignoring seed, timestamp, and
     environment-local paths or UI choices.
+
+    Seeds live below the run directory. This lets several random seeds share
+    one semantic run identifier.
     """
     payload = config_to_dict(config)
 
@@ -105,6 +110,9 @@ def _attempt_base_timestamp(now=None):
 def _attempt_paths(attempt_dir):
     """
     Return the canonical child paths for one attempt directory.
+
+    These names form the saved-run interface used by `train_run`, runner replay
+    evaluation, status readers, and tests.
     """
     attempt_dir = Path(attempt_dir)
     return {
@@ -670,6 +678,8 @@ def create_run_layout(experiment_dir, config):
     Create the canonical attempt directory tree for one training launch.
 
     The returned path is the attempt directory itself, not a flat run folder.
+    All later training, evaluation, and status files are written below this
+    directory.
     """
     experiment_dir = Path(experiment_dir)
     run_id = make_run_id(config)
@@ -762,7 +772,11 @@ def create_run_layout(experiment_dir, config):
 
 def update_attempt_status(attempt_dir, state, **fields):
     """
-    Update the lifecycle metadata for one attempt and sync its manifests.
+    Update lifecycle metadata for one attempt and sync its manifests.
+
+    `status.json` is the live view for one attempt. The experiment, run, and
+    seed manifests receive compact copies so a user can inspect progress
+    without opening every attempt directory.
     """
     attempt_dir = Path(attempt_dir)
     status_path = _attempt_paths(attempt_dir)["status_path"]
@@ -793,7 +807,9 @@ def update_attempt_status(attempt_dir, state, **fields):
 
 def save_config_snapshot(run_dir, config):
     """
-    Serialize the active config into the attempt's artifact directory.
+    Serialize the resolved config into the attempt's artifact directory.
+
+    Evaluation replay loads this file rather than relying on current defaults.
     """
     payload = config_to_dict(config)
     save_json(Path(run_dir) / "artifacts" / "config.json", payload)
@@ -810,6 +826,9 @@ def load_config_snapshot(run_dir):
 def save_checkpoint(run_dir, step, model, optimizer):
     """
     Save one training checkpoint containing model and optimizer state.
+
+    Checkpoint filenames use optimization step numbers because step is the
+    shared x-axis for training loss, generated samples, and evaluation metrics.
     """
     path = Path(run_dir) / "checkpoints" / f"step_{int(step):06d}.pt"
     torch.save(

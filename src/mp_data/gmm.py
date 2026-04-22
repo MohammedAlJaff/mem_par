@@ -32,6 +32,9 @@ def _make_geometry(config):
 def _sample_gmm(config, basis, means, n_samples, seed):
     """
     Draw ambient-space samples from the configured latent Gaussian mixture.
+
+    Sampling happens in intrinsic coordinates first. The orthonormal basis then
+    maps those points into the ambient space that the model sees.
     """
     generator = torch.Generator().manual_seed(int(seed))
     cluster_ids = torch.randint(
@@ -53,10 +56,8 @@ def load_gmm_subspace_bundle(config):
     Build the canonical train/reference bundle for the GMM subspace study.
 
     The training and reference sets share the same geometry but use different
-    sampling seeds so evaluation is not just replaying the exact same points.
-    Saving that geometry in the returned bundle is what later lets us explain
-    whether a memorization effect came from the ambient samples alone or from
-    the underlying subspace structure.
+    sampling seeds. Saving that geometry in the returned bundle lets synthetic
+    metrics compare emitted ambient vectors with known intrinsic coordinates.
     """
     basis, means = _make_geometry(config)
     train_tensor, train_labels = _sample_gmm(

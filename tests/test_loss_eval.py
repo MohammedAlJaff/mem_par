@@ -3,7 +3,8 @@ import unittest
 try:
     import torch
     from mp_config import clone_config, get_base_config
-    from mp_metrics.loss_eval import collect_loss_eval_record, loss_eval_metric_payload
+    from mp_metrics.loss_eval import collect_loss_eval_record
+    from mp_tracking import loss_eval_metric_payload
 except ModuleNotFoundError:
     torch = None
     clone_config = None

@@ -1,8 +1,9 @@
 """
-Checkpoint evaluation for first-party study runs.
+Generic checkpoint replay workflow for saved runs.
 
-Reload a saved run, regenerate samples at each checkpoint, and compute the
-memorization curves.
+This evaluator is the simple tensor baseline for saved attempts. Specialized
+runners can use their own replay functions when they need dataset-specific
+geometry or image figures.
 """
 
 import time
@@ -20,20 +21,23 @@ from mp_artifacts import (
     save_tensor,
     update_attempt_status,
 )
-from mp_metrics.checkpoint_previews import (
+from mp_runners.image_eval import (
     checkpoint_preview_figure_name,
     collect_checkpoint_sample_preview_record,
 )
-from mp_metrics.loss_eval import collect_loss_eval_record, loss_eval_metric_payload
-from mp_metrics.memorization import compute_memorization_metrics, compute_nn_stats
+from mp_metrics.loss_eval import collect_loss_eval_record
+from mp_metrics.synthetic import compute_nn_stats
 from mp_runtime import autocast_context, configure_torch_runtime
-from mp_tracking import AttemptTracker
+from mp_tracking import AttemptTracker, loss_eval_metric_payload
 
 
 
 def _validate_saved_holdout_metadata(run_dir):
     """
     Re-check saved train/reference source metadata before checkpoint evaluation.
+
+    Evaluation should never silently compare generated samples against a
+    reference tensor that overlaps the training tensor.
     """
     run_dir = Path(run_dir)
     data_meta_path = run_dir / "artifacts" / "data_meta.json"
@@ -135,38 +139,26 @@ def _save_checkpoint_metric_figures(records, figures_dir):
     plt.close(fig)
     figure_paths["f_mem_vs_tau"] = f_mem_path
 
-    nn_ratio_path = figures_dir / "nn_ratio_vs_tau.png"
-    means = [record["mean_nn_ratio"] for record in records]
-    stds = [record["std_nn_ratio"] for record in records]
-    baseline_means = [record["baseline_mean_nn_ratio"] for record in records]
-    baseline_stds = [record["baseline_std_nn_ratio"] for record in records]
+    mean_r_path = figures_dir / "mean_r_vs_tau.png"
+    means = [record["mean_r"] for record in records]
+    medians = [record["median_r"] for record in records]
+    baseline_means = [record["baseline_mean_r"] for record in records]
+    baseline_medians = [record["baseline_median_r"] for record in records]
 
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(steps, means, marker="o", label="generated mean")
-    ax.fill_between(
-        steps,
-        [mean - std for mean, std in zip(means, stds)],
-        [mean + std for mean, std in zip(means, stds)],
-        alpha=0.18,
-        label="generated +/- std",
-    )
+    ax.plot(steps, medians, marker="o", linestyle=":", label="generated median")
     ax.plot(steps, baseline_means, marker="o", linestyle="--", label="held-out mean")
-    ax.fill_between(
-        steps,
-        [mean - std for mean, std in zip(baseline_means, baseline_stds)],
-        [mean + std for mean, std in zip(baseline_means, baseline_stds)],
-        alpha=0.14,
-        label="held-out +/- std",
-    )
+    ax.plot(steps, baseline_medians, marker="o", linestyle="-.", label="held-out median")
     ax.set_title("Nearest-neighbor ratio over training")
     ax.set_xlabel("checkpoint step tau")
-    ax.set_ylabel("mean nn ratio")
+    ax.set_ylabel("r")
     ax.grid(alpha=0.25)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(nn_ratio_path, dpi=160)
+    fig.savefig(mean_r_path, dpi=160)
     plt.close(fig)
-    figure_paths["nn_ratio_vs_tau"] = nn_ratio_path
+    figure_paths["mean_r_vs_tau"] = mean_r_path
 
     return figure_paths
 
@@ -183,7 +175,7 @@ def evaluate_run(run_dir, device="cpu"):
            as a baseline
 
     On the final checkpoint we also save a small sample/nearest-neighbor panel
-    payload so later plotting code can show concrete examples instead of just
+    payload so later plotting code can show concrete examples in addition to
     scalar curves.
     """
     run_dir = Path(run_dir)
@@ -274,38 +266,45 @@ def evaluate_run(run_dir, device="cpu"):
                         f"step={step}: {type(exc).__name__}: {exc}"
                     )
 
-                metrics = compute_memorization_metrics(
+                rho = float(config.evaluation.ratio_threshold)
+                generated_stats = compute_nn_stats(
                     samples,
                     train_tensor,
                     chunk_size=int(config.evaluation.chunk_size),
-                    config=config,
                 )
-                baseline = compute_memorization_metrics(
-                    reference_tensor[: samples.shape[0]],
+                baseline_tensor = reference_tensor[: samples.shape[0]]
+                baseline_stats = compute_nn_stats(
+                    baseline_tensor,
                     train_tensor,
                     chunk_size=int(config.evaluation.chunk_size),
-                    config=config,
                 )
+                r_gen = generated_stats["r"]  # r(x) = d1(x) / d2(x), generated samples
+                r_base = baseline_stats["r"]  # r(x) = d1(x) / d2(x), held-out baseline
+                f_mem = float((r_gen < rho).float().mean().item())
+                baseline_f_mem = float((r_base < rho).float().mean().item())
 
                 # Keep both generated-sample and held-out-reference metrics at the same
                 # checkpoint so later plots can compare them directly.
                 record = {
                     "step": step,
-                    "ratio_threshold": metrics["ratio_threshold"],
-                    "f_mem": metrics["f_mem"],
-                    "mean_nn_ratio": metrics["mean_nn_ratio"],
-                    "std_nn_ratio": metrics["std_nn_ratio"],
-                    "mean_d1": metrics["mean_d1"],
-                    "mean_d2": metrics["mean_d2"],
-                    "baseline_f_mem": baseline["f_mem"],
-                    "baseline_mean_nn_ratio": baseline["mean_nn_ratio"],
-                    "baseline_std_nn_ratio": baseline["std_nn_ratio"],
+                    "rho": rho,
+                    "f_mem": f_mem,
+                    "baseline_f_mem": baseline_f_mem,
+                    "delta_f_mem": f_mem - baseline_f_mem,
+                    "mean_r": float(r_gen.mean().item()),
+                    "median_r": float(r_gen.median().item()),
+                    "baseline_mean_r": float(r_base.mean().item()),
+                    "baseline_median_r": float(r_base.median().item()),
+                    "mean_d1": float(generated_stats["d1"].mean().item()),
+                    "mean_d2": float(generated_stats["d2"].mean().item()),
+                    "baseline_mean_d1": float(baseline_stats["d1"].mean().item()),
+                    "baseline_mean_d2": float(baseline_stats["d2"].mean().item()),
                 }
                 records.append(record)
                 if not progress.disable:
                     progress.set_postfix(
                         f_mem=f"{record['f_mem']:.4f}",
-                        nn_ratio=f"{record['mean_nn_ratio']:.4f}",
+                        r=f"{record['mean_r']:.4f}",
                         refresh=False,
                     )
                 tracker.evaluation_progress(
@@ -334,7 +333,7 @@ def evaluate_run(run_dir, device="cpu"):
                     )
                     save_tensor(
                         run_dir / "metrics" / "final_neighbors.pt",
-                        train_tensor[neighbor_stats["indices"][:panel_count]],
+                        train_tensor[neighbor_stats["nn_idx"][:panel_count]],
                     )
         finally:
             progress.close()
@@ -379,11 +378,12 @@ def evaluate_run(run_dir, device="cpu"):
         tracker.log_metrics(
             {
                 "eval/final_f_mem": final_record["f_mem"],
-                "eval/final_mean_nn_ratio": final_record["mean_nn_ratio"],
-                "eval/final_std_nn_ratio": final_record["std_nn_ratio"],
                 "eval/final_baseline_f_mem": final_record["baseline_f_mem"],
-                "eval/final_baseline_mean_nn_ratio": final_record["baseline_mean_nn_ratio"],
-                "eval/final_baseline_std_nn_ratio": final_record["baseline_std_nn_ratio"],
+                "eval/final_delta_f_mem": final_record["delta_f_mem"],
+                "eval/final_mean_r": final_record["mean_r"],
+                "eval/final_median_r": final_record["median_r"],
+                "eval/final_baseline_mean_r": final_record["baseline_mean_r"],
+                "eval/final_baseline_median_r": final_record["baseline_median_r"],
                 "eval/evaluation_wall_time_sec": evaluation_wall_time_sec,
                 "eval/final_random_t_loss": final_loss_record.get("random_t_loss"),
                 "eval/final_fixed_t_loss_mean": final_loss_record.get("fixed_t_loss_mean"),
@@ -430,12 +430,12 @@ def evaluate_run(run_dir, device="cpu"):
 
 
 if __name__ == "__main__":
-    print("mp_metrics.checkpoints example")
+    print("mp_runners.evaluate_checkpoints example")
 
     # `evaluate_run(...)` works on an already-finished run directory rather than
     # on in-memory tensors. The example below shows the expected call pattern.
     print("Usage:")
-    print("  from mp_metrics import evaluate_run")
+    print("  from mp_runners.evaluate_checkpoints import evaluate_run")
     print("  records = evaluate_run(run_dir, device='cpu')")
     print("")
 

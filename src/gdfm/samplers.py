@@ -1,9 +1,10 @@
 """
-External sampler sidecar for GDFM.
+Standalone sampler utilities for GDFM models.
 
-Keep the working samplers in `gdfm.core` for now. This file mirrors them from
-the outside so we can test sampler interfaces without changing the model
-class.
+`GDFM.sample(...)` is the canonical sampling entrypoint during training and
+runner evaluation. This module exposes the same conversion and integration
+ideas as free functions so tests and notebooks can inspect sampler behavior
+without modifying the model class.
 """
 
 import torch
@@ -112,7 +113,12 @@ def predict_in_prediction_space(model, z, t):
 
 
 def convert_prediction(model, r_hat, z_t, t, target):
-    """Convert a model prediction into the requested target space."""
+    """
+    Convert a model prediction into the requested target space.
+
+    This delegates to `model.convert(...)`, keeping the mathematical conversion
+    rules in the model wrapper.
+    """
     t = _batch_time(t, z_t)
     return model.convert(
         r_hat,
@@ -155,7 +161,12 @@ def model_to_score(model, z_t, t):
 
 
 def sample_euler(model, z, n_steps=100, device=None, t_min=None, t_max=None):
-    """Integrate the learned ODE with forward Euler."""
+    """
+    Integrate the learned ODE with forward Euler.
+
+    Euler uses one model evaluation per time step and is useful for simple
+    sampler checks.
+    """
     device = _infer_device(model, z, device)
     z = z.to(device)
     ts = time_grid(model, n_steps=n_steps, device=device, t_min=t_min, t_max=t_max)
@@ -169,7 +180,12 @@ def sample_euler(model, z, n_steps=100, device=None, t_min=None, t_max=None):
 
 
 def sample_heun(model, z, n_steps=100, device=None, t_min=None, t_max=None):
-    """Integrate the learned ODE with Heun's method."""
+    """
+    Integrate the learned ODE with Heun's method.
+
+    Heun evaluates the velocity before and after an Euler trial step, then
+    averages the two slopes.
+    """
     device = _infer_device(model, z, device)
     z = z.to(device)
     ts = time_grid(model, n_steps=n_steps, device=device, t_min=t_min, t_max=t_max)
@@ -328,7 +344,7 @@ if __name__ == "__main__":
     samples_dispatch = sample(model, z.clone(), n_steps=4, method="heun")
     samples_vp_sde = sample_vp_reverse_sde(model, z.clone(), n_steps=4)
 
-    # Matching batch shapes are the first sanity check for all sidecar samplers.
+    # Matching batch shapes are the first sanity check for all standalone samplers.
     print(f"model_to_velocity(z, t) : {tuple(velocity.shape)}")
     print(f"sample_euler(z)         : {tuple(samples_euler.shape)}")
     print(f"sample_heun(z)          : {tuple(samples_heun.shape)}")

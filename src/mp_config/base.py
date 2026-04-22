@@ -78,6 +78,8 @@ def get_base_config():
     data.resize_size = 0
     data.n_train = 256
     data.n_eval = 256
+    data.ambient_dim = 256
+    data.intrinsic_data_dim = 4
     data.data_dim = 256
     data.intrinsic_dim = 4
     data.image_size = 0
@@ -90,6 +92,8 @@ def get_base_config():
     data.sigma_z = 0.5
     data.sigma_eta = 1.0e-3
     data.geometry_seed = 0
+    data.major_radius = 2.0
+    data.minor_radius = 0.5
     data.reference_split = "valid"
 
     training = config.training = ConfigDict()
@@ -102,6 +106,9 @@ def get_base_config():
     training.optimizer = "adam"
     training.momentum = 0.9
     training.ckpt_every = 50
+    training.ckpt_schedule = "interval"
+    training.ckpt_steps = ()
+    training.resolved_ckpt_steps = ()
     training.log_every = 10
     training.show_progress = True
 
@@ -156,6 +163,7 @@ def get_base_config():
 
 
 def _default_wandb_entity(fallback):
+    """Return the environment W&B entity or a fallback."""
     return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 

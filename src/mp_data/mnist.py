@@ -112,6 +112,9 @@ def _select_indices(targets, count, seed, balance_classes, split_name):
 
 
 def _raw_mnist_paths(root, train):
+    """
+    Return raw IDX file paths for the requested MNIST split.
+    """
     raw_dir = Path(root) / "MNIST" / "raw"
     if train:
         return raw_dir / "train-images-idx3-ubyte", raw_dir / "train-labels-idx1-ubyte"
@@ -119,6 +122,9 @@ def _raw_mnist_paths(root, train):
 
 
 def _load_raw_mnist_split(root, train):
+    """
+    Load one MNIST split directly from raw IDX files.
+    """
     image_path, label_path = _raw_mnist_paths(root, train)
     missing = [str(path) for path in (image_path, label_path) if not path.exists()]
     if missing:
@@ -127,6 +133,9 @@ def _load_raw_mnist_split(root, train):
 
 
 def _load_mnist_split(root, train, download):
+    """
+    Load one MNIST split from torchvision, with a raw-file fallback.
+    """
     try:
         dataset = datasets.MNIST(root=root, train=train, download=download)
         return dataset.data, dataset.targets
@@ -152,9 +161,9 @@ def load_mnist_bundle(config):
     reference subset comes from the test split so memorization sanity checks can
     compare generated samples against held-out real data as well.
 
-    This is a good example of the shared data-bundle contract in practice:
-    MNIST may be simple, but it still returns the same train/reference/labels/
-    indices structure as the higher-dimensional studies.
+    This is a compact example of the shared data-bundle contract in practice:
+    MNIST still returns the same train/reference/labels/indices structure as
+    the higher-dimensional studies.
     """
     root = config.data.root
     download = bool(config.data.download)

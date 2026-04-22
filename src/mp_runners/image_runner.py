@@ -1,5 +1,14 @@
 """
-Readable prototype recipe for image datasets with the UNet adapter.
+Runner for image datasets with the UNet adapter.
+
+This is the canonical image command-line workflow. It supports three modes:
+
+1. train-only: train a model and save checkpoints/artifacts;
+2. train plus final evaluation: train, then replay checkpoint metrics;
+3. replay evaluation: evaluate an existing finished `DONE_` attempt directory.
+
+The runner builds configs and prints summaries. Shared training behavior stays
+in `mp_training.trainer`; image metrics stay in `mp_metrics.images`.
 """
 
 import argparse
@@ -7,29 +16,24 @@ from pathlib import Path
 import sys
 import time
 
-# Direct script execution from prototyping/runners should still find repo packages.
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
 import torch
 from torch.utils.data import DataLoader
 
-from prototyping.runners.common import (
+from mp_metrics.loss_eval import collect_loss_eval_record
+from mp_runners.image_eval import collect_reference_memory, evaluate_image32_run
+from mp_runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
     count_parameters,
 )
-from prototyping.runners.config_presets import list_presets
-from prototyping.runners.metrics_image32 import (
-    collect_loss_eval_record,
-    collect_reference_memory,
-    evaluate_image32_run,
-)
-from prototyping.runners.image_runner_config_builder import (
+from mp_runners.image_config import (
     build_config as _build_config,
     get_default_settings as _default_settings,
     list_datasets as _list_datasets,
+    list_image_sizes as _list_image_sizes,
+    list_models as _list_models,
 )
+from mp_runners.image_presets import list_presets
 
 from gdfm import GDFM
 from mp_config import clone_config
@@ -42,7 +46,7 @@ from mp_runtime import (
     torch_device,
     validate_precision,
 )
-from mp_training import train_run
+from mp_training import CHECKPOINT_SCHEDULE_CHOICES, train_run
 
 DONE_ATTEMPT_PREFIX = "DONE_"
 EVAL_READY_STATES = {"trained", "completed"}
@@ -57,7 +61,7 @@ EVAL_REQUIRED_FILES = (
 
 
 def default_settings():
-    """Return the canonical image-runner default settings for this recipe."""
+    """Return the canonical image-runner default settings."""
     return _default_settings()
 
 
@@ -67,7 +71,12 @@ def build_config(settings):
 
 
 def build_data(config):
-    """Materialize the canonical image train/reference bundle."""
+    """
+    Materialize the canonical image train/reference bundle.
+
+    The returned bundle contains dense train/reference tensors plus metadata
+    such as labels, source indices, split names, and leakage-guard results.
+    """
     return build_data_bundle(config)
 
 
@@ -78,7 +87,12 @@ def build_model(config, device):
 
 
 def inspect_metrics(config, data_bundle, model=None, device="cpu"):
-    """Compute held-out memory and optional fixed/random-t loss diagnostics."""
+    """
+    Compute held-out memory and optional fixed/random-t loss diagnostics.
+
+    This helper is useful before a full run: it checks the selected data bundle
+    and, if a model is passed, runs the same loss probes used during evaluation.
+    """
     train = data_bundle["train"].cpu()
     reference = data_bundle["reference"].cpu()
     result = {
@@ -102,9 +116,25 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
     return result
 
 
+def summarize_data(config):
+    """
+    Materialize the data bundle and return a concise summary.
+
+    This powers `--data-summary`, which checks data selection before training.
+    """
+    data_bundle = build_data(config)
+    return _summarize_bundle(data_bundle)
+
+
 def run_full_job(config, out_dir, device, evaluate=False):
-    """Run canonical training, then image checkpoint metrics if requested."""
-    # Training remains canonical; empirical metrics live beside this runner.
+    """
+    Run canonical training, then image checkpoint metrics if requested.
+
+    Training always saves a replayable attempt directory. Setting `evaluate`
+    immediately runs the same evaluation that can also be launched later with
+    `--eval-run-dir`.
+    """
+    # Training is shared; image-specific empirical metrics live beside this runner.
     run_dir = train_run(config, Path(out_dir), device=device)
     evaluation = (
         evaluate_image32_run(
@@ -168,7 +198,12 @@ def _validate_eval_run_dir(run_dir):
 
 
 def run_eval_job(run_dir, device):
-    """Replay checkpoint metrics for one finished DONE attempt directory."""
+    """
+    Replay checkpoint metrics for one finished DONE attempt directory.
+
+    The saved config, train/reference tensors, and fixed `z_init` are loaded
+    from the attempt directory. No new data bundle is constructed.
+    """
     run_dir = _validate_eval_run_dir(run_dir)
     evaluation = evaluate_image32_run(run_dir, device=device)
     return {
@@ -331,7 +366,13 @@ def _print_model_summary(config, model=None, model_param_summary=None):
 def parse_args(argv=None):
     """Parse the image runner command line."""
     settings = default_settings()
-    parser = argparse.ArgumentParser(description="Image UNet prototype recipe.")
+    argv_list = sys.argv[1:] if argv is None else list(argv)
+    ckpt_every_provided = _flag_present(argv_list, "--ckpt-every", "--ckpt_every")
+    ckpt_steps_provided = _flag_present(argv_list, "--ckpt-steps", "--ckpt_steps")
+    wandb_project_provided = _flag_present(argv_list, "--wandb-project", "--wandb_project")
+    wandb_name_provided = _flag_present(argv_list, "--wandb-name", "--wandb_name")
+    wandb_group_provided = _flag_present(argv_list, "--wandb-group", "--wandb_group")
+    parser = argparse.ArgumentParser(description="Image UNet runner.")
 
     # Run identity.
     parser.add_argument("--device", default=settings["device"])
@@ -346,13 +387,26 @@ def parse_args(argv=None):
         default=settings["dataset"],
     )
     parser.add_argument(
+        "--image-size",
+        type=int,
+        choices=tuple(_list_image_sizes()),
+        default=settings["image_size"],
+        help="Image resolution. The runner chooses the matching data/model profile.",
+    )
+    parser.add_argument(
+        "--model",
+        choices=tuple(_list_models()),
+        default=settings["model"],
+        help="Image model family. The runner chooses the matching architecture defaults.",
+    )
+    parser.add_argument(
         "--config-preset",
         choices=tuple(list_presets()),
         default=settings.get("config_preset"),
         help="Optional explicit UNet preset (overrides dataset default).",
     )
 
-    # Objective/sweep knobs.
+    # Objective and sweep settings.
     parser.add_argument(
         "--prediction-space",
         choices=PARAMETERIZATION_CHOICES,
@@ -383,9 +437,23 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--ckpt-every",
+        "--ckpt_every",
         type=int,
         default=settings["ckpt_every"],
         help="Save/evaluate a checkpoint every this many optimizer steps.",
+    )
+    parser.add_argument(
+        "--ckpt-schedule",
+        "--ckpt_schedule",
+        choices=CHECKPOINT_SCHEDULE_CHOICES,
+        default=settings["ckpt_schedule"],
+        help="Checkpoint schedule. Explicit --ckpt-steps has priority.",
+    )
+    parser.add_argument(
+        "--ckpt-steps",
+        "--ckpt_steps",
+        default=settings["ckpt_steps"],
+        help="Comma-separated checkpoint steps. Step 0 and final step are always saved.",
     )
     parser.add_argument(
         "--log-every",
@@ -410,6 +478,12 @@ def parse_args(argv=None):
         action="store_true",
         default=settings["compare_numerics"],
         help="Benchmark fp32 against the selected precision without writing a run.",
+    )
+    parser.add_argument(
+        "--data-summary",
+        action="store_true",
+        default=settings["data_summary"],
+        help="Materialize and summarize the selected data bundle, then exit.",
     )
     parser.add_argument(
         "--final-eval",
@@ -478,16 +552,32 @@ def parse_args(argv=None):
         default=settings["generation_trace_show"],
         help="Display generation trace figures inline when running from a notebook.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
+    args.ckpt_every_provided = bool(ckpt_every_provided)
+    args.ckpt_steps_provided = bool(ckpt_steps_provided)
+    args.wandb_project_provided = bool(wandb_project_provided)
+    args.wandb_name_provided = bool(wandb_name_provided)
+    args.wandb_group_provided = bool(wandb_group_provided)
+    if args.ckpt_every_provided and not args.ckpt_steps_provided:
+        args.ckpt_schedule = "interval"
+    return args
+
+
+def _flag_present(argv, *names):
+    """Return True when any command-line spelling appears in argv."""
+    prefixes = tuple(f"{name}=" for name in names)
+    return any(token in names or token.startswith(prefixes) for token in argv)
 
 
 def main(argv=None):
-    """CLI entrypoint for the image UNet recipe."""
+    """CLI entrypoint for the image UNet runner."""
     args = parse_args(argv)
 
     if args.eval_run_dir is not None:
-        if args.compare_numerics:
-            raise ValueError("--eval-run-dir cannot be combined with --compare-numerics")
+        if args.compare_numerics or args.data_summary:
+            raise ValueError(
+                "--eval-run-dir cannot be combined with --compare-numerics or --data-summary"
+            )
         result = run_eval_job(args.eval_run_dir, args.device)
         _print_eval_result(result)
         return result
@@ -501,6 +591,10 @@ def main(argv=None):
         raise ValueError(
             f"generation-trace-count must be >= 1, got {args.generation_trace_count}"
         )
+    if args.data_summary:
+        summary = summarize_data(config)
+        _print_data_summary(config, summary)
+        return summary
     if args.compare_numerics:
         return compare_numerics(config, args.device)
 
@@ -515,10 +609,12 @@ def main(argv=None):
 
 
 def _print_kv(label, value):
+    """Print one aligned terminal field."""
     print(f"{label:<18} {value}")
 
 
 def _print_result(result):
+    """Print a concise train-run result."""
     # Keep this summary easy to scan in a running terminal.
     _print_model_summary(
         result["config"],
@@ -538,6 +634,7 @@ def _print_result(result):
 
 
 def _print_eval_result(result):
+    """Print a concise eval-run result."""
     _print_kv("eval_run_dir:", result["run_dir"])
     _print_kv("checkpoints:", len(result["checkpoint_metrics"]))
     _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
@@ -549,6 +646,7 @@ def _print_eval_result(result):
 
 
 def _print_numerics_compare(result):
+    """Print the numerical precision comparison table."""
     rows = result["results"]
     print("=== NUMERICS_COMPARE ===")
     print(
@@ -573,7 +671,21 @@ def _print_numerics_compare(result):
         )
 
 
+def _print_data_summary(config, summary):
+    """Print the selected data-bundle summary."""
+    _print_kv("dataset:", config.study.dataset_key)
+    _print_kv("internal_dataset:", config.data.dataset)
+    _print_kv("train_shape:", summary["train_shape"])
+    _print_kv("reference_shape:", summary["reference_shape"])
+    _print_kv("train_source:", summary["train_source_id"])
+    _print_kv("reference_source:", summary["reference_source_id"])
+    _print_kv("display_shape:", summary["display_shape"])
+    _print_kv("train_indices:", summary["train_indices_preview"])
+    _print_kv("reference_indices:", summary["reference_indices_preview"])
+
+
 def _summarize_bundle(bundle):
+    """Return a compact data-bundle summary."""
     summary = {
         "train_shape": list(bundle["train"].shape),
         "reference_shape": list(bundle["reference"].shape),
@@ -595,6 +707,10 @@ def _summarize_bundle(bundle):
         "train_indices_preview": _preview_tensor(bundle.get("train_indices")),
         "reference_indices_preview": _preview_tensor(bundle.get("reference_indices")),
     }
+    if bundle.get("train_class_counts") is not None:
+        summary["train_class_counts"] = dict(bundle["train_class_counts"])
+    if bundle.get("reference_class_counts") is not None:
+        summary["reference_class_counts"] = dict(bundle["reference_class_counts"])
     if bundle.get("train_labels") is not None:
         summary["train_labels_shape"] = list(bundle["train_labels"].shape)
         summary["train_labels_preview"] = _preview_tensor(bundle["train_labels"])
@@ -605,6 +721,7 @@ def _summarize_bundle(bundle):
 
 
 def _preview_tensor(tensor, limit=10):
+    """Return a short integer preview for an optional tensor."""
     if tensor is None:
         return None
     return [int(item) for item in tensor.flatten()[:limit].tolist()]

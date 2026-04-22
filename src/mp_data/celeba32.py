@@ -52,8 +52,8 @@ def load_celeba32_bundle(config):
     The training split is always `train`; the reference split is configurable
     so a study can compare against validation or test images without changing
     the rest of the data-loading logic. Even though the raw dataset is more
-    complex than MNIST or GMM, the output bundle is deliberately the same
-    shape so the rest of the study pipeline can stay boring.
+    complex than MNIST or GMM, the output bundle deliberately has the same
+    shape so the rest of the study pipeline can stay dataset-independent.
     """
     root = config.data.root
     download = bool(config.data.download)

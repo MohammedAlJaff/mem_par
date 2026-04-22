@@ -1,14 +1,14 @@
 """
 Shared observability helpers for first-party experiment attempts.
 
-This module centralizes the pieces that should feel the same across studies:
-- human-readable console and attempt-log output
-- structured event records for later debugging
-- live status snapshots with progress, latest metrics, and figure paths
-- optional Weights & Biases tracking with offline-first defaults
+This module centralizes the pieces that should behave the same across studies:
+- human-readable console and attempt-log output;
+- structured event records for later debugging;
+- live status snapshots with progress, latest metrics, and figure paths;
+- optional Weights & Biases tracking with offline-first defaults.
 
-The goal is not to hide training or evaluation logic. The goal is to keep the
-operator-facing plumbing consistent so `train_run(...)`, `evaluate_run(...)`,
+The goal is not to hide training or evaluation logic. The goal is to keep
+operator-facing logging consistent so `train_run(...)`, checkpoint evaluation,
 and study entrypoints can focus on the scientific workflow itself.
 """
 
@@ -76,26 +76,120 @@ def _wandb_slug(value, fallback):
     return text or fallback
 
 
+_AUTO_WANDB_VALUES = {"", "auto"}
+_AUTO_WANDB_PROJECT_VALUES = {
+    "",
+    "auto",
+    "dataset-model",
+    "dataset_model",
+}
+
+
+def _auto_wandb_value_requested(value, *, project=False):
+    """
+    Return True when a blank or explicit automatic W&B value should be derived.
+    """
+    requested = str(value or "").strip().lower()
+    if project:
+        return requested in _AUTO_WANDB_PROJECT_VALUES
+    return requested in _AUTO_WANDB_VALUES
+
+
 def _default_wandb_project(config):
+    """
+    Build the default W&B project name from dataset and model fields.
+    """
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
-    return os.getenv("WANDB_PROJECT", "").strip() or f"memparam-{dataset}-{model}"
+    return f"memparam-{dataset}-{model}"
 
 
 def _default_wandb_entity(fallback):
+    """
+    Return the environment W&B entity or the configured fallback.
+    """
     return os.getenv("WANDB_ENTITY", "").strip() or fallback
 
 
 def _default_wandb_run_name(config):
+    """
+    Build the default W&B run name from the main study settings.
+    """
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
     n_train = int(getattr(config.data, "n_train", 0))
+    batch_cap = int(
+        getattr(
+            config.training,
+            "batch_cap",
+            getattr(config.training, "batch_size", 0),
+        )
+    )
     prediction = _wandb_slug(getattr(config.framework, "prediction_space", ""), "pred")
     loss = _wandb_slug(getattr(config.framework, "loss_space", ""), "loss")
+    n_steps = int(getattr(config.training, "n_steps", 0))
     seed = int(getattr(config.training, "seed", 0))
-    return f"{dataset}-{model}-N{n_train}-{prediction}_{loss}-s{seed}"
+    return f"{dataset}-{model}-N{n_train}-B{batch_cap}-{prediction}_{loss}-steps{n_steps}-s{seed}"
+
+
+def _default_wandb_group(config):
+    """
+    Group W&B runs by fixed comparison context, not by swept variables.
+
+    The project already separates dataset/model pairs. The default group keeps
+    runs with the same dataset, model, and training horizon together so `x`,
+    `eps`, `v`, batch-size, seed, and `N` sweeps are easy to compare.
+    """
+    dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
+    dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
+    model = _wandb_slug(getattr(config.network, "arch", ""), "model")
+    n_steps = int(getattr(config.training, "n_steps", 0))
+    return f"{dataset}-{model}-steps{n_steps}"
+
+
+def default_wandb_identity(config):
+    """
+    Return the automatic W&B project, run name, and group for a config.
+    """
+    return {
+        "project": _default_wandb_project(config),
+        "name": _default_wandb_run_name(config),
+        "group": _default_wandb_group(config),
+    }
+
+
+def resolve_wandb_identity(config):
+    """
+    Fill blank or `auto` W&B project/name/group fields from the resolved config.
+
+    Explicit non-empty values are preserved. This makes CLI behavior simple:
+    omit `--wandb-project`, `--wandb-name`, or `--wandb-group` for automatic
+    values, and pass the flag when a manual value is needed.
+    """
+    identity = default_wandb_identity(config)
+    tracking = getattr(config, "tracking", None)
+    wandb_config = getattr(tracking, "wandb", None)
+    if wandb_config is None:
+        return identity
+
+    if _auto_wandb_value_requested(getattr(wandb_config, "project", ""), project=True):
+        wandb_config.project = identity["project"]
+    else:
+        identity["project"] = str(getattr(wandb_config, "project", "")).strip()
+
+    if _auto_wandb_value_requested(getattr(wandb_config, "name", "")):
+        wandb_config.name = identity["name"]
+    else:
+        identity["name"] = str(getattr(wandb_config, "name", "")).strip()
+
+    if _auto_wandb_value_requested(getattr(wandb_config, "group", "")):
+        wandb_config.group = identity["group"]
+    else:
+        identity["group"] = str(getattr(wandb_config, "group", "")).strip()
+
+    return identity
 
 
 def _safe_float(value):
@@ -133,9 +227,28 @@ def _wandb_figure_caption(metric_name, step):
     return f"{label} | grad_step={int(step)}"
 
 
+def loss_eval_metric_payload(record):
+    """
+    Build tracker metric names for one loss-eval record.
+
+    The payload uses the `eval/` namespace so loss probes share the same
+    checkpoint step axis as memorization metrics.
+    """
+    payload = {
+        "eval/random_t_loss": record.get("random_t_loss"),
+        "eval/fixed_t_loss_mean": record.get("fixed_t_loss_mean"),
+    }
+    for key, value in (record.get("fixed_t") or {}).items():
+        payload[f"eval/loss_t_{key}"] = value
+    return payload
+
+
 class AttemptTracker:
     """
     Coordinate logs, live status snapshots, structured events, and optional W&B.
+
+    A tracker is bound to exactly one attempt directory. It updates local files
+    first, then mirrors selected metrics and figures to W&B when enabled.
     """
 
     def __init__(self, config, attempt_dir, *, enable_console=True):
@@ -188,6 +301,7 @@ class AttemptTracker:
         payload.setdefault("entity", None)
         payload.setdefault("run_id", None)
         payload.setdefault("run_name", None)
+        payload.setdefault("group", None)
         payload.setdefault("run_path", None)
         payload.setdefault("run_url", None)
         payload.setdefault("dir", None)
@@ -255,20 +369,32 @@ class AttemptTracker:
             **payload,
         )
 
-    def _write_log_line(self, line):
+    def _write_log_line(self, line, *, to_console=True, to_attempt_log=True):
         """
         Emit one human-readable line to stdout/stderr and the attempt log.
         """
-        if self.console_enabled:
+        if to_console and self.console_enabled:
             print(line, flush=True)
-        if self.tee_to_attempt_log:
+        if to_attempt_log and self.tee_to_attempt_log:
             append_attempt_log(self.attempt_dir, line)
 
-    def _emit(self, line, *, event_type=None, event_fields=None):
+    def _emit(
+        self,
+        line,
+        *,
+        event_type=None,
+        event_fields=None,
+        to_console=True,
+        to_attempt_log=True,
+    ):
         """
         Emit one readable line and optionally mirror it into structured events.
         """
-        self._write_log_line(line)
+        self._write_log_line(
+            line,
+            to_console=to_console,
+            to_attempt_log=to_attempt_log,
+        )
         if event_type is not None:
             fields = {} if event_fields is None else dict(event_fields)
             self._record_event(event_type, message=line, **fields)
@@ -326,22 +452,23 @@ class AttemptTracker:
     def _init_wandb(self):
         """
         Initialize one optional W&B run for this attempt.
+
+        W&B failures are recorded in `status.json`. In non-strict mode, local
+        training and artifact writing continue.
         """
         if not bool(getattr(self._wandb_config, "enabled", False)):
             self._patch_status(wandb=self._status_wandb_payload(enabled=False, active=False))
             return
 
+        identity = resolve_wandb_identity(self.config)
         mode = str(getattr(self._wandb_config, "mode", "offline"))
-        configured_project = str(getattr(self._wandb_config, "project", "")).strip()
-        project = configured_project or _default_wandb_project(self.config)
+        project = identity["project"]
         entity = str(
             getattr(self._wandb_config, "entity", _default_wandb_entity("maj90"))
         ).strip() or None
         notes = str(getattr(self._wandb_config, "notes", "")).strip() or None
-        configured_name = str(getattr(self._wandb_config, "name", "")).strip()
-        configured_group = str(getattr(self._wandb_config, "group", "")).strip()
-        run_name = configured_name or _default_wandb_run_name(self.config)
-        run_group = configured_group or self.status["run_id"]
+        run_name = identity["name"]
+        run_group = identity["group"]
         wandb_dir = self.attempt_dir / str(getattr(self._wandb_config, "dir", "logs/wandb"))
         wandb_dir.mkdir(parents=True, exist_ok=True)
 
@@ -374,6 +501,7 @@ class AttemptTracker:
                 entity=entity,
                 run_id=getattr(run, "id", run_id),
                 run_name=getattr(run, "name", run_name),
+                group=run_group,
                 run_path=self._normalize_run_path(run),
                 run_url=getattr(run, "url", None),
                 dir=str(wandb_dir.resolve()),
@@ -391,6 +519,7 @@ class AttemptTracker:
                     f"mode={mode} "
                     f"project={project} "
                     f"name={metadata['run_name']} "
+                    f"group={run_group} "
                     f"target={wandb_target}"
                 ),
                 event_type="wandb_initialized",
@@ -400,6 +529,7 @@ class AttemptTracker:
                     "entity": entity,
                     "wandb_run_id": metadata["run_id"],
                     "wandb_run_name": metadata["run_name"],
+                    "wandb_group": run_group,
                     "wandb_target": wandb_target,
                 },
             )
@@ -412,6 +542,7 @@ class AttemptTracker:
                 entity=entity,
                 run_id=self.status["attempt_id"],
                 run_name=self.status["attempt_id"],
+                group=run_group,
                 dir=str(wandb_dir.resolve()),
             )
             self._patch_status(wandb=metadata)
@@ -469,6 +600,9 @@ class AttemptTracker:
     def training_progress(self, *, step, total_steps, loss, elapsed_sec, force=False):
         """
         Update training progress snapshots and emit periodic summaries.
+
+        When tqdm is active, console summary lines are suppressed so the progress
+        bar stays readable. Status files and W&B metrics are still updated.
         """
         loss_value = _safe_float(loss)
         steps_per_sec = (float(step) / elapsed_sec) if elapsed_sec > 0 else None
@@ -509,17 +643,19 @@ class AttemptTracker:
                 f"elapsed={format_duration(elapsed_sec)} "
                 f"eta={format_duration(eta_sec)}"
             )
+            event_fields = {
+                "step": int(step),
+                "total_steps": int(total_steps),
+                "loss": loss_value,
+                "steps_per_sec": steps_per_sec,
+                "elapsed_sec": float(elapsed_sec),
+                "eta_sec": eta_sec,
+            }
             self._emit(
                 line,
                 event_type="training_summary",
-                event_fields={
-                    "step": int(step),
-                    "total_steps": int(total_steps),
-                    "loss": loss_value,
-                    "steps_per_sec": steps_per_sec,
-                    "elapsed_sec": float(elapsed_sec),
-                    "eta_sec": eta_sec,
-                },
+                event_fields=event_fields,
+                to_console=not self.interactive_progress,
             )
             self.log_metrics({"train/loss": loss_value, "train/steps_per_sec": steps_per_sec}, step=int(step))
 
@@ -536,6 +672,7 @@ class AttemptTracker:
             f"saved checkpoint step={int(step)} -> {info['path']}",
             event_type="checkpoint_saved",
             event_fields=info,
+            to_console=not self.interactive_progress,
         )
 
     def evaluation_progress(self, *, checkpoint_index, total_checkpoints, record, elapsed_sec, force=False):
@@ -563,11 +700,12 @@ class AttemptTracker:
         latest_metrics.update(
             {
                 "f_mem": _safe_float(record.get("f_mem")),
-                "mean_nn_ratio": _safe_float(record.get("mean_nn_ratio")),
-                "std_nn_ratio": _safe_float(record.get("std_nn_ratio")),
                 "baseline_f_mem": _safe_float(record.get("baseline_f_mem")),
-                "baseline_mean_nn_ratio": _safe_float(record.get("baseline_mean_nn_ratio")),
-                "baseline_std_nn_ratio": _safe_float(record.get("baseline_std_nn_ratio")),
+                "delta_f_mem": _safe_float(record.get("delta_f_mem")),
+                "mean_r": _safe_float(record.get("mean_r")),
+                "median_r": _safe_float(record.get("median_r")),
+                "baseline_mean_r": _safe_float(record.get("baseline_mean_r")),
+                "baseline_median_r": _safe_float(record.get("baseline_median_r")),
             }
         )
         self._patch_status(evaluation_progress=progress, latest_metrics=latest_metrics)
@@ -587,35 +725,39 @@ class AttemptTracker:
                 f"checkpoint={int(checkpoint_index)}/{int(total_checkpoints)} "
                 f"step={int(record['step'])} "
                 f"f_mem={float(record['f_mem']):.4f} "
-                f"mean_nn_ratio={float(record['mean_nn_ratio']):.4f} "
+                f"mean_r={float(record['mean_r']):.4f} "
                 f"elapsed={format_duration(elapsed_sec)} "
                 f"eta={format_duration(eta_sec)}"
             )
+            event_fields = {
+                "checkpoint_index": int(checkpoint_index),
+                "total_checkpoints": int(total_checkpoints),
+                "step": int(record["step"]),
+                "f_mem": _safe_float(record.get("f_mem")),
+                "baseline_f_mem": _safe_float(record.get("baseline_f_mem")),
+                "delta_f_mem": _safe_float(record.get("delta_f_mem")),
+                "mean_r": _safe_float(record.get("mean_r")),
+                "median_r": _safe_float(record.get("median_r")),
+                "baseline_mean_r": _safe_float(record.get("baseline_mean_r")),
+                "baseline_median_r": _safe_float(record.get("baseline_median_r")),
+                "elapsed_sec": float(elapsed_sec),
+                "eta_sec": eta_sec,
+            }
             self._emit(
                 line,
                 event_type="evaluation_summary",
-                event_fields={
-                    "checkpoint_index": int(checkpoint_index),
-                    "total_checkpoints": int(total_checkpoints),
-                    "step": int(record["step"]),
-                    "f_mem": _safe_float(record.get("f_mem")),
-                    "mean_nn_ratio": _safe_float(record.get("mean_nn_ratio")),
-                    "std_nn_ratio": _safe_float(record.get("std_nn_ratio")),
-                    "baseline_f_mem": _safe_float(record.get("baseline_f_mem")),
-                    "baseline_mean_nn_ratio": _safe_float(record.get("baseline_mean_nn_ratio")),
-                    "baseline_std_nn_ratio": _safe_float(record.get("baseline_std_nn_ratio")),
-                    "elapsed_sec": float(elapsed_sec),
-                    "eta_sec": eta_sec,
-                },
+                event_fields=event_fields,
+                to_console=not self.interactive_progress,
             )
             self.log_metrics(
                 {
                     "eval/f_mem": _safe_float(record.get("f_mem")),
-                    "eval/mean_nn_ratio": _safe_float(record.get("mean_nn_ratio")),
-                    "eval/std_nn_ratio": _safe_float(record.get("std_nn_ratio")),
                     "eval/baseline_f_mem": _safe_float(record.get("baseline_f_mem")),
-                    "eval/baseline_mean_nn_ratio": _safe_float(record.get("baseline_mean_nn_ratio")),
-                    "eval/baseline_std_nn_ratio": _safe_float(record.get("baseline_std_nn_ratio")),
+                    "eval/delta_f_mem": _safe_float(record.get("delta_f_mem")),
+                    "eval/mean_r": _safe_float(record.get("mean_r")),
+                    "eval/median_r": _safe_float(record.get("median_r")),
+                    "eval/baseline_mean_r": _safe_float(record.get("baseline_mean_r")),
+                    "eval/baseline_median_r": _safe_float(record.get("baseline_median_r")),
                 },
                 step=int(record["step"]),
             )
@@ -632,6 +774,7 @@ class AttemptTracker:
             f"saved figure {name} -> {figure_path}",
             event_type="figure_saved",
             event_fields={"name": str(name), "path": figure_path},
+            to_console=not self.interactive_progress,
         )
         if log_to_wandb and self._wandb_run is not None and self._wandb_module is not None:
             try:

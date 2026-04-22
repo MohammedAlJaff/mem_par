@@ -2,6 +2,37 @@
 
 Short operational guide for agents and contributors working in this repo.
 
+## Communication Rules
+
+- The user is a researcher. Use simple wording and precise research
+  terminology.
+- Do not use slang, hype wording, playful labels, or informal phrases.
+- Prefer direct descriptions of methods, assumptions, metrics, results,
+  blockers, and next actions.
+- Keep responses short by default. Answer the question first, usually in one
+  to three sentences. Add detail only when the user asks for it or when the
+  next action would otherwise be ambiguous.
+- Do not be long-winded. Prefer short bullets over long explanations.
+- Examples:
+  - Avoid: "Got it - let's clean this up."
+    Use: "Understood. I will remove the unused metric fields and update the call sites."
+  - Avoid: "This is a nice little smoke test."
+    Use: "This is a short runtime test that checks whether the path executes without errors."
+  - Avoid: "The code has some weird leftovers."
+    Use: "The code still contains stale compatibility aliases from the previous metric interface."
+  - Avoid: "This metric is doing oracle shit."
+    Use: "This metric uses the known synthetic data-generating distribution."
+  - Avoid: "The runner wires everything together."
+    Use: "The runner constructs the config, launches training, and optionally runs checkpoint evaluation."
+  - Avoid: "This is probably cosmetic test coverage."
+    Use: "This test checks structure or naming, but does not verify behavioral correctness."
+  - Avoid: "We can hard prune this."
+    Use: "We can remove this interface without preserving backward compatibility."
+  - Avoid: "The old names are noisy."
+    Use: "The old names are ambiguous because they do not state the measured quantity or comparison set."
+  - Avoid: "The figure plumbing is now aligned."
+    Use: "The figure filenames, figure map keys, run summary entries, and W&B keys now use the same names."
+
 ## Canonical Surfaces
 
 - `src/gdfm/`
@@ -10,8 +41,8 @@ Short operational guide for agents and contributors working in this repo.
 
 - `src/mp_config/`, `src/mp_data/`, `src/mp_metrics/`, `src/mp_artifacts/`, `src/mp_training/`
   Thin reusable study infrastructure. These packages own config helpers, data
-  loading, memorization metrics, artifact persistence, and the reusable
-  train/evaluate skeleton.
+  loading, metric computation, artifact persistence, and the reusable training
+  skeleton.
 
 - `prototyping/`
   Transitional prototype material and fallback references. The cleaned
@@ -28,6 +59,10 @@ Short operational guide for agents and contributors working in this repo.
 
 - Put model-intrinsic logic in `src/gdfm/`.
 - Put shared study infrastructure in the appropriate `src/mp_*` package.
+- Keep `mp_metrics` limited to metric computation from in-memory tensors or
+  feature matrices. Put checkpoint replay in `mp_runners`, figure writing in
+  `mp_visualization`, file/artifact layout in `mp_artifacts`, and tracker
+  payload formatting in `mp_tracking`.
 - Keep fallback or transition code in `prototyping/`, not in canonical study
   code.
 - If you need something from the archived trees, copy the minimum needed logic
@@ -48,6 +83,11 @@ Short operational guide for agents and contributors working in this repo.
 - Save the exact `z_init` used for checkpoint evaluation.
 - Evaluate memorization against saved run artifacts, never against rebuilt data.
 - Keep outputs local to the caller's chosen run directory.
+- When W&B is enabled and no explicit W&B flag is passed, derive project, run
+  name, and group from the resolved config. Project is dataset+model. Run name
+  includes dataset, model, `N`, batch cap, prediction/loss spaces, training
+  steps, and seed. Group is dataset+model+training steps so `x`, `eps`, `v`,
+  batch-size, seed, and `N` sweeps stay comparable.
 
 ## Environment
 
@@ -62,6 +102,13 @@ Short operational guide for agents and contributors working in this repo.
 - If the guide conflicts with older code, the guide wins.
 - Canonical first-party Python should not use type hints or
   `from __future__ import annotations`.
+- Use math-first names from the paper when the paper defines the quantity:
+  `rho`, `r`, `d1`, `d2`, `N`, `tau`, and `t`.
+- Use canonical metric keys in return dictionaries, JSON, and W&B logs. Do not
+  add duplicate aliases such as `nn_ratio`, `ratios`, or `ratio_threshold` in
+  memorization metric records.
+- Inline comments for named quantities should state the formula or definition,
+  for example `r = d1 / d2` or `delta_f_mem = f_mem(gen) - f_mem(held-out)`.
 
 ## Do Not
 

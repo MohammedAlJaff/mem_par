@@ -1,4 +1,10 @@
-"""Small runtime knobs for numerical mode and host-to-device movement."""
+"""
+Runtime settings for numerical mode and host-to-device movement.
+
+The runners expose one simple `precision` setting. This module translates that
+setting into torch backend flags, autocast contexts, pinned-memory choices, and
+metadata saved with the run.
+"""
 
 from contextlib import nullcontext
 
@@ -39,7 +45,8 @@ def configure_torch_runtime(config, device):
     Apply global torch runtime switches and record the resolved metadata.
 
     TF32 is a CUDA backend flag, while BF16 is expressed through local autocast
-    contexts around forward/sample/loss code paths.
+    contexts around forward/sample/loss code paths. The returned metadata is
+    written into run artifacts so later readers know how the run was executed.
     """
     precision = validate_precision(config, device)
     torch_dev = torch_device(device)
@@ -75,7 +82,12 @@ def configure_torch_runtime(config, device):
 
 
 def autocast_context(config, device):
-    """Return the BF16 autocast context requested by config, or a no-op."""
+    """
+    Return the BF16 autocast context requested by config, or a no-op.
+
+    Call sites wrap only numerical forward/loss/sample regions, not artifact
+    writing or metric bookkeeping.
+    """
     precision = str(getattr(getattr(config, "runtime", None), "precision", "fp32"))
     torch_dev = torch_device(device)
     if precision == "bf16" and torch_dev.type == "cuda":
@@ -90,3 +102,9 @@ __all__ = [
     "torch_device",
     "validate_precision",
 ]
+
+
+if __name__ == "__main__":
+    print("mp_runtime example")
+    print("precision choices:", ", ".join(PRECISION_CHOICES))
+    print("cpu device:", torch_device("cpu"))

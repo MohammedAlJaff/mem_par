@@ -26,6 +26,8 @@ from tests.gdfm_sampler_contract import (
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPING_DIR = ROOT / "prototyping"
+PROTOTYPE_GDFM_PATH = PROTOTYPING_DIR / "gdfm_components.py"
+PROTOTYPE_SAMPLERS_PATH = PROTOTYPING_DIR / "gdfm_samplers.py"
 
 
 def load_module(name, path):
@@ -40,13 +42,23 @@ def load_module(name, path):
 class TestPrototypingGDFMSamplers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        missing = [
+            path.name
+            for path in (PROTOTYPE_GDFM_PATH, PROTOTYPE_SAMPLERS_PATH)
+            if not path.is_file()
+        ]
+        if missing:
+            raise unittest.SkipTest(
+                "active prototype sampler files are not present in this layout: "
+                + ", ".join(missing)
+            )
         cls.gdfm = load_module(
             "gdfm_components_sampler_test",
-            PROTOTYPING_DIR / "gdfm_components.py",
+            PROTOTYPE_GDFM_PATH,
         )
         cls.samplers = load_module(
             "gdfm_samplers_sampler_test",
-            PROTOTYPING_DIR / "gdfm_samplers.py",
+            PROTOTYPE_SAMPLERS_PATH,
         )
 
     def make_config(self, **overrides):

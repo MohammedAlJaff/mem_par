@@ -1,31 +1,228 @@
 """
-Image-facing memorization and FID metrics.
+Image metrics for generated samples and reference images.
 
-This module keeps real-image evaluation explicit:
-- image tensors are normalized to `[0, 1]` here, not in the generic tensor
-  memorization helpers
-- feature encoders run in batches and return CPU feature tensors
-- FID goes through `torch_fidelity.calculate_metrics` directly
+Read this module as the image analogue of `mp_metrics.synthetic`:
+
+1. Nearest-neighbor metrics compare generated images to the saved training
+   tensor. They report first-neighbor distance, second-neighbor distance, and
+   their ratio. A low ratio means a generated image is much closer to one train
+   image than to its next nearest train image.
+2. Image metrics can run either in pixel space or in feature space. Feature
+   space uses a batched encoder, usually torch-fidelity's Inception features.
+3. FID is kept in this file because it has image-specific normalization and
+   torch-fidelity input requirements.
+
+All image tensors are normalized to `[0, 1]` before metric extraction. The
+training loop stores images in the model range, usually `[-1, 1]`; metrics and
+figures convert that representation at the boundary.
 """
 
-from pathlib import Path
+import warnings
 
 import torch
 from torch.utils.data import Dataset
 
-from mp_metrics.memorization import (
-    _load_collection,
-    compute_f_mem,
-    compute_memorization_metrics,
-)
-
-
-DEFAULT_FEATURE_ENCODER = "torch_fidelity:inception-v3-compat:2048"
 DEFAULT_FID_FEATURE_EXTRACTOR = "inception-v3-compat"
+RHO_SWEEP = (0.3, 0.5, 0.7)
+
+
+def _flatten_batch(tensor):
+    """Convert a batch tensor to `[B, D]` for distance computation."""
+    if tensor.dim() == 2:
+        return tensor
+    return tensor.flatten(1)
+
+
+def _resolve_rho(rho=None, config=None):
+    """Resolve rho, the nearest-neighbor ratio threshold."""
+    if rho is not None:
+        return float(rho)
+    if config is not None and hasattr(config, "evaluation"):
+        evaluation = config.evaluation
+        if hasattr(evaluation, "ratio_threshold"):
+            return float(evaluation.ratio_threshold)
+    return 0.5
+
+
+def _resolve_batch_size(value, name):
+    """Resolve an optional positive batch size."""
+    if value is None:
+        return None
+    value = int(value)
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1, got {value}")
+    return value
+
+
+def _top2_distances(query, reference, reference_batch_size=None):
+    """
+    Compute the closest and second-closest reference distances for each query.
+
+    The d1/d2 ratio is the main memorization signal. Keeping both distances
+    also makes it possible to diagnose whether a low ratio comes from one very
+    close neighbor or from generally dense reference data.
+    """
+    N = int(reference.shape[0])
+    reference_batch_size = _resolve_batch_size(
+        reference_batch_size,
+        "reference_batch_size",
+    )
+    if reference_batch_size is None or reference_batch_size >= N:
+        distances = torch.cdist(query, reference)
+        topk = torch.topk(distances, k=2, largest=False, dim=1)
+        return topk.values[:, 0], topk.values[:, 1], topk.indices[:, 0]
+
+    best_values = torch.full(
+        (query.shape[0], 2),
+        float("inf"),
+        dtype=query.dtype,
+        device=query.device,
+    )
+    best_indices = torch.full(
+        (query.shape[0], 2),
+        -1,
+        dtype=torch.long,
+        device=query.device,
+    )
+    for ref_start in range(0, N, reference_batch_size):
+        ref_end = min(ref_start + reference_batch_size, N)
+        ref_chunk = reference[ref_start:ref_end]
+        distances = torch.cdist(query, ref_chunk)
+        local_k = min(2, int(ref_chunk.shape[0]))
+        local_topk = torch.topk(distances, k=local_k, largest=False, dim=1)
+        local_indices = local_topk.indices + ref_start
+
+        candidate_values = torch.cat([best_values, local_topk.values], dim=1)
+        candidate_indices = torch.cat([best_indices, local_indices], dim=1)
+        merged = torch.topk(candidate_values, k=2, largest=False, dim=1)
+        best_values = merged.values
+        best_indices = torch.gather(candidate_indices, 1, merged.indices)
+
+    return best_values[:, 0], best_values[:, 1], best_indices[:, 0]
+
+
+def compute_nn_stats(
+    samples,
+    reference,
+    chunk_size=256,
+    query_batch_size=None,
+    reference_batch_size=None,
+):
+    """
+    Compute nearest-neighbor statistics for a batch of metric vectors.
+
+    Inputs may be images or already-flat vectors. The output keeps tensor-level
+    distances and `nn_idx` so callers can either summarize them or build
+    preview figures that point back to the nearest training examples.
+    """
+    query_batch_size = _resolve_batch_size(
+        chunk_size if query_batch_size is None else query_batch_size,
+        "query_batch_size",
+    )
+    samples = _flatten_batch(samples).float()
+    reference = _flatten_batch(reference).float()
+    if reference.shape[0] < 2:
+        raise ValueError("Nearest-neighbor metrics require at least two reference samples.")
+
+    d1_list = []
+    d2_list = []
+    i1_list = []
+    for start in range(0, samples.shape[0], query_batch_size):
+        chunk = samples[start : start + query_batch_size]
+        d1, d2, nn_idx = _top2_distances(
+            chunk,
+            reference,
+            reference_batch_size=reference_batch_size,
+        )
+        d1_list.append(d1)
+        d2_list.append(d2)
+        i1_list.append(nn_idx)
+
+    d1 = torch.cat(d1_list)
+    d2 = torch.cat(d2_list)
+    nn_idx = torch.cat(i1_list)
+    r = d1 / d2.clamp(min=1.0e-12)  # r(x) = d1(x) / d2(x), NN ratio
+    return {
+        "d1": d1,
+        "d2": d2,
+        "r": r,
+        "nn_idx": nn_idx,
+    }
+
+
+def compute_f_mem(r, rho=None, config=None):
+    """
+    Compute the fraction of samples below rho.
+
+    This is a scalar summary of the d1/d2 ratios. It is not a proof of
+    memorization by itself; it is a screening statistic for unusually close
+    train-neighbor matches.
+    """
+    rho = _resolve_rho(rho, config=config)
+    f_mem = (r < rho).float().mean()  # f_mem(rho) = fraction with r(x) < rho
+    return float(f_mem.item())
+
+
+def _memorization_summary_from_stats(stats, *, rho, n_samples, N):
+    """
+    Summarize nearest-neighbor statistics with paper notation.
+
+    `N` is the training/reference set size used for nearest-neighbor search.
+    """
+    r = stats["r"]  # r(x) = d1(x) / d2(x), NN ratio
+    return {
+        "rho": float(rho),
+        "n_samples": int(n_samples),
+        "N": int(N),
+        "f_mem": compute_f_mem(r, rho=rho),
+        "mean_r": float(r.mean().item()),
+        "median_r": float(r.median().item()),
+        "mean_d1": float(stats["d1"].mean().item()),
+        "mean_d2": float(stats["d2"].mean().item()),
+        "median_d1": float(stats["d1"].median().item()),
+        "median_d2": float(stats["d2"].median().item()),
+    }
+
+
+def compute_memorization_metrics(
+    samples,
+    reference,
+    rho=None,
+    chunk_size=256,
+    query_batch_size=None,
+    reference_batch_size=None,
+    config=None,
+):
+    """
+    Summarize nearest-neighbor ratios for generated samples against reference data.
+
+    The caller chooses what `reference` means. In checkpoint evaluation it is
+    the saved training tensor; for baseline checks it can be held-out reference
+    images compared against the same training tensor.
+    """
+    rho = _resolve_rho(rho, config=config)
+    stats = compute_nn_stats(
+        samples,
+        reference,
+        chunk_size=chunk_size,
+        query_batch_size=query_batch_size,
+        reference_batch_size=reference_batch_size,
+    )
+    return _memorization_summary_from_stats(
+        stats,
+        rho=rho,
+        n_samples=samples.shape[0],
+        N=reference.shape[0],
+    )
 
 
 class _TensorImageDataset(Dataset):
-    """Small torch-fidelity adapter for an in-memory uint8 RGB image batch."""
+    """
+    Torch-fidelity adapter for an in-memory uint8 RGB image batch.
+
+    torch-fidelity expects a Dataset-like object. This wrapper lets us evaluate
+    generated tensors without first writing them as image files.
+    """
 
     def __init__(self, images):
         if not torch.is_tensor(images):
@@ -72,6 +269,9 @@ def _as_image_batch(images):
 def _normalize_images(images, image_range="auto"):
     """
     Convert image tensors to float `[0, 1]` with an explicit batch dimension.
+
+    The runner stores model inputs in a training-friendly range. Metric code
+    uses display/encoder-friendly pixels, so this is the main range boundary.
     """
     images = _as_image_batch(images).float()
     mode = str(image_range).lower().replace("-", "_")
@@ -93,6 +293,12 @@ def _normalize_images(images, image_range="auto"):
 
     min_value = float(images.min().item())
     max_value = float(images.max().item())
+    warnings.warn(
+        "image_range='auto' inferred range from data "
+        f"(min={min_value:.4g}, max={max_value:.4g}). "
+        "Set image_range explicitly for reproducibility.",
+        stacklevel=2,
+    )
     if min_value >= 0.0 and max_value <= 1.0:
         return images.clamp(0.0, 1.0)
     if min_value >= -1.0 and max_value <= 1.0:
@@ -109,6 +315,10 @@ def _normalize_images(images, image_range="auto"):
 def _to_uint8_rgb(images, image_range="auto"):
     """
     Convert image tensors to torch-fidelity's expected uint8 RGB `[B, 3, H, W]`.
+
+    FID does not consume normalized model tensors directly. This conversion is
+    deliberately explicit so grayscale and alpha-channel inputs are handled in
+    one place.
     """
     images = _normalize_images(images, image_range=image_range)
     channels = int(images.shape[1])
@@ -123,16 +333,19 @@ def _to_uint8_rgb(images, image_range="auto"):
 
 
 def _device_from_arg(device):
+    """Convert a device argument into `torch.device`."""
     if isinstance(device, int):
         return torch.device(f"cuda:{device}")
     return torch.device(device)
 
 
 def _uses_cuda(device):
+    """Return whether a device argument selects CUDA."""
     return _device_from_arg(device).type == "cuda"
 
 
 def _select_cuda_device(device):
+    """Select an indexed CUDA device before torch-fidelity calls."""
     torch_device = _device_from_arg(device)
     if torch_device.type == "cuda" and torch_device.index is not None:
         torch.cuda.set_device(torch_device.index)
@@ -140,6 +353,12 @@ def _select_cuda_device(device):
 
 
 def _coerce_feature_output(output):
+    """
+    Convert an encoder output to a `[B, F]` feature matrix.
+
+    Encoders differ in whether they return tensors, tuples, or dictionaries.
+    Metric code should only see one flat feature vector per image.
+    """
     if isinstance(output, dict):
         if "features" in output:
             output = output["features"]
@@ -158,6 +377,13 @@ def _coerce_feature_output(output):
 
 
 def _encode_with_callable(images, encoder, *, batch_size, image_range, device):
+    """
+    Encode images with a user-provided callable while preserving its mode.
+
+    The encoder may be a research model passed from a notebook. We temporarily
+    put it in eval mode, run without gradients, and restore its previous
+    training state before returning.
+    """
     images = _normalize_images(images, image_range=image_range)
     torch_device = _device_from_arg(device)
 
@@ -182,7 +408,12 @@ def _encode_with_callable(images, encoder, *, batch_size, image_range, device):
 
 
 class _TorchFidelityFeatureEncoder:
-    """Batched feature extractor wrapper for torch-fidelity encoders."""
+    """
+    Batched feature extractor wrapper for torch-fidelity encoders.
+
+    This keeps torch-fidelity setup separate from the metric math. The public
+    metric functions receive only feature matrices after this wrapper runs.
+    """
 
     def __init__(self, spec, device):
         self.spec = spec
@@ -213,6 +444,7 @@ class _TorchFidelityFeatureEncoder:
 
 
 def _parse_torch_fidelity_spec(spec):
+    """Parse a torch-fidelity encoder specification string."""
     parts = str(spec).split(":")
     if len(parts) == 2 and parts[0] == "torch_fidelity":
         extractor_name = parts[1]
@@ -236,6 +468,7 @@ def _parse_torch_fidelity_spec(spec):
 
 
 def _encode_with_torch_fidelity_encoder(images, encoder, *, batch_size, image_range):
+    """Encode images with a constructed torch-fidelity encoder."""
     images = _normalize_images(images, image_range=image_range)
     features = []
     for start in range(0, images.shape[0], batch_size):
@@ -244,6 +477,7 @@ def _encode_with_torch_fidelity_encoder(images, encoder, *, batch_size, image_ra
 
 
 def _encode_with_torch_fidelity(images, spec, *, batch_size, image_range, device):
+    """Construct and run a torch-fidelity encoder."""
     encoder = _TorchFidelityFeatureEncoder(spec, device)
     features = _encode_with_torch_fidelity_encoder(
         images,
@@ -255,6 +489,13 @@ def _encode_with_torch_fidelity(images, spec, *, batch_size, image_range, device
 
 
 def _metric_vectors(samples, reference, *, encoder, batch_size, image_range, device):
+    """
+    Convert image batches to the vector space used by nearest-neighbor metrics.
+
+    With `encoder=None`, the metric space is raw normalized pixels. With an
+    encoder, both sample and reference images are embedded with the same feature
+    extractor before distances are computed.
+    """
     if encoder is None:
         torch_device = _device_from_arg(device)
         sample_vectors = _normalize_images(samples, image_range=image_range).flatten(1).to(torch_device)
@@ -306,14 +547,19 @@ def _metric_vectors(samples, reference, *, encoder, batch_size, image_range, dev
     return sample_vectors, reference_vectors, "features", str(encoder_name)
 
 
-def compute_f_mem_by_threshold(nn_ratio, thresholds):
-    """Compute `f_mem` for a sweep of nearest-neighbor ratio thresholds."""
-    ratios = torch.as_tensor(nn_ratio, dtype=torch.float32)
-    if isinstance(thresholds, (int, float)):
-        thresholds = [thresholds]
+def compute_f_mem_by_rho(r, rho_values):
+    """
+    Compute `f_mem` for a sweep of rho values.
+
+    This is useful when checking whether a conclusion depends on one arbitrary
+    cutoff value.
+    """
+    r = torch.as_tensor(r, dtype=torch.float32)
+    if isinstance(rho_values, (int, float)):
+        rho_values = [rho_values]
     return {
-        float(threshold): compute_f_mem(ratios, threshold=float(threshold))
-        for threshold in thresholds
+        float(rho): compute_f_mem(r, rho=float(rho))
+        for rho in rho_values
     }
 
 
@@ -322,14 +568,18 @@ def compute_image_memorization_metrics(
     reference,
     *,
     encoder=None,
-    ratio_threshold=0.5,
+    rho=None,
     query_batch_size=256,
     reference_batch_size=None,
     image_range="auto",
     device="cpu",
 ):
     """
-    Compute real-image memorization metrics in pixel or feature space.
+    Compute image nearest-neighbor memorization metrics.
+
+    `samples` are usually model generations. `reference` is usually the saved
+    training tensor. The returned record states whether distances were measured
+    in pixel space or encoder feature space.
     """
     query_batch_size = int(query_batch_size)
     if query_batch_size < 1:
@@ -351,7 +601,7 @@ def compute_image_memorization_metrics(
     metrics = compute_memorization_metrics(
         sample_vectors,
         reference_vectors,
-        ratio_threshold=ratio_threshold,
+        rho=rho,
         query_batch_size=query_batch_size,
         reference_batch_size=reference_batch_size,
     )
@@ -370,35 +620,6 @@ def compute_image_memorization_metrics(
     return metrics
 
 
-def compute_image_folder_memorization_metrics(
-    samples_path,
-    reference_path,
-    *,
-    encoder=None,
-    ratio_threshold=0.5,
-    query_batch_size=256,
-    reference_batch_size=None,
-    image_range="auto",
-    device="cpu",
-):
-    """Load two image/tensor folders and compute image memorization metrics."""
-    samples = _load_collection(samples_path)
-    reference = _load_collection(reference_path)
-    metrics = compute_image_memorization_metrics(
-        samples,
-        reference,
-        encoder=encoder,
-        ratio_threshold=ratio_threshold,
-        query_batch_size=query_batch_size,
-        reference_batch_size=reference_batch_size,
-        image_range=image_range,
-        device=device,
-    )
-    metrics["samples_path"] = str(Path(samples_path))
-    metrics["reference_path"] = str(Path(reference_path))
-    return metrics
-
-
 def compute_image_fid(
     samples,
     reference=None,
@@ -413,6 +634,10 @@ def compute_image_fid(
 ):
     """
     Compute FID from in-memory tensors using torch-fidelity.
+
+    The function accepts either a reference tensor or a saved reference-stat
+    file. It converts generated images to uint8 RGB because that is the
+    torch-fidelity input contract.
     """
     if reference is None and reference_stats_path is None:
         raise ValueError("Pass either reference or reference_stats_path for FID.")
@@ -468,42 +693,87 @@ def compute_image_fid(
     }
 
 
-def compute_image_folder_fid(
-    samples_path,
-    reference_path=None,
+def collect_image32_metric_record(
+    step,
+    samples,
+    baseline_samples,
+    train_tensor,
     *,
-    reference_stats_path=None,
-    batch_size=64,
-    device="cuda",
-    image_range="auto",
-    feature_extractor=DEFAULT_FID_FEATURE_EXTRACTOR,
-    cache=False,
-    verbose=False,
+    chunk_size,
+    config,
 ):
-    """Load image/tensor folders and compute FID via torch-fidelity."""
-    samples = _load_collection(samples_path)
-    reference = _load_collection(reference_path) if reference_path is not None else None
-    metrics = compute_image_fid(
+    """
+    Collect generated and held-out image nearest-neighbor metrics.
+
+    Generated samples and held-out reference images are both compared against
+    the saved training tensor. The held-out comparison is the baseline: it shows
+    what nearest-neighbor ratios look like for real images not used in training.
+    """
+    rho = _resolve_rho(config=config)
+    baseline_samples = baseline_samples[: samples.shape[0]]
+    generated_stats = compute_nn_stats(
         samples,
-        reference,
-        reference_stats_path=reference_stats_path,
-        batch_size=batch_size,
-        device=device,
-        image_range=image_range,
-        feature_extractor=feature_extractor,
-        cache=cache,
-        verbose=verbose,
+        train_tensor,
+        chunk_size=int(chunk_size),
     )
-    metrics["samples_path"] = str(Path(samples_path))
-    metrics["reference_path"] = None if reference_path is None else str(Path(reference_path))
-    return metrics
+    baseline_stats = compute_nn_stats(
+        baseline_samples,
+        train_tensor,
+        chunk_size=int(chunk_size),
+    )
+    generated = _memorization_summary_from_stats(
+        generated_stats,
+        rho=rho,
+        n_samples=samples.shape[0],
+        N=train_tensor.shape[0],
+    )
+    baseline = _memorization_summary_from_stats(
+        baseline_stats,
+        rho=rho,
+        n_samples=baseline_samples.shape[0],
+        N=train_tensor.shape[0],
+    )
+
+    record = {
+        "step": int(step),
+        "rho": generated["rho"],
+        "f_mem": generated["f_mem"],
+        "baseline_f_mem": baseline["f_mem"],
+        "delta_f_mem": generated["f_mem"] - baseline["f_mem"],  # Delta f_mem = gen - held-out
+        "mean_r": generated["mean_r"],
+        "median_r": generated["median_r"],
+        "baseline_mean_r": baseline["mean_r"],
+        "baseline_median_r": baseline["median_r"],
+        "mean_d1": generated["mean_d1"],
+        "mean_d2": generated["mean_d2"],
+        "baseline_mean_d1": baseline["mean_d1"],
+        "baseline_mean_d2": baseline["mean_d2"],
+    }
+    for rho_val in RHO_SWEEP:
+        f_gen = compute_f_mem(generated_stats["r"], rho=rho_val)  # f_mem(rho) for generated samples
+        f_base = compute_f_mem(baseline_stats["r"], rho=rho_val)  # f_mem(rho) for held-out baseline
+        record[f"f_mem_rho{rho_val}"] = f_gen
+        record[f"baseline_f_mem_rho{rho_val}"] = f_base
+        record[f"delta_f_mem_rho{rho_val}"] = f_gen - f_base  # Delta f_mem(rho)
+    return record
 
 
 __all__ = [
-    "DEFAULT_FEATURE_ENCODER",
-    "compute_f_mem_by_threshold",
+    "DEFAULT_FID_FEATURE_EXTRACTOR",
+    "RHO_SWEEP",
+    "collect_image32_metric_record",
+    "compute_f_mem_by_rho",
+    "compute_f_mem",
     "compute_image_fid",
-    "compute_image_folder_fid",
-    "compute_image_folder_memorization_metrics",
     "compute_image_memorization_metrics",
+    "compute_memorization_metrics",
+    "compute_nn_stats",
 ]
+
+
+if __name__ == "__main__":
+    print("mp_metrics.images example")
+    reference = torch.rand(4, 1, 4, 4)
+    samples = reference[:2].clone()
+    metrics = compute_image_memorization_metrics(samples, reference, image_range="0_1")
+    print(f"mean_r: {metrics['mean_r']:.6f}")

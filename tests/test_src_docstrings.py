@@ -12,6 +12,7 @@ class TestSrcDocstrings(unittest.TestCase):
         "src/mp_config/__init__.py",
         "src/mp_data/__init__.py",
         "src/mp_metrics/__init__.py",
+        "src/mp_runners/__init__.py",
         "src/mp_training/__init__.py",
     }
 

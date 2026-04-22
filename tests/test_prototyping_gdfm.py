@@ -29,6 +29,7 @@ from tests.gdfm_contract import (
 
 ROOT = Path(__file__).resolve().parents[1]
 PROTOTYPING_DIR = ROOT / "prototyping"
+PROTOTYPE_GDFM_PATH = PROTOTYPING_DIR / "gdfm_components.py"
 
 
 def load_module(name, path):
@@ -43,9 +44,13 @@ def load_module(name, path):
 class TestPrototypingGDFM(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not PROTOTYPE_GDFM_PATH.is_file():
+            raise unittest.SkipTest(
+                "active prototyping/gdfm_components.py is not present in this layout"
+            )
         cls.gdfm = load_module(
             "gdfm_components_under_test",
-            PROTOTYPING_DIR / "gdfm_components.py",
+            PROTOTYPE_GDFM_PATH,
         )
 
     def make_config(self, **overrides):

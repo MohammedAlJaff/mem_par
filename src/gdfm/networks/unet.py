@@ -2,7 +2,7 @@
 Bonnaire-style UNet adapter for image-space GDFM experiments.
 
 This module presents a stable `gdfm`-facing constructor and forward contract
-while delegating the heavy lifting to the local Bonnaire-style `SmallUNet`
+while delegating image processing to the local Bonnaire-style `SmallUNet`
 implementation in this package.
 """
 
@@ -49,7 +49,7 @@ class BonnaireUNet(nn.Module):
         time_emb_dim=None,
     ):
         """
-        Build the paper-facing UNet wrapper, then hand off to the local
+        Build the paper-facing UNet wrapper, then call the local
         `SmallUNet` implementation.
         """
         super().__init__()

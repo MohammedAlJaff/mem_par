@@ -1,8 +1,15 @@
 """
 Canonical GDFM model wrapper.
 
-This file defines the path coefficients, target conversions, loss, and ODE
-sampling used by the first-party GDFM model.
+This file is the main mathematical contract for the repo. It defines:
+
+1. the interpolation path between noise and data;
+2. how network outputs are converted between `x`, `eps`, and velocity `v`;
+3. the training loss for one clean data batch;
+4. deterministic ODE sampling from an initial noise tensor.
+
+Backbones live in `gdfm.networks`. This wrapper decides what a backbone
+prediction means.
 """
 
 from collections.abc import Mapping
@@ -82,6 +89,9 @@ class GDFM(nn.Module):
     Core path:
         z_t = a(t) x + b(t) eps
         v_t = a'(t) x + b'(t) eps
+
+    The network can predict `x`, `eps`, or `v`. The `convert(...)` method is
+    the single place that translates among these spaces.
     """
 
     def __init__(self, config):
@@ -197,6 +207,9 @@ class GDFM(nn.Module):
     def predict(self, z, t):
         """
         Evaluate the backbone at `(z_t, t)`.
+
+        The returned tensor is in `self.prediction_space`, not necessarily in
+        velocity space.
         """
         return self.net(z, t)
 
@@ -243,6 +256,9 @@ class GDFM(nn.Module):
     def _sample_euler(self, z, ts):
         """
         Integrate the learned ODE with first-order forward Euler steps.
+
+        Euler uses one network evaluation per step. It is simple and useful for
+        sanity checks.
         """
         batch_size = z.shape[0]
         for index in range(len(ts) - 1):
@@ -255,7 +271,9 @@ class GDFM(nn.Module):
         """
         Integrate the learned ODE with Heun's predictor-corrector method.
 
-        Use two slope evaluations per step, then average them.
+        Heun uses two slope evaluations per step, then averages them. It costs
+        more per step than Euler but usually gives a better deterministic
+        trajectory.
         """
         batch_size = z.shape[0]
         for index in range(len(ts) - 1):
