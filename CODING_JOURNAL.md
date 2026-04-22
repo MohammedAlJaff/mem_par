@@ -1428,6 +1428,30 @@ The user asked to push the current work and ensure the journal is updated.
 - PR creation is blocked by missing `gh`; pushing the branch with `git` can
   still proceed.
 
+## 2026-04-22T03:57:44Z - Pushed Runner Refactor Branch
+
+### Context
+Follow-up to the requested push.
+
+### Changed / Observed
+- Committed the staged runner/metric/config refactor as
+  `e1319da refactor runners metrics and image config`.
+- Pushed branch `codex/runner-metric-cleanup-and-image-resolver` to `origin`.
+- Left local-only `.codex` and `tea_debug.log` untracked.
+
+### Commands / Checks
+- `git commit -m "refactor runners metrics and image config"`
+- `git push -u origin codex/runner-metric-cleanup-and-image-resolver`
+
+### Results
+- Remote branch is available at:
+  `origin/codex/runner-metric-cleanup-and-image-resolver`.
+- GitHub suggested PR URL:
+  `https://github.com/MohammedAlJaff/mem_par/pull/new/codex/runner-metric-cleanup-and-image-resolver`.
+
+### Blockers
+- PR creation remains blocked in this environment because `gh` is not installed.
+
 ## 2026-04-22T03:52:34Z - Image Runner Dataset Size Model Resolver
 
 ### Context
