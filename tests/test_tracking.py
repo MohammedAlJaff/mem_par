@@ -8,7 +8,7 @@ from unittest import mock
 try:
     from mp_artifacts import create_run_layout, load_json, make_run_id
     from mp_config import clone_config, get_base_config
-    from mp_tracking import AttemptTracker
+    from mp_tracking import AttemptTracker, resolve_wandb_identity
 except ModuleNotFoundError:
     create_run_layout = None
     load_json = None
@@ -16,6 +16,7 @@ except ModuleNotFoundError:
     clone_config = None
     get_base_config = None
     AttemptTracker = None
+    resolve_wandb_identity = None
 
 
 class FakeWandbRun:
@@ -205,6 +206,42 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertEqual(fake.init_calls[-1]["group"], "manual_group")
         finally:
             self.restore_wandb(old_module)
+
+    def test_wandb_auto_identity_recomputes_when_config_changes(self):
+        config = self.make_config()
+        config.tracking.wandb.project_explicit = False
+        config.tracking.wandb.name_explicit = False
+        config.tracking.wandb.group_explicit = False
+
+        resolve_wandb_identity(config)
+        self.assertIn("-x_x-", config.tracking.wandb.name)
+
+        config.framework.prediction_space = "eps"
+        config.framework.loss_space = "eps"
+        identity = resolve_wandb_identity(config)
+
+        self.assertEqual(
+            identity["name"],
+            "gmm_subspace-mlp-N256-B64-eps_eps-steps200-s3",
+        )
+        self.assertEqual(config.tracking.wandb.name, identity["name"])
+
+    def test_wandb_explicit_marker_keeps_manual_name(self):
+        config = self.make_config()
+        config.tracking.wandb.project = "manual_project"
+        config.tracking.wandb.name = "manual_name"
+        config.tracking.wandb.group = "manual_group"
+        config.tracking.wandb.project_explicit = True
+        config.tracking.wandb.name_explicit = True
+        config.tracking.wandb.group_explicit = True
+
+        config.framework.prediction_space = "eps"
+        config.framework.loss_space = "eps"
+        identity = resolve_wandb_identity(config)
+
+        self.assertEqual(identity["project"], "manual_project")
+        self.assertEqual(identity["name"], "manual_name")
+        self.assertEqual(identity["group"], "manual_group")
 
     def test_wandb_init_failure_is_nonfatal_by_default(self):
         config = self.make_config()

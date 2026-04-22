@@ -6,6 +6,7 @@ canonical nested config used by data loading, model construction, training,
 evaluation, runtime precision, and tracking.
 """
 
+import argparse
 import copy
 import os
 import re
@@ -556,7 +557,10 @@ def build_config(settings):
     split choice stay with the profile unless a caller explicitly overrides
     them outside the normal CLI path.
     """
-    raw_settings = dict(settings)
+    if isinstance(settings, argparse.Namespace):
+        raw_settings = vars(settings)
+    else:
+        raw_settings = dict(settings)
     dataset, dataset_defaults, model = _resolve_dataset_profile(raw_settings)
     settings = _merge_settings(raw_settings, dataset_defaults)
     settings["dataset"] = dataset

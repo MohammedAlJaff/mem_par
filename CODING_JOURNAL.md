@@ -1536,6 +1536,69 @@ Keep runner workflow code separate from metric definitions:
 ### Blockers
 - None expected.
 
+## 2026-04-22T05:28:26Z - End-Of-Day Sweep And Tracking Polish
+
+### Context
+Before launching larger memorization sweeps, the runner output and job scripts
+needed to be predictable enough to trust on Berzelius and in W&B.
+
+### Intent
+- Make automatic W&B project/name/group values reflect the final resolved
+  config unless the user passes explicit W&B identity flags.
+- Keep torus visual outputs focused on the figures needed for review.
+- Add reproducible SLURM scripts for the synthetic GMM sweep and first image
+  sweeps.
+- Record data-count choices directly in the scripts so future runs do not
+  rediscover dataset split limits the hard way.
+
+### Changed / Observed
+- Fixed automatic W&B identity resolution so changed objective flags such as
+  `--prediction-space eps --loss-space eps` no longer leave stale `v_v` names.
+- Logged final synthetic figures against the final checkpoint step to avoid W&B
+  chart indexing issues.
+- Simplified torus outputs to a train-set 3D scatter and per-checkpoint faded
+  train plus generated 3D overlays; removed extra generic 2D intrinsic figures
+  for torus runs.
+- Added synthetic GMM SLURM scripts for the 72-job diagonal sweep over
+  `N = 128..16384`, three seeds, and `x/x`, `eps/eps`, `v/v`.
+- Added image SLURM scripts for MNIST32, CelebA32, and Flowers64 sweeps with
+  one thin-node GPU per task.
+- Checked actual image loaders and encoded the resulting count rules:
+  - MNIST32 balanced reference cap is `8920`.
+  - CelebA32 valid split supports `16384` reference examples for this sweep.
+  - Flowers64 uses the large official test split for training and the small
+    official train split, `1020` images, for held-out reference.
+
+### Commands / Checks
+- `python -m unittest tests.test_tracking`
+- `python -m unittest tests.test_proto_runners`
+- `python -m unittest tests.test_torus_synthetic`
+- `python -m py_compile src/mp_tracking.py src/mp_runners/image_config.py src/mp_runners/synthetic_eval.py src/mp_visualization.py`
+- `bash -n jobs/debug_synthetic_gmm_one_run.sh jobs/submit_synthetic_gmm_sweep.sh`
+- `bash -n jobs/debug_image_mnist32_one_run.sh jobs/debug_image_celeba32_one_run.sh jobs/debug_image_flowers64_one_run.sh jobs/submit_image_mnist32_sweep.sh jobs/submit_image_celeba32_sweep.sh jobs/submit_image_flowers64_sweep.sh`
+- `python -m mp_runners.image_runner --data-summary ...` for the largest
+  MNIST32, CelebA32, and Flowers64 planned cases.
+- Programmatic image config validation for every generated MNIST32, CelebA32,
+  and Flowers64 array job.
+- `git diff --check`
+
+### Results
+- Tracking, proto-runner, and torus synthetic tests passed.
+- Byte-compile passed for touched Python files.
+- All shell scripts passed Bash syntax checks.
+- Image data summaries materialized the selected maximum cases:
+  - MNIST32: train `[8192, 1, 32, 32]`, reference `[8920, 1, 32, 32]`.
+  - CelebA32: train/reference `[16384, 1, 32, 32]`.
+  - Flowers64: train `[4096, 3, 64, 64]`, reference `[1020, 3, 64, 64]`.
+- Config validation passed for 63 MNIST32 jobs, 72 CelebA32 jobs, and 54
+  Flowers64 jobs.
+
+### Blockers
+- SLURM scripts still contain `YOUR_PROJECT_ACCOUNT`; replace it before
+  submitting.
+- On Berzelius Hopper, remove `#SBATCH -C thin` if that constraint is not
+  available.
+
 ## 2026-04-22T03:41:26Z - Automatic W&B Identity From Config
 
 ### Context

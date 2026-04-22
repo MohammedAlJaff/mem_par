@@ -164,9 +164,14 @@ def resolve_wandb_identity(config):
     """
     Fill blank or `auto` W&B project/name/group fields from the resolved config.
 
-    Explicit non-empty values are preserved. This makes CLI behavior simple:
-    omit `--wandb-project`, `--wandb-name`, or `--wandb-group` for automatic
-    values, and pass the flag when a manual value is needed.
+    Runner configs set `project_explicit`, `name_explicit`, and
+    `group_explicit` from the CLI flags. When those fields are false, the
+    identity is recomputed from the final config. This prevents stale automatic
+    names, for example a `v_v` name after a caller changes the objective to
+    `eps_eps`.
+
+    Older configs may not have the explicit-marker fields. For those, a
+    non-empty non-`auto` value is still treated as manual.
     """
     identity = default_wandb_identity(config)
     tracking = getattr(config, "tracking", None)
@@ -174,22 +179,41 @@ def resolve_wandb_identity(config):
     if wandb_config is None:
         return identity
 
-    if _auto_wandb_value_requested(getattr(wandb_config, "project", ""), project=True):
+    project_value = getattr(wandb_config, "project", "")
+    project_explicit = _wandb_field_explicit(wandb_config, "project", project_value)
+    if (not project_explicit) or _auto_wandb_value_requested(project_value, project=True):
         wandb_config.project = identity["project"]
     else:
-        identity["project"] = str(getattr(wandb_config, "project", "")).strip()
+        identity["project"] = str(project_value).strip()
 
-    if _auto_wandb_value_requested(getattr(wandb_config, "name", "")):
+    name_value = getattr(wandb_config, "name", "")
+    name_explicit = _wandb_field_explicit(wandb_config, "name", name_value)
+    if (not name_explicit) or _auto_wandb_value_requested(name_value):
         wandb_config.name = identity["name"]
     else:
-        identity["name"] = str(getattr(wandb_config, "name", "")).strip()
+        identity["name"] = str(name_value).strip()
 
-    if _auto_wandb_value_requested(getattr(wandb_config, "group", "")):
+    group_value = getattr(wandb_config, "group", "")
+    group_explicit = _wandb_field_explicit(wandb_config, "group", group_value)
+    if (not group_explicit) or _auto_wandb_value_requested(group_value):
         wandb_config.group = identity["group"]
     else:
-        identity["group"] = str(getattr(wandb_config, "group", "")).strip()
+        identity["group"] = str(group_value).strip()
 
     return identity
+
+
+def _wandb_field_explicit(wandb_config, field, value):
+    """
+    Return whether a W&B identity field should be treated as manual.
+
+    New runner configs carry explicit CLI markers. Older programmatic configs
+    do not, so a non-empty value remains manual for backwards compatibility.
+    """
+    marker = f"{field}_explicit"
+    if hasattr(wandb_config, marker):
+        return bool(getattr(wandb_config, marker))
+    return not _auto_wandb_value_requested(value, project=(field == "project"))
 
 
 def _safe_float(value):

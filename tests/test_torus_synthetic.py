@@ -147,7 +147,7 @@ class TestTorusSynthetic(unittest.TestCase):
         self.assertNotIn("torus_distance_mean", record)
         self.assertNotIn("geometry_error_mean", record)
 
-    def test_torus_final_eval_writes_canonical_donut_figures(self):
+    def test_torus_final_eval_writes_train_and_checkpoint_donut_figures(self):
         settings = synthetic_runner.default_settings()
         settings.update(
             {
@@ -175,10 +175,27 @@ class TestTorusSynthetic(unittest.TestCase):
 
             figures = result["figures"]
             self.assertTrue(
-                Path(figures["torus3d_canonical_scatter_train_reference_generated_3d"]).is_file()
+                Path(figures["torus3d_train_set_canonical_3d_scatter"]).is_file()
             )
-            self.assertTrue(
-                Path(figures["torus3d_xy_projection_scatter_train_reference_generated"]).is_file()
+            self.assertNotIn(
+                "torus3d_canonical_scatter_train_reference_generated_3d",
+                figures,
+            )
+            self.assertNotIn(
+                "torus3d_xy_projection_scatter_train_reference_generated",
+                figures,
+            )
+            self.assertNotIn("intrinsic_distance_vs_step_checkpoints", figures)
+            self.assertNotIn(
+                "nearest_neighbor_ratio_d1_over_d2_by_checkpoint_step",
+                figures,
+            )
+            previews = result["checkpoint_sample_previews"]
+            self.assertGreater(len(previews), 0)
+            self.assertTrue(Path(previews[-1]["figure_path"]).is_file())
+            self.assertIn(
+                "torus3d_checkpoint_train_faded_generated",
+                previews[-1]["figure_path"],
             )
 
 

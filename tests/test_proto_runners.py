@@ -238,10 +238,12 @@ class TestProtoRunners(unittest.TestCase):
                 "--no-generation-trace-show",
             ]
         )
-        config = image_runner.build_config(vars(args))
+        config = image_runner.build_config(args)
 
         self.assertEqual(args.prediction_space, "eps")
         self.assertEqual(args.loss_space, "eps")
+        self.assertEqual(config.framework.prediction_space, "eps")
+        self.assertEqual(config.framework.loss_space, "eps")
         self.assertEqual(args.image_size, 32)
         self.assertEqual(args.model, "unet")
         self.assertFalse(args.download)

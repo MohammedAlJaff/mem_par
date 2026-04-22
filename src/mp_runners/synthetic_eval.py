@@ -25,7 +25,7 @@ from mp_metrics.synthetic import (
 )
 from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker, loss_eval_metric_payload
-from mp_visualization import make_synthetic_figures
+from mp_visualization import make_synthetic_figures, save_torus3d_checkpoint_scatter
 
 
 def _sliced_directions(config, intrinsic_dim):
@@ -197,9 +197,23 @@ def evaluate_synthetic_run(run_dir, device="cpu", fixed_times=None):
                 train_tensor=train_tensor,
                 run_dir=run_dir,
                 config=config,
-                figure_enabled=False,
+                geometry=geometry,
+                context=_figure_context(config),
+                figure_enabled=str(config.data.dataset) == "torus3d",
             )
             checkpoint_sample_previews.append(preview_record)
+            if preview_record.get("figure_path"):
+                figure_name = _torus3d_checkpoint_figure_name(step)
+                tracker.register_figure(
+                    figure_name,
+                    preview_record["figure_path"],
+                    log_to_wandb=False,
+                )
+                tracker.log_figure_metric(
+                    "eval/torus3d_checkpoint_train_faded_generated_3d",
+                    preview_record["figure_path"],
+                    step=step,
+                )
 
             if checkpoint_path == checkpoint_paths[-1]:
                 final_samples = samples
@@ -243,13 +257,16 @@ def evaluate_synthetic_run(run_dir, device="cpu", fixed_times=None):
             ambient_centers=ambient_centers,
             context=_figure_context(config),
         )
-        for name, path in figure_paths.items():
-            tracker.register_figure(name, path)
-
         run_summary_path = run_dir / "artifacts" / "run_summary.json"
         run_summary = load_json(run_summary_path) if run_summary_path.exists() else {}
         final_record = records[-1] if records else {}
         final_loss_record = loss_records[-1] if loss_records else {}
+        final_step = int(final_record.get("step", 0))
+        for name, path in figure_paths.items():
+            tracker.register_figure(name, path, log_to_wandb=False)
+            if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                tracker.log_figure_metric(f"eval/{name}", path, step=final_step)
+
         run_summary.update(
             {
                 "checkpoint_metrics_path": str(
@@ -340,6 +357,11 @@ def _preview_count(config, samples, train_tensor=None, count=None):
     return max(0, min(int(count), limit))
 
 
+def _torus3d_checkpoint_figure_name(step):
+    """Return the per-checkpoint torus overlay figure name."""
+    return "torus3d_train_faded_generated_checkpoint_step_{:06d}".format(int(step))
+
+
 def _collect_tensor_preview_record(
     *,
     step,
@@ -349,14 +371,15 @@ def _collect_tensor_preview_record(
     config=None,
     count=None,
     figure_enabled=False,
+    geometry=None,
+    context="",
 ):
     """
     Save checkpoint sample tensors for synthetic evaluation.
 
-    Synthetic preview records store tensors rather than image panels. The main
-    visual evidence is produced later by `make_synthetic_figures`.
+    Every checkpoint stores a small tensor preview. Torus runs also store a 3D
+    train/generated overlay for the same checkpoint.
     """
-    del train_tensor, figure_enabled
     step = int(step)
     run_dir = Path(run_dir)
     count = _preview_count(config, samples, count=count)
@@ -364,11 +387,33 @@ def _collect_tensor_preview_record(
     samples_path = samples_dir / f"step_{step:06d}.pt"
     samples_dir.mkdir(parents=True, exist_ok=True)
     torch.save(samples[:count].detach().cpu(), samples_path)
+    figure_path = None
+    if (
+        bool(figure_enabled)
+        and train_tensor is not None
+        and geometry is not None
+        and count > 0
+    ):
+        figure_name = _torus3d_checkpoint_figure_name(step)
+        saved_path = save_torus3d_checkpoint_scatter(
+            train_tensor=train_tensor,
+            samples=samples[:count],
+            geometry=geometry,
+            figure_path=(
+                run_dir
+                / "figures"
+                / "torus3d_checkpoint_train_faded_generated"
+                / f"{figure_name}.png"
+            ),
+            step=step,
+            context=context,
+        )
+        figure_path = str(Path(saved_path).resolve())
     return {
         "step": step,
         "count": int(count),
         "samples_path": str(samples_path.resolve()),
-        "figure_path": None,
+        "figure_path": figure_path,
     }
 
 

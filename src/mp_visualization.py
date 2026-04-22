@@ -270,22 +270,17 @@ def make_synthetic_figures(
         plt.close(fig)
         figure_paths[figure_name] = str(path)
 
-    if metric_records:
-        _synthetic_metric_curves(plt, figures_dir, figure_paths, metric_records, context)
-
     geometry_kind = ""
     if isinstance(geometry, dict):
         geometry_kind = str(geometry.get("kind", ""))
 
-    if train_intrinsic.shape[1] >= 2:
-        if geometry_kind == "torus3d":
-            scatter_title = "Generated samples in torus periodic angle features"
-            x_label = "cos(theta)"
-            y_label = "sin(theta)"
-        else:
-            scatter_title = "Generated samples in intrinsic coordinates"
-            x_label = "intrinsic[0]"
-            y_label = "intrinsic[1]"
+    if metric_records and geometry_kind != "torus3d":
+        _synthetic_metric_curves(plt, figures_dir, figure_paths, metric_records, context)
+
+    if train_intrinsic.shape[1] >= 2 and geometry_kind != "torus3d":
+        scatter_title = "Generated samples in intrinsic coordinates"
+        x_label = "intrinsic[0]"
+        y_label = "intrinsic[1]"
         _synthetic_intrinsic_scatter(
             plt,
             figures_dir,
@@ -302,13 +297,11 @@ def make_synthetic_figures(
         )
 
     if geometry_kind == "torus3d":
-        _synthetic_torus3d_scatters(
+        _synthetic_torus3d_train_scatter(
             plt,
             figures_dir,
             figure_paths,
             train_tensor,
-            reference_tensor,
-            final_samples,
             geometry,
             context,
         )
@@ -463,20 +456,6 @@ def _synthetic_intrinsic_scatter(
     figure_paths[name] = str(path)
 
 
-def _synthetic_torus3d_canonical_parts(train_tensor, reference_tensor, samples, geometry):
-    """Return canonical 3D torus coordinates for train, reference, and samples."""
-    from mp_metrics.synthetic import intrinsic_geometry_parts
-
-    train_xyz = geometry.get("train_torus_xyz")
-    if train_xyz is None:
-        train_xyz = intrinsic_geometry_parts(train_tensor, geometry)["torus_xyz"]
-    reference_xyz = geometry.get("reference_torus_xyz")
-    if reference_xyz is None:
-        reference_xyz = intrinsic_geometry_parts(reference_tensor, geometry)["torus_xyz"]
-    sample_xyz = intrinsic_geometry_parts(samples, geometry)["torus_xyz"]
-    return train_xyz.cpu(), reference_xyz.cpu(), sample_xyz.cpu()
-
-
 def _set_equal_3d_limits(ax, pieces):
     """Set equal 3D axes for a list of point tensors."""
     points = torch.cat(pieces, dim=0)
@@ -490,68 +469,110 @@ def _set_equal_3d_limits(ax, pieces):
     ax.set_zlim(float(center[2] - radius), float(center[2] + radius))
 
 
-def _synthetic_torus3d_scatters(
+def _synthetic_torus3d_train_scatter(
     plt,
     figures_dir,
     figure_paths,
     train_tensor,
-    reference_tensor,
-    samples,
     geometry,
     context,
 ):
-    """Save canonical 3D torus scatter plots."""
-    train_xyz, reference_xyz, sample_xyz = _synthetic_torus3d_canonical_parts(
-        train_tensor,
-        reference_tensor,
-        samples,
-        geometry,
-    )
-    pieces = [train_xyz, reference_xyz, sample_xyz]
+    """Save the initial train-only canonical 3D torus scatter plot."""
+    train_xyz = geometry.get("train_torus_xyz")
+    if train_xyz is None:
+        from mp_metrics.synthetic import intrinsic_geometry_parts
 
-    path_3d_name = "torus3d_canonical_scatter_train_reference_generated_3d"
-    path_3d = figures_dir / f"{path_3d_name}.png"
+        train_xyz = intrinsic_geometry_parts(train_tensor, geometry)["torus_xyz"]
+    train_xyz = train_xyz.cpu()
+
+    figure_name = "torus3d_train_set_canonical_3d_scatter"
+    path_3d = figures_dir / f"{figure_name}.png"
     fig = plt.figure(figsize=(6.2, 6.2))
     ax = fig.add_subplot(111, projection="3d")
-    ax.scatter(train_xyz[:, 0].numpy(), train_xyz[:, 1].numpy(), train_xyz[:, 2].numpy(), s=12, alpha=0.18, label="train")
-    ax.scatter(reference_xyz[:, 0].numpy(), reference_xyz[:, 1].numpy(), reference_xyz[:, 2].numpy(), s=8, alpha=0.12, label="holdout")
-    ax.scatter(sample_xyz[:, 0].numpy(), sample_xyz[:, 1].numpy(), sample_xyz[:, 2].numpy(), s=14, alpha=0.72, label="generated")
-    ax.set_title("Generated samples on canonical 3D torus")
+    ax.scatter(
+        train_xyz[:, 0].numpy(),
+        train_xyz[:, 1].numpy(),
+        train_xyz[:, 2].numpy(),
+        s=18,
+        alpha=0.80,
+        label="train",
+    )
+    ax.set_title("Train set on canonical 3D torus")
     ax.set_xlabel("torus x")
     ax.set_ylabel("torus y")
     ax.set_zlabel("torus z")
-    _set_equal_3d_limits(ax, pieces)
+    _set_equal_3d_limits(ax, [train_xyz])
     ax.legend()
     fig.text(0.5, 0.02, context, ha="center", fontsize=7.5)
     fig.tight_layout(rect=(0, 0.16, 1, 1))
     fig.savefig(path_3d, dpi=160)
     plt.close(fig)
-    figure_paths[path_3d_name] = str(path_3d)
+    figure_paths[figure_name] = str(path_3d)
 
-    path_xy_name = "torus3d_xy_projection_scatter_train_reference_generated"
-    path_xy = figures_dir / f"{path_xy_name}.png"
-    xy_points = torch.cat([piece[:, :2] for piece in pieces], dim=0)
-    x_min = float(xy_points[:, 0].min().item()) - 0.25
-    x_max = float(xy_points[:, 0].max().item()) + 0.25
-    y_min = float(xy_points[:, 1].min().item()) - 0.25
-    y_max = float(xy_points[:, 1].max().item()) + 0.25
-    fig, ax = plt.subplots(figsize=(6.2, 6.2))
-    ax.scatter(train_xyz[:, 0].numpy(), train_xyz[:, 1].numpy(), s=14, alpha=0.18, label="train")
-    ax.scatter(reference_xyz[:, 0].numpy(), reference_xyz[:, 1].numpy(), s=8, alpha=0.12, label="holdout")
-    ax.scatter(sample_xyz[:, 0].numpy(), sample_xyz[:, 1].numpy(), s=14, alpha=0.72, label="generated")
-    ax.set_title("Canonical torus XY projection")
+
+def save_torus3d_checkpoint_scatter(
+    *,
+    train_tensor,
+    samples,
+    geometry,
+    figure_path,
+    step,
+    context="",
+):
+    """
+    Save one canonical 3D torus checkpoint overlay.
+
+    The train set is drawn faintly as a fixed reference. The generated samples
+    from one checkpoint are drawn on top.
+    """
+    figure_path = Path(figure_path)
+    prepare_matplotlib_cache(_logs_dir_for_figure(figure_path))
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    from mp_metrics.synthetic import intrinsic_geometry_parts
+
+    train_xyz = geometry.get("train_torus_xyz")
+    if train_xyz is None:
+        train_xyz = intrinsic_geometry_parts(train_tensor, geometry)["torus_xyz"]
+
+    sample_xyz = intrinsic_geometry_parts(samples, geometry)["torus_xyz"]
+    train_xyz = train_xyz.cpu()
+    sample_xyz = sample_xyz.cpu()
+
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
+    fig = plt.figure(figsize=(6.2, 6.2))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(
+        train_xyz[:, 0].numpy(),
+        train_xyz[:, 1].numpy(),
+        train_xyz[:, 2].numpy(),
+        s=12,
+        alpha=0.14,
+        color="0.35",
+        label="train",
+    )
+    ax.scatter(
+        sample_xyz[:, 0].numpy(),
+        sample_xyz[:, 1].numpy(),
+        sample_xyz[:, 2].numpy(),
+        s=18,
+        alpha=0.78,
+        label="generated",
+    )
+    ax.set_title(f"Generated samples on canonical 3D torus, checkpoint step {int(step)}")
     ax.set_xlabel("torus x")
     ax.set_ylabel("torus y")
-    ax.set_xlim(x_min, x_max)
-    ax.set_ylim(y_min, y_max)
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(alpha=0.20)
+    ax.set_zlabel("torus z")
+    _set_equal_3d_limits(ax, [train_xyz, sample_xyz])
     ax.legend()
     fig.text(0.5, 0.02, context, ha="center", fontsize=7.5)
     fig.tight_layout(rect=(0, 0.16, 1, 1))
-    fig.savefig(path_xy, dpi=160)
+    fig.savefig(figure_path, dpi=160)
     plt.close(fig)
-    figure_paths[path_xy_name] = str(path_xy)
+    return figure_path
 
 
 def _synthetic_ambient_scatter(plt, figures_dir, figure_paths, train, reference, samples, centers, context):
@@ -596,6 +617,7 @@ __all__ = [
     "prepare_matplotlib_cache",
     "save_image_rows_figure",
     "save_samples_over_train_panel",
+    "save_torus3d_checkpoint_scatter",
 ]
 
 
