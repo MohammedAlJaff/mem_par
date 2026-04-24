@@ -107,8 +107,8 @@ The core image-runner size knobs mean exactly this:
 | `--sampling_steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
 | `--precision` | `config.runtime.precision` | Numerical mode: `fp32`, CUDA `tf32`, or CUDA `bf16` autocast. |
 
-W&B projects default to the user-facing dataset key plus model arch:
-`memparam-flowers-unet`, `memparam-mnist-unet`, etc. The old broad
+W&B projects default to the user-facing dataset key plus image size plus model
+arch: `memparam-flowers-128-unet`, `memparam-mnist-32-unet`, etc. The old broad
 `memparam-image32-unet` value is treated as auto so copied commands stop mixing
 datasets into one W&B project. Default W&B run names include dataset, model,
 `N`, batch cap, prediction/loss spaces, training steps, and seed. Default W&B
@@ -147,8 +147,8 @@ loss probes and fixed-`t` probes at `0.5` and `0.75`, plus
 image runners save `artifacts/z_init.pt` once and sample from that same fixed
 noise bank at step 0, every checkpoint, and the final model. The panels are
 written under `figures/generation_monitor_*.png` and logged to W&B as
-`generation_monitor/samples` when
-tracking is active.
+`generation_monitor/samples` for checkpoint panels and
+`generation_monitor/final_samples` for the final model when tracking is active.
 Canonical attempt folders receive a `DONE_` prefix after training artifacts are
 successfully written, so completed-training folders are visible from the
 filesystem while failed or aborted attempts keep their original names.

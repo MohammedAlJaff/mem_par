@@ -82,7 +82,6 @@ def _base_config():
     config.tracking.wandb.group = ""
     config.tracking.wandb.tags = []
     config.tracking.wandb.strict = False
-    config.tracking.wandb.log_figures = True
 
     config.tracking.console = ConfigDict()
     config.tracking.console.summary_every_seconds = 60.0

@@ -144,14 +144,14 @@ class TestProtoRunners(unittest.TestCase):
             self.assertEqual(config.training.lr, 1.0e-4)
             self.assertEqual(config.runtime.precision, "fp32")
             self.assertEqual(config.study.dataset_key, "celeba")
-            self.assertEqual(config.tracking.wandb.project, "memparam-celeba-unet")
+            self.assertEqual(config.tracking.wandb.project, "memparam-celeba-32-unet")
             self.assertEqual(
                 config.tracking.wandb.name,
-                "celeba-unet-N128-B64-v_v-steps30000-s0",
+                "celeba-32-unet-N128-B64-v_v-steps30000-s0",
             )
             self.assertEqual(
                 config.tracking.wandb.group,
-                "celeba-unet-steps30000",
+                "celeba-32-unet-steps30000",
             )
             self.assertEqual(config.training.ckpt_schedule, "bonnaire-1m")
 
@@ -378,7 +378,7 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(config.data.dataset, "flowers102")
         self.assertEqual(config.study.dataset_key, "flowers")
         self.assertEqual(config.network.arch, "unet")
-        self.assertEqual(config.tracking.wandb.project, "memparam-flowers-unet")
+        self.assertEqual(config.tracking.wandb.project, "memparam-flowers-128-unet")
 
     def test_image_runner_public_dataset_names_and_size_errors(self):
         valid_pairs = [
@@ -422,7 +422,7 @@ class TestProtoRunners(unittest.TestCase):
 
         config = image_runner.build_config(settings)
 
-        self.assertEqual(config.tracking.wandb.project, "memparam-mnist-unet")
+        self.assertEqual(config.tracking.wandb.project, "memparam-mnist-32-unet")
 
         args = image_runner.parse_args(
             [
@@ -525,6 +525,8 @@ class TestProtoRunners(unittest.TestCase):
                     (module, ["--generation_trace"]),
                     (module, ["--train_monitor_projected_f_mem"]),
                     (module, ["--compare_numerics"]),
+                    (module, ["--wandb_log_figures"]),
+                    (module, ["--no_wandb_log_figures"]),
                     (module, ["--precision", "fp16"]),
                 ]
             )
@@ -846,6 +848,7 @@ class TestProtoRunners(unittest.TestCase):
             self.assertEqual(len(monitor["records"]), 1)
             self.assertEqual(monitor["records"][0]["step"], 1)
             self.assertIn("f_mem", monitor["records"][0])
+            self.assertIn("std_r", monitor["records"][0])
             self.assertTrue(
                 (
                     Path(result["run_dir"])

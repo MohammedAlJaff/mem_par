@@ -599,12 +599,7 @@ def _run_random_projected_f_mem(
         {
             "monitor/random_projected_f_mem": record["f_mem"],
             "monitor/random_projected_f_mem_mean_r": record["mean_r"],
-            "monitor/random_projected_f_mem_median_r": record["median_r"],
-            "monitor/random_projected_f_mem_median_d1": record["median_d1"],
-            "monitor/random_projected_f_mem_median_d2": record["median_d2"],
-            "monitor/random_projected_f_mem_samples": record["n_samples"],
-            "monitor/random_projected_f_mem_resize": record["resize_size"],
-            "monitor/random_projected_f_mem_proj_dim": record["projection_dim"],
+            "monitor/random_projected_f_mem_std_r": record["std_r"],
         },
         step=step,
     )
@@ -762,7 +757,7 @@ def _save_final_generation_monitor_samples(
         log_to_wandb=False,
     )
     tracker.log_figure_metric(
-        "generation_monitor/samples",
+        "generation_monitor/final_samples",
         figure_path,
         step=step,
     )

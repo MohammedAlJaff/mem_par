@@ -177,6 +177,7 @@ def _memorization_summary_from_stats(stats, *, rho, n_samples, N):
         "N": int(N),
         "f_mem": compute_f_mem(r, rho=rho),
         "mean_r": float(r.mean().item()),
+        "std_r": float(r.std(unbiased=False).item()),
         "median_r": float(r.median().item()),
         "mean_d1": float(stats["d1"].mean().item()),
         "mean_d2": float(stats["d2"].mean().item()),

@@ -305,18 +305,6 @@ def parse_args(argv=None):
     parser.add_argument("--wandb_group", default=settings["wandb_group"])
     parser.add_argument("--wandb_tags", default=settings["wandb_tags"])
     parser.add_argument(
-        "--wandb_log_figures",
-        dest="wandb_log_figures",
-        action="store_true",
-        default=settings["wandb_log_figures"],
-        help="Log image checkpoints/generation traces to W&B as media.",
-    )
-    parser.add_argument(
-        "--no_wandb_log_figures",
-        dest="wandb_log_figures",
-        action="store_false",
-    )
-    parser.add_argument(
         "--compact_model_summary",
         dest="compact_model_summary",
         action="store_true",

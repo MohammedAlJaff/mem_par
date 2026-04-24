@@ -1580,6 +1580,57 @@ Keep runner workflow code separate from metric definitions:
 ### Blockers
 - None expected.
 
+## 2026-04-24T22:53:11Z - Image Runner W&B Monitor Cleanup
+
+### Context
+The image train runner was being cleaned up for larger experiment sweeps. The
+training runner should stay focused on training and lightweight sanity monitors,
+while full checkpoint evaluation remains separate.
+
+### Intent
+- Make public W&B identity include image size so mixed-resolution image sweeps
+  do not land in the same project/run group.
+- Remove the unused figure-logging switch and treat W&B media logging as always
+  on when W&B itself is enabled.
+- Keep image runs online by default.
+- Make the train-time random projected f_mem monitor log only the dashboard
+  signals that are useful during training.
+- Avoid the final generation monitor panel colliding with checkpoint sample
+  panels in W&B.
+
+### Changed / Observed
+- Default W&B project names now use `memparam-{dataset}-{image_size}-{model}`
+  for image configs, for example `memparam-flowers-128-unet`.
+- Default W&B run names and groups now include the image size for image configs.
+- Removed `--wandb_log_figures`, `--no_wandb_log_figures`, and the stale
+  `tracking.wandb.log_figures` image-runner config field.
+- Added `std_r` to image memorization summaries, including projected image
+  f_mem records.
+- Random projected f_mem now logs only `f_mem`, `mean_r`, and `std_r` to W&B
+  under the `monitor/` namespace; richer distance summaries remain in saved
+  metric JSON for debugging.
+- Final generation monitor panels now log to
+  `generation_monitor/final_samples`; checkpoint panels stay under
+  `generation_monitor/samples`.
+- Updated runner docs and tests for the new W&B naming and monitor payloads.
+
+### Commands / Checks
+- `PYTHONPATH=src:. python -m unittest tests.test_proto_runners tests.test_tracking`
+- `PYTHONPATH=src:. python -m unittest tests.test_mp_metrics tests.test_proto_runners tests.test_tracking`
+- `git diff --check`
+
+### Results
+- Focused proto-runner and tracking tests passed: 43 tests.
+- Focused metric, proto-runner, and tracking tests passed: 58 tests.
+- `git diff --check` passed.
+
+### Blockers
+- None.
+
+### Next
+- Consider attaching the random projected f_mem projection matrix and metadata
+  as W&B artifacts, not only local run artifacts.
+
 ## 2026-04-22T05:28:26Z - End-Of-Day Sweep And Tracking Polish
 
 ### Context

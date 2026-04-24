@@ -131,6 +131,7 @@ class TestMPMetrics(unittest.TestCase):
                 "N",
                 "f_mem",
                 "mean_r",
+                "std_r",
                 "median_r",
                 "mean_d1",
                 "mean_d2",
@@ -360,6 +361,7 @@ class TestMPMetrics(unittest.TestCase):
         self.assertEqual(first["feature_dim"], 4)
         self.assertAlmostEqual(first["f_mem"], second["f_mem"], places=6)
         self.assertAlmostEqual(first["mean_r"], second["mean_r"], places=6)
+        self.assertAlmostEqual(first["std_r"], second["std_r"], places=6)
 
     def test_projected_image_metrics_accept_saved_projection_matrix(self):
         reference = torch.rand(6, 1, 4, 4)
@@ -386,6 +388,7 @@ class TestMPMetrics(unittest.TestCase):
 
         self.assertAlmostEqual(seeded["f_mem"], explicit["f_mem"], places=6)
         self.assertAlmostEqual(seeded["median_r"], explicit["median_r"], places=6)
+        self.assertAlmostEqual(seeded["std_r"], explicit["std_r"], places=6)
 
     def test_projected_image_metric_detects_exact_copies(self):
         reference = torch.zeros(4, 1, 4, 4)

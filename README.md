@@ -88,13 +88,14 @@ PYTHONPATH=src python -m experiments.mnist.run \
 ```
 
 When W&B is enabled, one W&B run corresponds to one attempt. By default the
-project is derived from the dataset+model combo, such as `memparam-mnist-unet`,
+project is derived from the dataset+size+model combo, such as
+`memparam-mnist-32-unet`,
 and the visible run name includes dataset, model, `N`, batch cap,
 prediction/loss parameterization, training steps, and seed. The default W&B
 group is dataset+model+training steps, so `x`, `eps`, `v`, batch-size, seed, and
 `N` sweeps stay together inside one dataset/model project. Image runners use
-the clean public dataset key, so `flowers --image_size 128` logs under
-`memparam-flowers-unet`.
+the clean public dataset key and selected size, so
+`flowers --image_size 128` logs under `memparam-flowers-128-unet`.
 Pass `--wandb_project`, `--wandb_name`, or `--wandb_group` to override these
 values explicitly. Local offline files are stored under the attempt's
 `logs/wandb/` directory for later `wandb sync`.

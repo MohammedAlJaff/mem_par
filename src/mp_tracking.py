@@ -101,7 +101,10 @@ def _default_wandb_project(config):
     """
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
+    image_size = int(getattr(config.data, "image_size", 0) or 0)
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
+    if image_size > 0:
+        return f"memparam-{dataset}-{image_size}-{model}"
     return f"memparam-{dataset}-{model}"
 
 
@@ -118,6 +121,8 @@ def _default_wandb_run_name(config):
     """
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
+    image_size = int(getattr(config.data, "image_size", 0) or 0)
+    dataset_label = f"{dataset}-{image_size}" if image_size > 0 else dataset
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
     n_train = int(getattr(config.data, "n_train", 0))
     batch_cap = int(
@@ -131,7 +136,7 @@ def _default_wandb_run_name(config):
     loss = _wandb_slug(getattr(config.framework, "loss_space", ""), "loss")
     n_steps = int(getattr(config.training, "n_training_steps", 0))
     seed = int(getattr(config.training, "seed", 0))
-    return f"{dataset}-{model}-N{n_train}-B{batch_cap}-{prediction}_{loss}-steps{n_steps}-s{seed}"
+    return f"{dataset_label}-{model}-N{n_train}-B{batch_cap}-{prediction}_{loss}-steps{n_steps}-s{seed}"
 
 
 def _default_wandb_group(config):
@@ -144,9 +149,11 @@ def _default_wandb_group(config):
     """
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
+    image_size = int(getattr(config.data, "image_size", 0) or 0)
+    dataset_label = f"{dataset}-{image_size}" if image_size > 0 else dataset
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
     n_steps = int(getattr(config.training, "n_training_steps", 0))
-    return f"{dataset}-{model}-steps{n_steps}"
+    return f"{dataset_label}-{model}-steps{n_steps}"
 
 
 def default_wandb_identity(config):

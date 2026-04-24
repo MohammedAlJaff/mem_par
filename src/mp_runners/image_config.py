@@ -46,17 +46,18 @@ def _wandb_slug(value, fallback):
     return text or fallback
 
 
-def _dataset_model_wandb_project(dataset_key, model_arch):
-    """Build the default W&B project name for a dataset/model pair."""
+def _dataset_model_wandb_project(dataset_key, image_size, model_arch):
+    """Build the default W&B project name for a dataset/size/model pair."""
     dataset = _wandb_slug(dataset_key, "dataset")
+    size = _wandb_slug(image_size, "size")
     model = _wandb_slug(model_arch, "model")
-    return f"memparam-{dataset}-{model}"
+    return f"memparam-{dataset}-{size}-{model}"
 
 
-def _resolve_wandb_project(raw_project, dataset_key, model_arch):
+def _resolve_wandb_project(raw_project, dataset_key, image_size, model_arch):
     """Resolve explicit, legacy, and automatic W&B project names."""
     requested = str(raw_project or "").strip()
-    canonical = _dataset_model_wandb_project(dataset_key, model_arch)
+    canonical = _dataset_model_wandb_project(dataset_key, image_size, model_arch)
     if not requested or requested.lower() in _LEGACY_BROAD_WANDB_PROJECTS:
         return canonical
     if requested.lower() in {"auto", "dataset-model"}:
@@ -243,7 +244,6 @@ DEFAULT_SETTINGS = {
     "wandb_name": "",
     "wandb_group": "",
     "wandb_tags": "",
-    "wandb_log_figures": True,
     "wandb_notes": "",
     "wandb_strict": False,
 
@@ -700,6 +700,7 @@ def build_config(settings):
         config.tracking.wandb.project = _resolve_wandb_project(
             settings["wandb_project"],
             dataset,
+            config.data.image_size,
             config.network.arch,
         )
     config.tracking.wandb.project_explicit = bool(
@@ -735,7 +736,6 @@ def build_config(settings):
         for item in str(settings["wandb_tags"]).split(",")
         if item.strip()
     ]
-    config.tracking.wandb.log_figures = bool(settings["wandb_log_figures"])
     config.tracking.wandb.strict = bool(wandb_strict)
     resolve_wandb_identity(config)
 
