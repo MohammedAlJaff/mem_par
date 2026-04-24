@@ -3,7 +3,7 @@ Synthetic checkpoint evaluation for saved synthetic-runner attempts.
 
 This module handles saved-run replay, tensor preview artifacts, synthetic
 figures, run-summary updates, and tracker logging. Metric definitions stay in
-`mp_metrics.synthetic`.
+`mp_metrics.metrics_synthetic`.
 """
 
 from pathlib import Path
@@ -19,7 +19,7 @@ from mp_artifacts import (
     save_tensor,
 )
 from mp_metrics.loss_eval import collect_loss_eval_record
-from mp_metrics.synthetic import (
+from mp_metrics.metrics_synthetic import (
     collect_controlled_synthetic_metric_record,
     intrinsic_geometry_parts,
 )
@@ -73,13 +73,13 @@ def _figure_context(config):
         dimension_line = (
             f"{dataset} D={int(config.data.ambient_dim)} "
             "base=3 local=2 angle_features=4 "
-            f"N={int(config.data.n_train)} ref={int(config.data.n_eval)}"
+            f"N={int(config.data.n_train)} ref={int(config.data.n_test)}"
         )
     else:
         dimension_line = (
             f"{dataset} D={int(config.data.ambient_dim)} "
             f"d={int(config.data.intrinsic_data_dim)} "
-            f"N={int(config.data.n_train)} ref={int(config.data.n_eval)}"
+            f"N={int(config.data.n_train)} ref={int(config.data.n_test)}"
         )
     return (
         f"{dimension_line}\n"
@@ -87,7 +87,7 @@ def _figure_context(config):
         f"time_emb={int(config.network.time_emb_dim)} "
         f"pred={config.framework.prediction_space} loss={config.framework.loss_space} "
         f"sampler={config.sampling.method}x{int(config.sampling.n_steps)}\n"
-        f"seed={int(config.training.seed)} steps={int(config.training.n_steps)} "
+        f"seed={int(config.training.seed)} steps={int(config.training.n_training_steps)} "
         f"batch={int(config.training.batch_cap)} lr={float(config.training.lr):.3g} "
         f"wd={float(config.training.weight_decay):.3g}"
     )

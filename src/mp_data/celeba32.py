@@ -78,7 +78,7 @@ def load_celeba32_bundle(config):
         len(train_set), int(config.data.n_train), int(config.training.seed)
     )
     reference_indices = seeded_indices(
-        len(reference_set), int(config.data.n_eval), int(config.training.seed) + 1
+        len(reference_set), int(config.data.n_test), int(config.training.seed) + 1
     )
 
     train_tensor, train_labels = _stack_subset(train_set, train_indices)
@@ -120,7 +120,7 @@ if __name__ == "__main__":
     config.data.dataset = "celeba32_grey"
     config.data.root = "data"
     config.data.n_train = 4
-    config.data.n_eval = 4
+    config.data.n_test = 4
     config.data.image_size = 32
     config.data.image_channels = 1
     config.data.reference_split = "valid"

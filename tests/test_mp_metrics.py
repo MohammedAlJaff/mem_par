@@ -7,17 +7,19 @@ try:
     import torch
     from PIL import Image
     from mp_config import get_base_config
-    from mp_metrics.images import (
+    from mp_metrics.metrics_images import (
         compute_f_mem_by_rho,
         compute_f_mem,
         compute_image_fid,
         compute_image_memorization_metrics,
+        compute_projected_image_memorization_metrics,
         compute_memorization_metrics,
         compute_nn_stats,
         collect_image32_metric_record,
+        make_random_projection_matrix,
         RHO_SWEEP,
     )
-    from mp_metrics.images import _to_uint8_rgb
+    from mp_metrics.metrics_images import _to_uint8_rgb
     from mp_runners.metric_io import compute_image_folder_memorization_metrics
 except ModuleNotFoundError:
     torch = None
@@ -28,9 +30,11 @@ except ModuleNotFoundError:
     compute_image_fid = None
     compute_image_folder_memorization_metrics = None
     compute_image_memorization_metrics = None
+    compute_projected_image_memorization_metrics = None
     compute_memorization_metrics = None
     compute_nn_stats = None
     collect_image32_metric_record = None
+    make_random_projection_matrix = None
     RHO_SWEEP = None
     _to_uint8_rgb = None
 
@@ -327,6 +331,85 @@ class TestMPMetrics(unittest.TestCase):
             direct_metrics["mean_r"],
             places=6,
         )
+
+    def test_projected_image_metrics_are_seed_deterministic(self):
+        reference = torch.rand(5, 1, 4, 4)
+        samples = reference[:3].clone()
+
+        first = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=4,
+            projection_seed=17,
+            image_range="0_1",
+        )
+        second = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=4,
+            projection_seed=17,
+            image_range="0_1",
+        )
+
+        self.assertEqual(first["space"], "random_projected_pixels")
+        self.assertEqual(first["resize_size"], 2)
+        self.assertEqual(first["projection_dim"], 4)
+        self.assertEqual(first["projection_seed"], 17)
+        self.assertEqual(first["feature_dim"], 4)
+        self.assertAlmostEqual(first["f_mem"], second["f_mem"], places=6)
+        self.assertAlmostEqual(first["mean_r"], second["mean_r"], places=6)
+
+    def test_projected_image_metrics_accept_saved_projection_matrix(self):
+        reference = torch.rand(6, 1, 4, 4)
+        samples = reference[:2].clone()
+        projection = make_random_projection_matrix(4, 3, 11)
+
+        seeded = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=3,
+            projection_seed=11,
+            image_range="0_1",
+        )
+        explicit = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=3,
+            projection_seed=11,
+            projection_matrix=projection.clone(),
+            image_range="0_1",
+        )
+
+        self.assertAlmostEqual(seeded["f_mem"], explicit["f_mem"], places=6)
+        self.assertAlmostEqual(seeded["median_r"], explicit["median_r"], places=6)
+
+    def test_projected_image_metric_detects_exact_copies(self):
+        reference = torch.zeros(4, 1, 4, 4)
+        reference[1] = 0.25
+        reference[2] = 0.75
+        reference[3] = 1.0
+        samples = reference[[0, 2]].clone()
+
+        metrics = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=8,
+            projection_seed=5,
+            rho=0.5,
+            image_range="0_1",
+        )
+
+        self.assertEqual(metrics["N"], 4)
+        self.assertEqual(metrics["n_samples"], 2)
+        self.assertLess(metrics["median_d1"], 1.0e-6)
+        self.assertLess(metrics["median_r"], 0.5)
+        self.assertEqual(metrics["f_mem"], 1.0)
+        self.assertIn("median_d2", metrics)
 
     def test_f_mem_rho_sweep(self):
         sweep = compute_f_mem_by_rho(torch.tensor([0.2, 0.6, 0.9]), [0.5, 0.8])

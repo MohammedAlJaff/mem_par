@@ -11,7 +11,7 @@ model, training, metrics, and artifacts.
 | Name | Dataset | Backbone | Style | Module | Notebook |
 | --- | --- | --- | --- | --- | --- |
 | `synthetic_runner` | `gmm_subspace`, `torus3d` | `mlp` | recipe functions | `mp_runners.synthetic_runner` | `notebooks/synthetic_runner.ipynb` |
-| `image_runner` | `mnist`, `celeba32_grey`, `flowers102`, `flowers102_128`, `flowers102_256`, `afhq_v2`, `ffhq128` | `unet` | recipe functions | `mp_runners.image_runner` | `notebooks/image_runner.ipynb` |
+| `image_runner` | `mnist`, `celeba`, `flowers`, `afhq`, `ffhq` | `unet` | recipe functions | `mp_runners.image_runner` | `notebooks/image_runner.ipynb` |
 
 ## Command Examples
 
@@ -59,44 +59,36 @@ Image recipe run:
 ```bash
 PYTHONPATH=src:. python -m mp_runners.image_runner \
   --device cuda \
-  --out-dir outputs/runners/image_runner \
-  --dataset celeba32_grey \
-  --image-size 32 \
+  --out_dir outputs/runners/image_runner \
+  --dataset celeba \
+  --image_size 32 \
   --model unet \
-  --prediction-space v \
-  --loss-space v \
-  --batch-cap 64 \
-  --n-steps 200 \
-  --ckpt-every 50 \
-  --no-download
+  --prediction_space v \
+  --loss_space v \
+  --batch_cap 64 \
+  --n_training_steps 200 \
+  --ckpt_every 50 \
+  --no_download
 
-# Run the same full train+eval pipeline with tiny step counts before submitting a long job.
+# Run the same train pipeline with tiny step counts before submitting a long job.
 PYTHONPATH=src:. python -m mp_runners.image_runner \
   --device cuda \
-  --dataset flowers102 \
-  --image-size 128 \
+  --dataset flowers \
+  --image_size 128 \
   --model unet \
-  --generation-trace \
-  --generation-trace-count 8 \
-  --no-generation-trace-show \
-  --batch-cap 4 \
-  --n-train 8 \
-  --n-eval 8 \
-  --n-steps 2 \
-  --ckpt-every 1 \
-  --final-eval
-
-# Replay checkpoint metrics later from a finished training attempt.
-PYTHONPATH=src:. python -m mp_runners.image_runner \
-  --device cuda \
-  --eval-run-dir outputs/runners/image_runner/runs/.../DONE_...
+  --generation_monitor \
+  --generation_monitor_samples 8 \
+  --batch_cap 4 \
+  --n_train 8 \
+  --n_test 8 \
+  --n_training_steps 2 \
+  --ckpt_every 1
 ```
 
-The image runner CLI is intentionally slim. For normal runs, pass dataset,
-image size, and model; the runner chooses the matching data/profile defaults.
-For example, `--dataset flowers102 --image-size 64 --model unet` resolves to
-the `flowers102_64` data/model profile. Older profile keys such as
-`flowers102_128` still work.
+The image runner CLI is intentionally slim. Public dataset names are only
+`mnist`, `celeba`, `flowers`, `afhq`, and `ffhq`; `--image_size` is the only
+public resolution control. For example, `--dataset flowers --image_size 64
+--model unet` resolves internally to the matching Flowers102 loader/profile.
 
 `image_runner` is the single-process image entrypoint. Future multi-GPU/DDP
 experiments should live in a separate script such as `image_runner_ddp`, launched
@@ -106,26 +98,23 @@ The core image-runner size knobs mean exactly this:
 
 | Flag | Config field | Meaning |
 | --- | --- | --- |
-| `--dataset` | `config.study.dataset_key`, `config.data.dataset` | User-facing dataset choice. Base keys such as `flowers102` can be paired with `--image-size`. |
-| `--image-size` | `config.data.image_size` | Image resolution; standard CLI sizes are 32, 64, 128, and 256. |
+| `--dataset` | `config.study.dataset_key`, `config.data.dataset` | Public dataset choice plus internal loader name. |
+| `--image_size` | `config.data.image_size` | Image resolution; standard CLI sizes are 32, 64, 128, and 256. |
 | `--model` | `config.network.arch` | Model family. Currently `unet`. |
-| `--n-train` | `config.data.n_train` | Number of real images used for optimization. |
-| `--n-eval` | `config.data.n_eval` | Number of real held-out/reference images loaded for evaluation. |
-| `--eval-samples` | `config.evaluation.n_samples` | Number of generated samples per checkpoint; also the size of `artifacts/z_init.pt`. |
-| `--sampling-steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
+| `--n_train` | `config.data.n_train` | Number of real images used for optimization. |
+| `--n_test` | `config.data.n_test` | Number of real held-out/reference images materialized for later tests. |
+| `--generation_monitor_samples` | `config.generation_monitor.n_samples` | Number of fixed-noise samples available to train-time image monitors. |
+| `--sampling_steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
 | `--precision` | `config.runtime.precision` | Numerical mode: `fp32`, CUDA `tf32`, or CUDA `bf16` autocast. |
-| `--compare-numerics` | runner-only | Runs an in-memory fp32-vs-selected-precision smoke benchmark instead of a full artifact run. |
-| `--final-eval` | runner-only | Runs checkpoint metrics immediately after training. Defaults off for long jobs. |
-| `--eval-run-dir` | runner-only | Replays checkpoint metrics later from a finished `DONE_...` attempt directory. |
 
 W&B projects default to the user-facing dataset key plus model arch:
-`memparam-flowers102_128-unet`, `memparam-mnist-unet`, etc. The old broad
+`memparam-flowers-unet`, `memparam-mnist-unet`, etc. The old broad
 `memparam-image32-unet` value is treated as auto so copied commands stop mixing
 datasets into one W&B project. Default W&B run names include dataset, model,
 `N`, batch cap, prediction/loss spaces, training steps, and seed. Default W&B
 groups include only dataset, model, and training steps, so `x`, `eps`, `v`,
 batch-size, seed, and `N` sweeps stay comparable. Explicit
-`--wandb-project`, `--wandb-name`, and `--wandb-group` flags override these
+`--wandb_project`, `--wandb_name`, and `--wandb_group` flags override these
 automatic values.
 
 Flowers102 profiles intentionally train on the large official `test` split and
@@ -147,19 +136,18 @@ The synthetic runner writes:
 - `checkpoints/step_*.pt`
 - `status.json`
 
-Image runners write the canonical attempt artifact tree under `--out-dir`.
+Image runners write the canonical attempt artifact tree under `--out_dir`.
 Training always saves the config snapshot, train/reference tensors, `z_init.pt`,
-train history, checkpoints, and generation-trace figures when enabled. Immediate
-checkpoint evaluation is opt-in with `--final-eval`; otherwise metrics can be
-replayed later with `--eval-run-dir`.
-Checkpoint evaluation writes `metrics/loss_eval.json` with held-out random-`t`
+train history, checkpoints, and generation-monitor figures when enabled.
+Checkpoint evaluation is run separately after training and writes
+`metrics/loss_eval.json` with held-out random-`t`
 loss probes and fixed-`t` probes at `0.5` and `0.75`, plus
 `metrics/checkpoint_sample_previews.json` and preview tensors under
-`metrics/checkpoint_sample_previews/`. When `--generation-trace` is enabled,
+`metrics/checkpoint_sample_previews/`. When `--generation_monitor` is enabled,
 image runners save `artifacts/z_init.pt` once and sample from that same fixed
 noise bank at step 0, every checkpoint, and the final model. The panels are
-written under `figures/generation_trace_*.png` and logged to W&B as
-`generation_trace/samples_over_train` against `generation_trace/step` when
+written under `figures/generation_monitor_*.png` and logged to W&B as
+`generation_monitor/samples` when
 tracking is active.
 Canonical attempt folders receive a `DONE_` prefix after training artifacts are
 successfully written, so completed-training folders are visible from the

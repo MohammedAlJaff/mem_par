@@ -115,7 +115,7 @@ class TestArtifactLayout(unittest.TestCase):
                             ),
                         }
                     ],
-                    "generation_trace": {
+                    "generation_monitor": {
                         "z_init_path": str(
                             (attempt / "artifacts" / "z_init.pt").resolve()
                         ),
@@ -126,7 +126,7 @@ class TestArtifactLayout(unittest.TestCase):
                                     (
                                         attempt
                                         / "figures"
-                                        / "generation_trace_samples_step_000001.png"
+                                        / "generation_monitor_samples_step_000001.png"
                                     ).resolve()
                                 ),
                                 "z_init_path": str(
@@ -138,7 +138,7 @@ class TestArtifactLayout(unittest.TestCase):
                             (
                                 attempt
                                 / "figures"
-                                / "generation_trace_samples_final.png"
+                                / "generation_monitor_samples_final.png"
                             ).resolve()
                         ),
                     },
@@ -164,7 +164,7 @@ class TestArtifactLayout(unittest.TestCase):
             self.assertEqual(run_summary["attempt_id"], done_attempt.name)
             self.assertEqual(run_summary["original_attempt_id"], original_name)
             self.assertTrue(
-                run_summary["generation_trace"]["checkpoint_samples"][0][
+                run_summary["generation_monitor"]["checkpoint_samples"][0][
                     "path"
                 ].startswith(str(done_attempt.resolve()))
             )

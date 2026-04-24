@@ -3,7 +3,7 @@ Image checkpoint evaluation for saved image-runner attempts.
 
 This module loads saved run artifacts, samples every checkpoint from the saved
 `z_init`, computes image metrics, saves preview artifacts, and updates tracking.
-The metric definitions stay in `mp_metrics.images`.
+The metric definitions stay in `mp_metrics.metrics_images`.
 """
 
 from pathlib import Path
@@ -18,7 +18,7 @@ from mp_artifacts import (
     save_json,
     save_tensor,
 )
-from mp_metrics.images import (
+from mp_metrics.metrics_images import (
     RHO_SWEEP,
     collect_image32_metric_record,
     compute_memorization_metrics,
@@ -33,13 +33,25 @@ DEFAULT_CHECKPOINT_PREVIEW_COUNT = 8
 
 
 def checkpoint_preview_figure_name(step):
-    """Return the stable figure key for one checkpoint preview panel."""
-    return f"checkpoint_samples_over_train_step_{int(step):06d}"
+    """
+    Return the stable figure key for all checkpoint preview panels.
+    """
+    return "checkpoint_samples_over_train"
 
 
-def _generation_trace_config(config):
-    """Return enabled generation trace config, if present."""
-    trace = getattr(config, "generation_trace", None) if config is not None else None
+def checkpoint_preview_figure_path(step, run_dir):
+    """
+    Return the on-disk path for the current checkpoint preview panel.
+
+    We keep a single rotating panel file while logging progression in W&B
+    via `eval/checkpoint_samples_over_train` with explicit step metadata.
+    """
+    return Path(run_dir) / "figures" / "checkpoint_samples_over_train_latest.png"
+
+
+def _generation_monitor_config(config):
+    """Return enabled generation monitor config, if present."""
+    trace = getattr(config, "generation_monitor", None) if config is not None else None
     if trace is None or not bool(getattr(trace, "enabled", False)):
         return None
     return trace
@@ -48,9 +60,9 @@ def _generation_trace_config(config):
 def _preview_count(config, samples, train_tensor=None, count=None):
     """Resolve how many checkpoint samples to save."""
     if count is None:
-        trace = _generation_trace_config(config)
+        trace = _generation_monitor_config(config)
         if trace is not None:
-            count = int(getattr(trace, "num_images", DEFAULT_CHECKPOINT_PREVIEW_COUNT))
+            count = int(getattr(trace, "n_samples", DEFAULT_CHECKPOINT_PREVIEW_COUNT))
         else:
             evaluation = getattr(config, "evaluation", None) if config is not None else None
             count = int(
@@ -81,7 +93,7 @@ def collect_checkpoint_sample_preview_record(
     Save checkpoint samples and, when requested, a samples-over-train panel.
 
     The tensor payload is always saved. The image figure is rendered only when
-    tensors are image-shaped and generation tracing is enabled.
+    tensors are image-shaped and generation monitoring is enabled.
     """
     from mp_visualization import (
         is_image_batch,
@@ -103,7 +115,7 @@ def collect_checkpoint_sample_preview_record(
     should_render = (
         bool(figure_enabled)
         if figure_enabled is not None
-        else _generation_trace_config(config) is not None
+        else _generation_monitor_config(config) is not None
     )
     if (
         should_render
@@ -116,7 +128,7 @@ def collect_checkpoint_sample_preview_record(
         saved_path = save_samples_over_train_panel(
             preview_samples,
             train_tensor,
-            run_dir / "figures" / f"{figure_name}.png",
+            checkpoint_preview_figure_path(step, run_dir),
             count=count,
             title=(
                 model_context_title(

@@ -1,7 +1,7 @@
 """
 Image metrics for generated samples and reference images.
 
-Read this module as the image analogue of `mp_metrics.synthetic`:
+Read this module as the image analogue of `mp_metrics.metrics_synthetic`:
 
 1. Nearest-neighbor metrics compare generated images to the saved training
    tensor. They report first-neighbor distance, second-neighbor distance, and
@@ -20,6 +20,7 @@ figures convert that representation at the boundary.
 import warnings
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 DEFAULT_FID_FEATURE_EXTRACTOR = "inception-v3-compat"
@@ -620,6 +621,152 @@ def compute_image_memorization_metrics(
     return metrics
 
 
+def make_random_projection_matrix(input_dim, projection_dim, projection_seed):
+    """
+    Draw the fixed Gaussian projection used by projected image f_mem.
+
+    The matrix maps flattened resized pixels from dimension `D` to `K`. The
+    `1 / sqrt(K)` scale keeps projected distances comparable as `K` changes.
+    """
+    input_dim = int(input_dim)
+    projection_dim = int(projection_dim)
+    if input_dim < 1:
+        raise ValueError(f"input_dim must be at least 1, got {input_dim}")
+    if projection_dim < 1:
+        raise ValueError(f"projection_dim must be at least 1, got {projection_dim}")
+    generator = torch.Generator().manual_seed(int(projection_seed))
+    matrix = torch.randn(input_dim, projection_dim, generator=generator)
+    return matrix / float(projection_dim) ** 0.5
+
+
+def _resize_flatten_images_for_projection(images, *, resize_size, image_range, device):
+    """
+    Convert images to flattened resized `[0, 1]` pixels on the metric device.
+    """
+    resize_size = int(resize_size)
+    if resize_size < 1:
+        raise ValueError(f"resize_size must be at least 1, got {resize_size}")
+    images = _normalize_images(images, image_range=image_range)
+    images = images.to(_device_from_arg(device))
+    if int(images.shape[-2]) != resize_size or int(images.shape[-1]) != resize_size:
+        images = F.interpolate(
+            images,
+            size=(resize_size, resize_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+    return images.flatten(1).float()
+
+
+def _resolve_projection_matrix(input_dim, projection_dim, projection_seed, projection_matrix, device):
+    """
+    Return a projection matrix with shape `[D, K]` on the metric device.
+    """
+    if projection_matrix is None:
+        if projection_seed is None:
+            raise ValueError("projection_seed is required when projection_matrix is not provided.")
+        projection_matrix = make_random_projection_matrix(
+            input_dim,
+            projection_dim,
+            projection_seed,
+        )
+    if not torch.is_tensor(projection_matrix):
+        projection_matrix = torch.as_tensor(projection_matrix, dtype=torch.float32)
+    projection_matrix = projection_matrix.float()
+    if projection_matrix.dim() != 2:
+        raise ValueError(
+            "projection_matrix must have shape [input_dim, projection_dim], "
+            f"got {tuple(projection_matrix.shape)}"
+        )
+    if int(projection_matrix.shape[0]) != int(input_dim):
+        raise ValueError(
+            "projection_matrix input dimension does not match resized pixels: "
+            f"{int(projection_matrix.shape[0])} != {int(input_dim)}"
+        )
+    if projection_dim is not None and int(projection_matrix.shape[1]) != int(projection_dim):
+        raise ValueError(
+            "projection_matrix output dimension does not match projection_dim: "
+            f"{int(projection_matrix.shape[1])} != {int(projection_dim)}"
+        )
+    return projection_matrix.to(_device_from_arg(device))
+
+
+def compute_projected_image_memorization_metrics(
+    samples,
+    reference,
+    *,
+    resize_size=16,
+    projection_dim=256,
+    projection_seed=None,
+    projection_matrix=None,
+    rho=None,
+    query_batch_size=256,
+    reference_batch_size=None,
+    image_range="auto",
+    device="cpu",
+):
+    """
+    Compute f_mem after resizing images and applying a fixed random projection.
+
+    This preserves the nearest-neighbor definition of image memorization while
+    changing the metric space from raw pixels to `K` random projected resized
+    pixel features.
+    """
+    query_batch_size = int(query_batch_size)
+    if query_batch_size < 1:
+        raise ValueError(f"query_batch_size must be at least 1, got {query_batch_size}")
+    sample_pixels = _resize_flatten_images_for_projection(
+        samples,
+        resize_size=resize_size,
+        image_range=image_range,
+        device=device,
+    )
+    reference_pixels = _resize_flatten_images_for_projection(
+        reference,
+        resize_size=resize_size,
+        image_range=image_range,
+        device=device,
+    )
+    if int(sample_pixels.shape[1]) != int(reference_pixels.shape[1]):
+        raise ValueError(
+            "Sample and reference resized pixels must have matching dimensions, "
+            f"got {int(sample_pixels.shape[1])} and {int(reference_pixels.shape[1])}."
+        )
+    input_dim = int(sample_pixels.shape[1])
+    projection = _resolve_projection_matrix(
+        input_dim,
+        projection_dim,
+        projection_seed,
+        projection_matrix,
+        device,
+    )
+    sample_vectors = sample_pixels @ projection
+    reference_vectors = reference_pixels @ projection
+    metrics = compute_memorization_metrics(
+        sample_vectors,
+        reference_vectors,
+        rho=rho,
+        query_batch_size=query_batch_size,
+        reference_batch_size=reference_batch_size,
+    )
+    metrics.update(
+        {
+            "space": "random_projected_pixels",
+            "resize_size": int(resize_size),
+            "projection_dim": int(projection.shape[1]),
+            "projection_seed": None if projection_seed is None else int(projection_seed),
+            "image_range": str(image_range),
+            "query_batch_size": query_batch_size,
+            "reference_batch_size": (
+                None if reference_batch_size is None else int(reference_batch_size)
+            ),
+            "feature_dim": int(projection.shape[1]),
+            "input_dim": input_dim,
+        }
+    )
+    return metrics
+
+
 def compute_image_fid(
     samples,
     reference=None,
@@ -766,13 +913,15 @@ __all__ = [
     "compute_f_mem",
     "compute_image_fid",
     "compute_image_memorization_metrics",
+    "compute_projected_image_memorization_metrics",
     "compute_memorization_metrics",
     "compute_nn_stats",
+    "make_random_projection_matrix",
 ]
 
 
 if __name__ == "__main__":
-    print("mp_metrics.images example")
+    print("mp_metrics.metrics_images example")
     reference = torch.rand(4, 1, 4, 4)
     samples = reference[:2].clone()
     metrics = compute_image_memorization_metrics(samples, reference, image_range="0_1")

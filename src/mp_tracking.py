@@ -129,7 +129,7 @@ def _default_wandb_run_name(config):
     )
     prediction = _wandb_slug(getattr(config.framework, "prediction_space", ""), "pred")
     loss = _wandb_slug(getattr(config.framework, "loss_space", ""), "loss")
-    n_steps = int(getattr(config.training, "n_steps", 0))
+    n_steps = int(getattr(config.training, "n_training_steps", 0))
     seed = int(getattr(config.training, "seed", 0))
     return f"{dataset}-{model}-N{n_train}-B{batch_cap}-{prediction}_{loss}-steps{n_steps}-s{seed}"
 
@@ -145,7 +145,7 @@ def _default_wandb_group(config):
     dataset_key = getattr(getattr(config, "study", None), "dataset_key", "")
     dataset = _wandb_slug(dataset_key or getattr(config.data, "dataset", ""), "dataset")
     model = _wandb_slug(getattr(config.network, "arch", ""), "model")
-    n_steps = int(getattr(config.training, "n_steps", 0))
+    n_steps = int(getattr(config.training, "n_training_steps", 0))
     return f"{dataset}-{model}-steps{n_steps}"
 
 
@@ -242,8 +242,8 @@ def _wandb_figure_caption(metric_name, step):
     Label W&B media with the scientific checkpoint step, not W&B's row index.
     """
     metric_name = str(metric_name)
-    if metric_name.startswith("generation_trace/"):
-        label = "generation_trace"
+    if metric_name.startswith("generation_monitor/"):
+        label = "generation_monitor"
     elif metric_name.endswith("/checkpoint_samples_over_train"):
         label = "checkpoint_samples_over_train"
     else:
@@ -348,7 +348,7 @@ class AttemptTracker:
                 f"seed:{self.status['seed_id']}",
                 f"lr:{self.config.training.lr}",
                 f"batch_cap:{self.config.training.batch_cap}",
-                f"steps:{self.config.training.n_steps}",
+                f"steps:{self.config.training.n_training_steps}",
                 f"ckpt_every:{self.config.training.ckpt_every}",
             ]
         )
@@ -448,10 +448,12 @@ class AttemptTracker:
             self._wandb_module.define_metric("train/*", step_metric="train/step")
             self._wandb_module.define_metric("eval/step")
             self._wandb_module.define_metric("eval/*", step_metric="eval/step")
-            self._wandb_module.define_metric("generation_trace/step")
+            self._wandb_module.define_metric("monitor/step")
+            self._wandb_module.define_metric("monitor/*", step_metric="monitor/step")
+            self._wandb_module.define_metric("generation_monitor/step")
             self._wandb_module.define_metric(
-                "generation_trace/*",
-                step_metric="generation_trace/step",
+                "generation_monitor/*",
+                step_metric="generation_monitor/step",
             )
         except Exception as exc:
             self.warn(
@@ -465,10 +467,12 @@ class AttemptTracker:
         """
         if step is None:
             return metrics
-        if any(key.startswith("generation_trace/") for key in metrics):
-            metrics.setdefault("generation_trace/step", int(step))
+        if any(key.startswith("generation_monitor/") for key in metrics):
+            metrics.setdefault("generation_monitor/step", int(step))
         elif any(key.startswith("eval/") for key in metrics):
             metrics.setdefault("eval/step", int(step))
+        elif any(key.startswith("monitor/") for key in metrics):
+            metrics.setdefault("monitor/step", int(step))
         elif any(key.startswith("train/") for key in metrics):
             metrics.setdefault("train/step", int(step))
         return metrics

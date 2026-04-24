@@ -13,7 +13,7 @@ try:
         torus_periodic_features,
     )
     from mp_runners import synthetic_runner
-    from mp_metrics.synthetic import (
+    from mp_metrics.metrics_synthetic import (
         collect_controlled_synthetic_metric_record,
         intrinsic_geometry_parts,
         torus3d_metrics,
@@ -41,7 +41,7 @@ class TestTorusSynthetic(unittest.TestCase):
                 "dataset": "torus3d",
                 "ambient_dim": 3,
                 "n_train": 16,
-                "n_eval": 18,
+                "n_test": 18,
                 "eval_samples": 8,
                 "sigma_eta": sigma_eta,
                 "major_radius": 2.0,
@@ -154,7 +154,7 @@ class TestTorusSynthetic(unittest.TestCase):
                 "dataset": "torus3d",
                 "ambient_dim": 3,
                 "n_train": 8,
-                "n_eval": 8,
+                "n_test": 8,
                 "batch_cap": 4,
                 "eval_samples": 4,
                 "sampling_steps": 2,

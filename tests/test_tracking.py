@@ -94,7 +94,7 @@ class TestAttemptTracker(unittest.TestCase):
                     step=7,
                 )
                 tracker.log_figure_metric(
-                    "generation_trace/samples",
+                    "generation_monitor/samples",
                     figure_path,
                     step=9,
                 )
@@ -131,11 +131,11 @@ class TestAttemptTracker(unittest.TestCase):
                     fake.runs[0].logs[3],
                     (
                         {
-                            "generation_trace/samples": {
+                            "generation_monitor/samples": {
                                 "image_path": str(figure_path.resolve()),
-                                "caption": "generation_trace | grad_step=9",
+                                "caption": "generation_monitor | grad_step=9",
                             },
-                            "generation_trace/step": 9,
+                            "generation_monitor/step": 9,
                         },
                         None,
                     ),

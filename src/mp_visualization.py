@@ -11,6 +11,9 @@ from pathlib import Path
 import torch
 
 
+DEFAULT_IMAGE_GRID_MAX_COLUMNS = 10
+
+
 def prepare_matplotlib_cache(logs_dir):
     """
     Keep matplotlib from trying to write cache files under an unwritable home.
@@ -115,12 +118,37 @@ def _logs_dir_for_figure(figure_path):
     return figure_path.parent / "logs"
 
 
-def save_image_rows_figure(rows, row_labels, figure_path, *, title=None):
+def _image_grid_layout(row_counts, max_columns):
+    """
+    Return visual grid dimensions for semantic image rows.
+    """
+    max_columns = int(max_columns)
+    if max_columns < 1:
+        raise ValueError(f"max_columns must be >= 1, got {max_columns}")
+    if not row_counts:
+        raise ValueError("Image grids require at least one row.")
+
+    n_cols = min(max(int(count) for count in row_counts), max_columns)
+    visual_row_counts = [
+        max(1, (int(count) + n_cols - 1) // n_cols) for count in row_counts
+    ]
+    return n_cols, visual_row_counts
+
+
+def save_image_rows_figure(
+    rows,
+    row_labels,
+    figure_path,
+    *,
+    title=None,
+    max_columns=DEFAULT_IMAGE_GRID_MAX_COLUMNS,
+):
     """
     Save an image grid with one semantic row per tensor batch.
 
     Typical rows are generated samples and the corresponding training images.
     Keeping rows explicit makes figure meaning clear in run folders and W&B.
+    Larger rows wrap across multiple visual rows instead of becoming very wide.
     """
     figure_path = Path(figure_path)
     prepare_matplotlib_cache(_logs_dir_for_figure(figure_path))
@@ -132,8 +160,11 @@ def save_image_rows_figure(rows, row_labels, figure_path, *, title=None):
     figure_path.parent.mkdir(parents=True, exist_ok=True)
 
     normalized_rows = [normalize_image_batch_for_display(row) for row in rows]
-    n_rows = len(normalized_rows)
-    n_cols = max(int(row.shape[0]) for row in normalized_rows)
+    n_cols, visual_row_counts = _image_grid_layout(
+        [int(row.shape[0]) for row in normalized_rows],
+        max_columns,
+    )
+    n_rows = sum(visual_row_counts)
     title_lines = str(title).count("\n") + 1 if title else 0
     title_height = 0.32 * title_lines if title else 0.0
     fig_width = max(4.0, 1.25 * n_cols)
@@ -145,21 +176,26 @@ def save_image_rows_figure(rows, row_labels, figure_path, *, title=None):
         squeeze=False,
     )
 
+    axis_row_index = 0
     for row_index, images in enumerate(normalized_rows):
-        for col_index in range(n_cols):
-            axis = axes[row_index][col_index]
-            axis.axis("off")
-            if col_index < int(images.shape[0]):
-                _draw_image_on_axis(axis, images[col_index])
-                if col_index == 0:
-                    axis.set_ylabel(
-                        str(row_labels[row_index]),
-                        rotation=0,
-                        labelpad=38,
-                        va="center",
-                        ha="right",
-                        fontsize=9,
-                    )
+        row_count = int(images.shape[0])
+        for visual_row_index in range(visual_row_counts[row_index]):
+            for col_index in range(n_cols):
+                axis = axes[axis_row_index][col_index]
+                axis.axis("off")
+                image_index = visual_row_index * n_cols + col_index
+                if image_index < row_count:
+                    _draw_image_on_axis(axis, images[image_index])
+                    if visual_row_index == 0 and col_index == 0:
+                        axis.set_ylabel(
+                            str(row_labels[row_index]),
+                            rotation=0,
+                            labelpad=38,
+                            va="center",
+                            ha="right",
+                            fontsize=9,
+                        )
+            axis_row_index += 1
 
     if title:
         fig.suptitle(str(title), fontsize=10.5)
@@ -480,7 +516,7 @@ def _synthetic_torus3d_train_scatter(
     """Save the initial train-only canonical 3D torus scatter plot."""
     train_xyz = geometry.get("train_torus_xyz")
     if train_xyz is None:
-        from mp_metrics.synthetic import intrinsic_geometry_parts
+        from mp_metrics.metrics_synthetic import intrinsic_geometry_parts
 
         train_xyz = intrinsic_geometry_parts(train_tensor, geometry)["torus_xyz"]
     train_xyz = train_xyz.cpu()
@@ -532,7 +568,7 @@ def save_torus3d_checkpoint_scatter(
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
 
-    from mp_metrics.synthetic import intrinsic_geometry_parts
+    from mp_metrics.metrics_synthetic import intrinsic_geometry_parts
 
     train_xyz = geometry.get("train_torus_xyz")
     if train_xyz is None:

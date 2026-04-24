@@ -10,12 +10,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from mp_metrics.images import (
+from mp_metrics.metrics_images import (
     DEFAULT_FID_FEATURE_EXTRACTOR,
     compute_image_fid,
     compute_image_memorization_metrics,
 )
-from mp_metrics.synthetic import compute_memorization_metrics
+from mp_metrics.metrics_synthetic import compute_memorization_metrics
 
 
 def _load_tensor_payload(path):

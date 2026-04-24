@@ -32,7 +32,7 @@ class TestMNISTLoader(unittest.TestCase):
         config.data.root = "data"
         config.data.download = False
         config.data.n_train = 20
-        config.data.n_eval = 20
+        config.data.n_test = 20
         config.data.image_size = 32
         config.data.image_channels = 1
         config.data.flatten = False
@@ -67,7 +67,7 @@ class TestMNISTLoader(unittest.TestCase):
     def test_non_divisible_balanced_requests_fall_back_to_seeded_subset(self):
         config = self.make_config()
         config.data.n_train = 21
-        config.data.n_eval = 23
+        config.data.n_test = 23
 
         bundle = load_mnist_bundle(config)
 

@@ -1,5 +1,49 @@
 # Coding Journal
 
+## 2026-04-24T22:05:38Z - Image Runner API Cleanup And Projected f_mem Monitor
+
+### Context
+Cleaned up the canonical image training runner before longer image sweeps.
+The user wanted dataset names to be public and simple, evals separated from
+training, and projected f_mem treated as a train-time sanity monitor.
+
+### Intent
+Make the image runner a clean training API: users type datasets like `flowers`
+or `ffhq`, choose resolution with `--image_size`, and get checkpoint-time
+monitoring without mixing full checkpoint evaluation into the train runner.
+
+### Changed / Observed
+- Public image datasets are now `mnist`, `celeba`, `flowers`, `afhq`, and
+  `ffhq`; legacy loader/profile names remain internal and are rejected at the
+  CLI.
+- Replaced `data.n_eval` with `data.n_test` and training horizon
+  `training.n_steps` with `training.n_training_steps`; kept
+  `sampling.n_steps` unchanged.
+- Converted the image runner to underscore flags such as `--run_name`,
+  `--image_size`, `--n_test`, `--n_training_steps`, and `--ckpt_every`.
+- Removed image-runner final-eval and compare-numerics paths.
+- Renamed `generation_trace` to `generation_monitor` across config, trainer,
+  artifacts, tracking, docs, and tests.
+- Added always-on image train-time `random_projected_f_mem` monitor with saved
+  projection matrix/metadata and `monitor/random_projected_f_mem_*` logging.
+- Hard-renamed metrics modules to `mp_metrics.metrics_images` and
+  `mp_metrics.metrics_synthetic`.
+
+### Commands / Checks
+- `PYTHONPATH=src:. python -m unittest tests.test_proto_runners tests.test_experiment_pipeline tests.test_checkpoint_schedule tests.test_tracking tests.test_checkpoint_previews tests.test_artifact_layout tests.test_src_examples tests.test_mp_metrics tests.test_torus_synthetic`
+- `PYTHONPATH=src:. python -m py_compile src/mp_runners/image_runner.py src/mp_runners/image_config.py src/mp_training/trainer.py src/mp_tracking.py src/mp_runners/image_eval.py tests/test_proto_runners.py tests/test_experiment_pipeline.py tests/test_checkpoint_previews.py tests/test_artifact_layout.py tests/test_tracking.py`
+- `PYTHONPATH=src:. python -m mp_runners.image_runner --help`
+- `git diff --check`
+
+### Results
+- Focused test suite passed: 83 tests.
+- Help output now shows only clean image datasets and underscore image flags.
+- `git diff --check` passed.
+
+### Next
+Use the cleaned image runner for short smoke jobs, then submit larger training
+sweeps and run full checkpoint evaluation separately on completed attempts.
+
 ## 2026-04-22T01:36:40Z - Image Data Bundle Gaps
 
 ### Context

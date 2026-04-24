@@ -3,7 +3,7 @@ import unittest
 
 try:
     import torch
-    from mp_metrics.synthetic import (
+    from mp_metrics.metrics_synthetic import (
         gmm_intrinsic_log_prob,
         gmm_intrinsic_metrics,
         intrinsic_sliced_w2,
@@ -31,7 +31,7 @@ class TestProjectedGMMIntrinsicMetrics(unittest.TestCase):
         config = clone_config(get_base_config())
         config.data.dataset = "gmm_subspace"
         config.data.n_train = 10
-        config.data.n_eval = 12
+        config.data.n_test = 12
         config.data.data_dim = 8
         config.data.intrinsic_dim = 2
         config.data.n_clusters = 3
@@ -81,17 +81,17 @@ class TestProjectedGMMIntrinsicMetrics(unittest.TestCase):
         reference_generator = torch.Generator().manual_seed(int(config.training.seed) + 1)
         reference_labels = torch.randint(
             int(config.data.n_clusters),
-            (int(config.data.n_eval),),
+            (int(config.data.n_test),),
             generator=reference_generator,
         )
         reference_latent = means[reference_labels] + float(config.data.sigma_z) * torch.randn(
-            int(config.data.n_eval),
+            int(config.data.n_test),
             int(config.data.intrinsic_dim),
             generator=reference_generator,
         )
         reference = reference_latent @ basis.T
         reference = reference + float(config.data.sigma_eta) * torch.randn(
-            int(config.data.n_eval),
+            int(config.data.n_test),
             int(config.data.data_dim),
             generator=reference_generator,
         )

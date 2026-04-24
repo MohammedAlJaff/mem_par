@@ -104,7 +104,7 @@ class TestSrcPipeline(unittest.TestCase):
             self.assertIn("data reference", attempt_log)
             self.assertIn("model created", attempt_log)
             self.assertIn("model summary", attempt_log)
-            self.assertEqual(train_history[-1]["step"], int(config.training.n_steps))
+            self.assertEqual(train_history[-1]["step"], int(config.training.n_training_steps))
             self.assertGreater(len(loss_eval), 0)
             self.assertIn("random_t_loss", loss_eval[-1])
             self.assertIn("loss_t_0_5", loss_eval[-1])
@@ -116,12 +116,20 @@ class TestSrcPipeline(unittest.TestCase):
                 checkpoint_previews,
             )
             self.assertTrue(Path(checkpoint_previews[-1]["samples_path"]).is_file())
-            if bool(getattr(config.generation_trace, "enabled", False)):
+            if bool(getattr(config.generation_monitor, "enabled", False)):
                 figure_path = Path(checkpoint_previews[-1]["figure_path"])
                 self.assertTrue(figure_path.is_file())
-                figure_name = figure_path.stem
-                self.assertIn(figure_name, status["generated_figures"])
-                trace = run_summary["generation_trace"]
+                self.assertIn(
+                    "checkpoint_samples_over_train",
+                    status["generated_figures"],
+                )
+                self.assertEqual(
+                    Path(
+                        status["generated_figures"]["checkpoint_samples_over_train"]
+                    ),
+                    figure_path,
+                )
+                trace = run_summary["generation_monitor"]
                 trace_previews = trace["checkpoint_samples"]
                 self.assertGreater(len(trace_previews), 0)
                 self.assertTrue(Path(trace_previews[-1]["path"]).is_file())
@@ -139,7 +147,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.outputs.run_name = "gmm_smoke"
         config.data.dataset = "gmm_subspace"
         config.data.n_train = 8
-        config.data.n_eval = 8
+        config.data.n_test = 8
         config.data.data_dim = 16
         config.data.intrinsic_dim = 4
         config.data.n_clusters = 4
@@ -147,7 +155,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.network.hidden_dim = 32
         config.network.n_layers = 2
         config.network.time_emb_dim = 16
-        config.training.n_steps = 2
+        config.training.n_training_steps = 2
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
@@ -167,13 +175,13 @@ class TestSrcPipeline(unittest.TestCase):
         config.data.root = "data"
         config.data.download = False
         config.data.n_train = 4
-        config.data.n_eval = 4
+        config.data.n_test = 4
         config.data.image_size = 28
         config.data.image_channels = 1
         config.data.flatten = True
         config.data.data_dim = 28 * 28
         config.network.arch = "mlp"
-        config.training.n_steps = 2
+        config.training.n_training_steps = 2
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
@@ -194,7 +202,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.data.download = False
         config.data.reference_split = "valid"
         config.data.n_train = 4
-        config.data.n_eval = 4
+        config.data.n_test = 4
         config.data.image_size = 32
         config.data.image_channels = 1
         config.network.arch = "unet"
@@ -203,7 +211,7 @@ class TestSrcPipeline(unittest.TestCase):
         config.network.attn_resolutions = (8,)
         config.network.num_res_blocks = 1
         config.network.time_emb_dim = 32
-        config.training.n_steps = 1
+        config.training.n_training_steps = 1
         config.training.ckpt_every = 1
         config.training.log_every = 1
         config.tracking.console.enabled = False
@@ -213,9 +221,9 @@ class TestSrcPipeline(unittest.TestCase):
         config.evaluation.sample_panel_count = 2
         config.evaluation.chunk_size = 4
         config.sampling.n_steps = 2
-        config.generation_trace.enabled = True
-        config.generation_trace.num_images = 2
-        config.generation_trace.show = False
+        config.generation_monitor.enabled = True
+        config.generation_monitor.num_images = 2
+        config.generation_monitor.show = False
         return config
 
     def test_memorization_metric_prefers_copies(self):
@@ -231,7 +239,7 @@ class TestSrcPipeline(unittest.TestCase):
 
     def test_batching_metadata_small_equal_and_large_n(self):
         config = clone_config(get_base_config())
-        config.training.n_steps = 7
+        config.training.n_training_steps = 7
         config.training.batch_cap = 4
         config.training.batch_size = 4
 
@@ -242,7 +250,7 @@ class TestSrcPipeline(unittest.TestCase):
         self.assertEqual(small["steps_per_epoch"], 1)
         self.assertEqual(small["examples_per_epoch"], 3)
         self.assertEqual(small["dropped_per_epoch"], 0)
-        self.assertEqual(small["n_steps"], 7)
+        self.assertEqual(small["n_training_steps"], 7)
 
         equal = _batching_metadata(config, torch.zeros(4, 2))
         self.assertEqual(equal["effective_batch_size"], 4)

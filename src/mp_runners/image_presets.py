@@ -53,7 +53,7 @@ def _base_config():
 
     config.training = ConfigDict()
     config.training.seed = 0
-    config.training.n_steps = 30000
+    config.training.n_training_steps = 30000
     config.training.ckpt_every = 2000
     config.training.log_every = 200
     config.training.optimizer = "adam"
@@ -82,6 +82,7 @@ def _base_config():
     config.tracking.wandb.group = ""
     config.tracking.wandb.tags = []
     config.tracking.wandb.strict = False
+    config.tracking.wandb.log_figures = True
 
     config.tracking.console = ConfigDict()
     config.tracking.console.summary_every_seconds = 60.0

@@ -1,26 +1,21 @@
 """
 Runner for image datasets with the UNet adapter.
 
-This is the canonical image command-line workflow. It supports three modes:
+This is the canonical image command-line workflow. It supports two modes:
 
 1. train-only: train a model and save checkpoints/artifacts;
-2. train plus final evaluation: train, then replay checkpoint metrics;
-3. replay evaluation: evaluate an existing finished `DONE_` attempt directory.
+2. data summary: materialize and summarize the selected image data.
 
 The runner builds configs and prints summaries. Shared training behavior stays
-in `mp_training.trainer`; image metrics stay in `mp_metrics.images`.
+in `mp_training.trainer`; image metrics stay in `mp_metrics.metrics_images`.
 """
 
 import argparse
 from pathlib import Path
 import sys
-import time
-
-import torch
-from torch.utils.data import DataLoader
 
 from mp_metrics.loss_eval import collect_loss_eval_record
-from mp_runners.image_eval import collect_reference_memory, evaluate_image32_run
+from mp_runners.image_eval import collect_reference_memory
 from mp_runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
@@ -36,29 +31,9 @@ from mp_runners.image_config import (
 from mp_runners.image_presets import list_presets
 
 from gdfm import GDFM
-from mp_config import clone_config
 from mp_data import build_data_bundle
-from mp_artifacts import list_checkpoint_paths, load_attempt_status
-from mp_runtime import (
-    PRECISION_CHOICES,
-    autocast_context,
-    configure_torch_runtime,
-    torch_device,
-    validate_precision,
-)
+from mp_runtime import PRECISION_CHOICES, configure_torch_runtime
 from mp_training import CHECKPOINT_SCHEDULE_CHOICES, train_run
-
-DONE_ATTEMPT_PREFIX = "DONE_"
-EVAL_READY_STATES = {"trained", "completed"}
-EVAL_REQUIRED_FILES = (
-    "status.json",
-    "artifacts/config.json",
-    "artifacts/train_tensor.pt",
-    "artifacts/reference_tensor.pt",
-    "artifacts/z_init.pt",
-    "artifacts/run_summary.json",
-)
-
 
 def default_settings():
     """Return the canonical image-runner default settings."""
@@ -120,214 +95,27 @@ def summarize_data(config):
     """
     Materialize the data bundle and return a concise summary.
 
-    This powers `--data-summary`, which checks data selection before training.
+    This powers `--data_summary`, which checks data selection before training.
     """
     data_bundle = build_data(config)
     return _summarize_bundle(data_bundle)
 
 
-def run_full_job(config, out_dir, device, evaluate=False):
+def run_full_job(config, out_dir, device):
     """
-    Run canonical training, then image checkpoint metrics if requested.
+    Run canonical image training.
 
-    Training always saves a replayable attempt directory. Setting `evaluate`
-    immediately runs the same evaluation that can also be launched later with
-    `--eval-run-dir`.
+    Training always saves a replayable attempt directory. Full checkpoint
+    evaluation is intentionally outside this train runner; use
+    `mp_runners.evaluate_checkpoints.evaluate_run(...)` after training.
     """
-    # Training is shared; image-specific empirical metrics live beside this runner.
+    # Training is shared; image-specific empirical metrics live outside this runner.
     run_dir = train_run(config, Path(out_dir), device=device)
-    evaluation = (
-        evaluate_image32_run(
-            run_dir,
-            device=device,
-            fixed_times=tuple(config.evaluation.loss_eval_times),
-        )
-        if evaluate
-        else {
-            "checkpoint_metrics": [],
-            "loss_eval": [],
-            "checkpoint_sample_previews": [],
-        }
-    )
     return {
         "run_dir": str(run_dir),
-        "checkpoint_metrics": evaluation["checkpoint_metrics"],
-        "loss_eval": evaluation["loss_eval"],
-        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
         "config": config,
         "artifacts": artifact_paths(run_dir),
     }
-
-
-def _validate_eval_run_dir(run_dir):
-    """Return a replayable DONE attempt directory or raise a clear error."""
-    run_dir = Path(run_dir).expanduser().resolve()
-    if not run_dir.name.startswith(DONE_ATTEMPT_PREFIX):
-        raise ValueError(
-            "eval-run-dir must be a finished DONE_ attempt directory; "
-            f"got {run_dir}"
-        )
-
-    status_path = run_dir / "status.json"
-    if not status_path.is_file():
-        raise FileNotFoundError(f"eval-run-dir is missing status.json: {run_dir}")
-
-    status = load_attempt_status(run_dir)
-    state = str(status.get("state", ""))
-    if state not in EVAL_READY_STATES:
-        raise ValueError(
-            "eval-run-dir must have status state 'trained' or 'completed'; "
-            f"got {state!r} for {run_dir}"
-        )
-
-    missing = [
-        str((run_dir / relative_path).resolve())
-        for relative_path in EVAL_REQUIRED_FILES
-        if not (run_dir / relative_path).is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            "eval-run-dir is missing required saved-run artifacts: "
-            + ", ".join(missing)
-        )
-
-    checkpoint_paths = list_checkpoint_paths(run_dir)
-    if not checkpoint_paths:
-        raise FileNotFoundError(f"eval-run-dir has no checkpoints: {run_dir / 'checkpoints'}")
-    return run_dir
-
-
-def run_eval_job(run_dir, device):
-    """
-    Replay checkpoint metrics for one finished DONE attempt directory.
-
-    The saved config, train/reference tensors, and fixed `z_init` are loaded
-    from the attempt directory. No new data bundle is constructed.
-    """
-    run_dir = _validate_eval_run_dir(run_dir)
-    evaluation = evaluate_image32_run(run_dir, device=device)
-    return {
-        "mode": "eval_run_dir",
-        "run_dir": str(run_dir),
-        "checkpoint_metrics": evaluation["checkpoint_metrics"],
-        "loss_eval": evaluation["loss_eval"],
-        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
-        "artifacts": artifact_paths(run_dir),
-    }
-
-
-def compare_numerics(config, device):
-    """
-    Run a tiny in-memory training benchmark for fp32 vs a faster CUDA mode.
-
-    This intentionally avoids W&B and the run-artifact layout. It uses the
-    configured dataset, model, optimizer, batch cap, and number of steps so the
-    table answers the practical question: "what changes when I flip precision?"
-    """
-    selected_precision = str(config.runtime.precision)
-    target_precision = "bf16" if selected_precision == "fp32" else selected_precision
-    precisions = ("fp32", target_precision)
-    for precision in precisions:
-        trial_config = clone_config(config)
-        trial_config.runtime.precision = precision
-        validate_precision(trial_config, device)
-
-    data_bundle = build_data(config)
-    train_tensor = data_bundle["train"].cpu()
-    results = []
-    for precision in precisions:
-        trial_config = clone_config(config)
-        trial_config.runtime.precision = precision
-        trial_config.tracking.wandb.enabled = False
-        runtime = configure_torch_runtime(trial_config, device)
-
-        seed = int(trial_config.training.seed)
-        torch.manual_seed(seed)
-        torch_dev = torch_device(device)
-        if torch_dev.type == "cuda" and torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-            torch.cuda.empty_cache()
-            torch.cuda.reset_peak_memory_stats(torch_dev)
-
-        model = build_model(trial_config, device)
-        optimizer = torch.optim.Adam(
-            model.parameters(),
-            lr=float(trial_config.training.lr),
-            weight_decay=float(trial_config.training.weight_decay),
-        )
-
-        batch_cap = int(trial_config.training.batch_cap)
-        batch_size = min(batch_cap, int(train_tensor.shape[0]))
-        drop_last = int(train_tensor.shape[0]) > batch_cap
-        generator = torch.Generator().manual_seed(seed)
-        loader = DataLoader(
-            train_tensor,
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=drop_last,
-            generator=generator,
-            pin_memory=bool(runtime["pin_memory"]),
-        )
-        iterator = iter(loader)
-        n_steps = int(trial_config.training.n_steps)
-        first_loss = None
-        final_loss = None
-
-        if torch_dev.type == "cuda" and torch.cuda.is_available():
-            torch.cuda.synchronize(torch_dev)
-        start = time.perf_counter()
-        model.train()
-        for _ in range(n_steps):
-            try:
-                batch = next(iterator)
-            except StopIteration:
-                iterator = iter(loader)
-                batch = next(iterator)
-            batch = batch.to(device, non_blocking=bool(runtime["non_blocking_h2d"]))
-
-            optimizer.zero_grad(set_to_none=True)
-            with autocast_context(trial_config, device):
-                loss = model.compute_loss(batch)
-            loss.backward()
-            optimizer.step()
-
-            loss_value = float(loss.detach().cpu().item())
-            if first_loss is None:
-                first_loss = loss_value
-            final_loss = loss_value
-
-        if torch_dev.type == "cuda" and torch.cuda.is_available():
-            torch.cuda.synchronize(torch_dev)
-            peak_memory_gb = torch.cuda.max_memory_allocated(torch_dev) / 1.0e9
-        else:
-            peak_memory_gb = 0.0
-        elapsed = time.perf_counter() - start
-
-        results.append(
-            {
-                "precision": precision,
-                "avg_step_time_sec": elapsed / max(1, n_steps),
-                "peak_cuda_memory_gb": peak_memory_gb,
-                "first_loss": first_loss,
-                "final_loss": final_loss,
-                **runtime,
-            }
-        )
-
-        del model, optimizer
-        if torch_dev.type == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    result = {
-        "mode": "compare_numerics",
-        "device": str(device),
-        "n_steps": int(config.training.n_steps),
-        "n_train": int(config.data.n_train),
-        "batch_cap": int(config.training.batch_cap),
-        "results": results,
-    }
-    _print_numerics_compare(result)
-    return result
 
 
 def _print_model_summary(config, model=None, model_param_summary=None):
@@ -367,17 +155,17 @@ def parse_args(argv=None):
     """Parse the image runner command line."""
     settings = default_settings()
     argv_list = sys.argv[1:] if argv is None else list(argv)
-    ckpt_every_provided = _flag_present(argv_list, "--ckpt-every", "--ckpt_every")
-    ckpt_steps_provided = _flag_present(argv_list, "--ckpt-steps", "--ckpt_steps")
-    wandb_project_provided = _flag_present(argv_list, "--wandb-project", "--wandb_project")
-    wandb_name_provided = _flag_present(argv_list, "--wandb-name", "--wandb_name")
-    wandb_group_provided = _flag_present(argv_list, "--wandb-group", "--wandb_group")
+    ckpt_every_provided = _flag_present(argv_list, "--ckpt_every")
+    ckpt_steps_provided = _flag_present(argv_list, "--ckpt_steps")
+    wandb_project_provided = _flag_present(argv_list, "--wandb_project")
+    wandb_name_provided = _flag_present(argv_list, "--wandb_name")
+    wandb_group_provided = _flag_present(argv_list, "--wandb_group")
     parser = argparse.ArgumentParser(description="Image UNet runner.")
 
     # Run identity.
     parser.add_argument("--device", default=settings["device"])
-    parser.add_argument("--out-dir", default=settings["out_dir"])
-    parser.add_argument("--run-name", default=settings["run_name"])
+    parser.add_argument("--out_dir", default=settings["out_dir"])
+    parser.add_argument("--run_name", default=settings["run_name"])
     parser.add_argument("--seed", type=int, default=settings["seed"])
 
     # Config selection.
@@ -387,7 +175,7 @@ def parse_args(argv=None):
         default=settings["dataset"],
     )
     parser.add_argument(
-        "--image-size",
+        "--image_size",
         type=int,
         choices=tuple(_list_image_sizes()),
         default=settings["image_size"],
@@ -400,7 +188,7 @@ def parse_args(argv=None):
         help="Image model family. The runner chooses the matching architecture defaults.",
     )
     parser.add_argument(
-        "--config-preset",
+        "--config_preset",
         choices=tuple(list_presets()),
         default=settings.get("config_preset"),
         help="Optional explicit UNet preset (overrides dataset default).",
@@ -408,61 +196,58 @@ def parse_args(argv=None):
 
     # Objective and sweep settings.
     parser.add_argument(
-        "--prediction-space",
+        "--prediction_space",
         choices=PARAMETERIZATION_CHOICES,
         default=settings["prediction_space"],
     )
     parser.add_argument(
-        "--loss-space",
+        "--loss_space",
         choices=PARAMETERIZATION_CHOICES,
         default=settings["loss_space"],
     )
     parser.add_argument(
-        "--n-train",
+        "--n_train",
         type=int,
         default=settings["n_train"],
         help="Number of real images used for training.",
     )
     parser.add_argument(
-        "--n-eval",
+        "--n_test",
         type=int,
-        default=settings["n_eval"],
-        help="Number of real held-out/reference images used for evaluation.",
+        default=settings["n_test"],
+        help="Number of real held-out/reference images materialized for later tests.",
     )
     parser.add_argument(
-        "--n-steps",
+        "--n_training_steps",
         type=int,
-        default=settings["n_steps"],
+        default=settings["n_training_steps"],
         help="Number of optimizer steps.",
     )
     parser.add_argument(
-        "--ckpt-every",
         "--ckpt_every",
         type=int,
         default=settings["ckpt_every"],
-        help="Save/evaluate a checkpoint every this many optimizer steps.",
+        help="Save a checkpoint every this many optimizer steps.",
     )
     parser.add_argument(
-        "--ckpt-schedule",
         "--ckpt_schedule",
         choices=CHECKPOINT_SCHEDULE_CHOICES,
         default=settings["ckpt_schedule"],
-        help="Checkpoint schedule. Explicit --ckpt-steps has priority.",
+        help="Checkpoint schedule. Explicit --ckpt_steps has priority.",
     )
     parser.add_argument(
-        "--ckpt-steps",
         "--ckpt_steps",
         default=settings["ckpt_steps"],
         help="Comma-separated checkpoint steps. Step 0 and final step are always saved.",
     )
     parser.add_argument(
-        "--log-every",
+        "--log_every",
         type=int,
         default=settings["log_every"],
         help="Print/log training loss every this many optimizer steps.",
     )
     parser.add_argument(
-        "--batch-cap",
+        "--batch_cap",
         type=int,
         default=settings["batch_cap"],
         help="Maximum minibatch size; smaller datasets use the dataset size.",
@@ -474,36 +259,19 @@ def parse_args(argv=None):
         help="Numerical mode: fp32, CUDA TF32, or CUDA BF16 autocast.",
     )
     parser.add_argument(
-        "--compare-numerics",
-        action="store_true",
-        default=settings["compare_numerics"],
-        help="Benchmark fp32 against the selected precision without writing a run.",
-    )
-    parser.add_argument(
-        "--data-summary",
+        "--data_summary",
         action="store_true",
         default=settings["data_summary"],
         help="Materialize and summarize the selected data bundle, then exit.",
     )
     parser.add_argument(
-        "--final-eval",
-        action=argparse.BooleanOptionalAction,
-        default=settings["final_eval"],
-        help="Run checkpoint metrics after training. Defaults off; replay later with --eval-run-dir.",
-    )
-    parser.add_argument(
-        "--eval-run-dir",
-        default=settings["eval_run_dir"],
-        help="Evaluate an existing finished DONE_ attempt directory instead of training.",
-    )
-    parser.add_argument(
-        "--eval-samples",
+        "--generation_monitor_samples",
         type=int,
-        default=settings["eval_samples"],
-        help="Number of generated samples per checkpoint; also z_init.pt size.",
+        default=settings["generation_monitor_samples"],
+        help="Number of fixed-z samples available to train-time image monitors.",
     )
     parser.add_argument(
-        "--sampling-steps",
+        "--sampling_steps",
         type=int,
         default=settings["sampling_steps"],
         help="Solver steps used to generate images from z_init.",
@@ -513,44 +281,98 @@ def parse_args(argv=None):
     parser.add_argument("--root", default=settings["root"])
     parser.add_argument(
         "--download",
-        action=argparse.BooleanOptionalAction,
+        dest="download",
+        action="store_true",
         default=settings["download"],
     )
+    parser.add_argument("--no_download", dest="download", action="store_false")
 
     # W&B basics.
     parser.add_argument(
         "--wandb",
-        action=argparse.BooleanOptionalAction,
+        dest="wandb",
+        action="store_true",
         default=settings["wandb"],
     )
+    parser.add_argument("--no_wandb", dest="wandb", action="store_false")
     parser.add_argument(
-        "--wandb-mode",
+        "--wandb_mode",
         choices=("offline", "online"),
         default=settings["wandb_mode"],
     )
-    parser.add_argument("--wandb-project", default=settings["wandb_project"])
-    parser.add_argument("--wandb-name", default=settings["wandb_name"])
-    parser.add_argument("--wandb-group", default=settings["wandb_group"])
-    parser.add_argument("--wandb-tags", default=settings["wandb_tags"])
-
-    # Fixed-noise generation trace.
+    parser.add_argument("--wandb_project", default=settings["wandb_project"])
+    parser.add_argument("--wandb_name", default=settings["wandb_name"])
+    parser.add_argument("--wandb_group", default=settings["wandb_group"])
+    parser.add_argument("--wandb_tags", default=settings["wandb_tags"])
     parser.add_argument(
-        "--generation-trace",
-        action=argparse.BooleanOptionalAction,
-        default=settings["generation_trace"],
+        "--wandb_log_figures",
+        dest="wandb_log_figures",
+        action="store_true",
+        default=settings["wandb_log_figures"],
+        help="Log image checkpoints/generation traces to W&B as media.",
+    )
+    parser.add_argument(
+        "--no_wandb_log_figures",
+        dest="wandb_log_figures",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--compact_model_summary",
+        dest="compact_model_summary",
+        action="store_true",
+        default=settings["compact_model_summary"],
+        help="Print a compact model summary instead of full layer-wise parameters.",
+    )
+    parser.add_argument(
+        "--no_compact_model_summary",
+        dest="compact_model_summary",
+        action="store_false",
+    )
+
+    # Fixed-noise generation monitor.
+    parser.add_argument(
+        "--generation_monitor",
+        action="store_true",
+        default=settings["generation_monitor"],
         help="Save/display train and generated-sample image grids and log them to W&B.",
     )
     parser.add_argument(
-        "--generation-trace-count",
-        type=int,
-        default=settings["generation_trace_count"],
-        help="Number of images per row in generation trace grids.",
+        "--generation_monitor_show",
+        dest="generation_monitor_show",
+        action="store_true",
+        default=settings["generation_monitor_show"],
+        help="Display generation monitor figures inline when running from a notebook.",
     )
     parser.add_argument(
-        "--generation-trace-show",
-        action=argparse.BooleanOptionalAction,
-        default=settings["generation_trace_show"],
-        help="Display generation trace figures inline when running from a notebook.",
+        "--no_generation_monitor_show",
+        dest="generation_monitor_show",
+        action="store_false",
+    )
+
+    # Always-on train-time projected f_mem monitor.
+    parser.add_argument(
+        "--random_projected_f_mem_samples",
+        type=int,
+        default=settings["random_projected_f_mem_samples"],
+        help="Fixed-z generated samples used by the projected f_mem monitor.",
+    )
+    parser.add_argument(
+        "--random_projected_f_mem_resize",
+        type=int,
+        default=settings["random_projected_f_mem_resize"],
+        help="Image size used before random projection in the projected f_mem monitor.",
+    )
+    parser.add_argument(
+        "--random_projected_f_mem_proj_dim",
+        type=int,
+        default=settings["random_projected_f_mem_proj_dim"],
+        help="Random projection dimension used by the projected f_mem monitor.",
+    )
+    parser.add_argument(
+        "--random_projected_f_mem_proj_seed",
+        type=int,
+        default=settings["random_projected_f_mem_proj_seed"],
+        help="Projection seed. Defaults to training seed plus a fixed offset.",
     )
     args = parser.parse_args(argv_list)
     args.ckpt_every_provided = bool(ckpt_every_provided)
@@ -573,37 +395,17 @@ def main(argv=None):
     """CLI entrypoint for the image UNet runner."""
     args = parse_args(argv)
 
-    if args.eval_run_dir is not None:
-        if args.compare_numerics or args.data_summary:
-            raise ValueError(
-                "--eval-run-dir cannot be combined with --compare-numerics or --data-summary"
-            )
-        result = run_eval_job(args.eval_run_dir, args.device)
-        _print_eval_result(result)
-        return result
-
     settings = vars(args)
     config = build_config(settings)
 
     if args.log_every is not None and args.log_every < 1:
-        raise ValueError(f"log-every must be >= 1, got {args.log_every}")
-    if args.generation_trace_count < 1:
-        raise ValueError(
-            f"generation-trace-count must be >= 1, got {args.generation_trace_count}"
-        )
+        raise ValueError(f"log_every must be >= 1, got {args.log_every}")
     if args.data_summary:
         summary = summarize_data(config)
         _print_data_summary(config, summary)
         return summary
-    if args.compare_numerics:
-        return compare_numerics(config, args.device)
 
-    result = run_full_job(
-        config,
-        args.out_dir,
-        args.device,
-        evaluate=bool(args.final_eval),
-    )
+    result = run_full_job(config, args.out_dir, args.device)
     _print_result(result)
     return result["run_dir"]
 
@@ -623,52 +425,7 @@ def _print_result(result):
     _print_kv("run_dir:", result["run_dir"])
     _print_kv("checkpoints:", result["artifacts"]["checkpoints"]["path"])
     _print_kv("figures:", result["artifacts"]["figures"]["path"])
-    _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
-    _print_kv("loss_eval:", result["artifacts"]["loss_eval"]["path"])
-    _print_kv(
-        "sample_previews:",
-        result["artifacts"]["checkpoint_sample_previews"]["path"],
-    )
-    if not result["checkpoint_metrics"]:
-        _print_kv("final_eval:", "skipped; replay later with --eval-run-dir")
-
-
-def _print_eval_result(result):
-    """Print a concise eval-run result."""
-    _print_kv("eval_run_dir:", result["run_dir"])
-    _print_kv("checkpoints:", len(result["checkpoint_metrics"]))
-    _print_kv("metrics:", result["artifacts"]["checkpoint_metrics"]["path"])
-    _print_kv("loss_eval:", result["artifacts"]["loss_eval"]["path"])
-    _print_kv(
-        "sample_previews:",
-        result["artifacts"]["checkpoint_sample_previews"]["path"],
-    )
-
-
-def _print_numerics_compare(result):
-    """Print the numerical precision comparison table."""
-    rows = result["results"]
-    print("=== NUMERICS_COMPARE ===")
-    print(
-        f"device={result['device']} n_train={result['n_train']} "
-        f"batch_cap={result['batch_cap']} n_steps={result['n_steps']}"
-    )
-    print(
-        f"{'precision':<10} {'avg_step_s':>11} {'peak_gb':>9} "
-        f"{'first_loss':>12} {'final_loss':>12} {'tf32':>6} {'autocast':>10}"
-    )
-    for row in rows:
-        first_loss = row["first_loss"]
-        final_loss = row["final_loss"]
-        print(
-            f"{row['precision']:<10} "
-            f"{row['avg_step_time_sec']:>11.4f} "
-            f"{row['peak_cuda_memory_gb']:>9.3f} "
-            f"{first_loss if first_loss is not None else float('nan'):>12.5g} "
-            f"{final_loss if final_loss is not None else float('nan'):>12.5g} "
-            f"{str(row['tf32_enabled']):>6} "
-            f"{row['autocast_dtype']:>10}"
-        )
+    _print_kv("train_history:", result["artifacts"]["train_history"]["path"])
 
 
 def _print_data_summary(config, summary):

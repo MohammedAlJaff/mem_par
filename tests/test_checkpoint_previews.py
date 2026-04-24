@@ -25,7 +25,7 @@ class TestCheckpointPreviews(unittest.TestCase):
     def make_config(self):
         config = clone_config(get_base_config())
         config.evaluation.sample_panel_count = 3
-        config.generation_trace.enabled = False
+        config.generation_monitor.enabled = False
         return config
 
     def test_saves_tensor_preview_for_vector_samples(self):
@@ -48,10 +48,10 @@ class TestCheckpointPreviews(unittest.TestCase):
             saved = torch.load(record["samples_path"], map_location="cpu")
             self.assertTrue(torch.equal(saved, samples[:3]))
 
-    def test_saves_image_panel_when_generation_trace_is_enabled(self):
+    def test_saves_image_panel_when_generation_monitor_is_enabled(self):
         config = self.make_config()
-        config.generation_trace.enabled = True
-        config.generation_trace.num_images = 2
+        config.generation_monitor.enabled = True
+        config.generation_monitor.n_samples = 2
         samples = torch.rand(4, 1, 8, 8)
         train = torch.rand(4, 1, 8, 8)
 
@@ -67,12 +67,16 @@ class TestCheckpointPreviews(unittest.TestCase):
             self.assertEqual(record["count"], 2)
             self.assertTrue(Path(record["samples_path"]).is_file())
             self.assertTrue(Path(record["figure_path"]).is_file())
-            expected_name = checkpoint_preview_figure_name(5)
-            self.assertTrue(record["figure_path"].endswith(f"{expected_name}.png"))
+            self.assertEqual(checkpoint_preview_figure_name(5), "checkpoint_samples_over_train")
+            self.assertTrue(
+                record["figure_path"].endswith(
+                    "checkpoint_samples_over_train_latest.png"
+                )
+            )
 
     def test_skips_image_panel_for_non_image_tensors(self):
         config = self.make_config()
-        config.generation_trace.enabled = True
+        config.generation_monitor.enabled = True
         samples = torch.randn(4, 3)
         train = torch.randn(4, 3)
 

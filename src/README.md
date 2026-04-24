@@ -16,7 +16,7 @@ research runners.
 
 - `mp_metrics/`
   Metric definitions. Keep this package simple: `loss_eval.py`,
-  `synthetic.py`, and `images.py`.
+  `metrics_synthetic.py`, and `metrics_images.py`.
 
 - `mp_runners/`
   Runnable workflows and CLI entry points. Use

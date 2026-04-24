@@ -46,6 +46,10 @@ from mp_artifacts import (
     update_attempt_status,
 )
 from mp_data import build_data_bundle
+from mp_metrics.metrics_images import (
+    compute_projected_image_memorization_metrics,
+    make_random_projection_matrix,
+)
 from mp_runtime import autocast_context, configure_torch_runtime
 from mp_training.checkpoint_schedule import (
     checkpoint_schedule_metadata,
@@ -138,7 +142,7 @@ def _batching_metadata(config, train_tensor):
         "examples_per_epoch": int(examples_per_epoch),
         "dropped_per_epoch": int(dropped_per_epoch),
         "n_train": int(n_train),
-        "n_steps": int(config.training.n_steps),
+        "n_training_steps": int(config.training.n_training_steps),
     }
 
 
@@ -194,7 +198,34 @@ def _model_summary(config, model):
 
 
 def _log_model_summary(tracker, model, summary):
-    """Print and persist the existing GDFM model summary."""
+    """Print and persist a compact or full model summary."""
+    console_settings = getattr(
+        getattr(tracker, "config", None),
+        "tracking",
+        None,
+    )
+    compact = True
+    if console_settings is not None:
+        compact = bool(
+            getattr(getattr(console_settings, "console", None), "compact_model_summary", True)
+        )
+
+    if compact:
+        model_name = str(summary.get("backbone", "gdfm"))
+        network_arch = str(summary.get("network_arch", "unknown"))
+        message = (
+            "model summary\n"
+            f"backbone={model_name} arch={network_arch} "
+            f"pred={summary['prediction_space']} loss={summary['loss_space']} "
+            f"params={summary['trainable_parameters']:,}/{summary['total_parameters']:,}"
+        )
+        tracker.note(
+            message,
+            event_type="model_summary",
+            model_summary=summary,
+        )
+        return
+
     stream = io.StringIO()
     with redirect_stdout(stream):
         print_model_summary(model)
@@ -373,7 +404,19 @@ def _make_z_init(config, train_tensor):
     gives `[B, C, H, W]`.
     """
     sample_shape = tuple(train_tensor.shape[1:])
-    return torch.randn(int(config.evaluation.n_samples), *sample_shape)
+    n_samples = int(getattr(config.evaluation, "n_samples", 64))
+    generation_monitor = getattr(config, "generation_monitor", None)
+    if generation_monitor is not None and bool(
+        getattr(generation_monitor, "enabled", False)
+    ):
+        n_samples = max(n_samples, int(getattr(generation_monitor, "n_samples", 64)))
+    random_projected_f_mem = _random_projected_f_mem_config(config)
+    if random_projected_f_mem is not None:
+        n_samples = max(
+            n_samples,
+            int(getattr(random_projected_f_mem, "n_samples", 512)),
+        )
+    return torch.randn(n_samples, *sample_shape)
 
 
 def _save_training_loss_figure(history, figures_dir):
@@ -413,39 +456,184 @@ def _save_training_loss_figure(history, figures_dir):
     return figure_path
 
 
-def _generation_trace_config(config):
+def _generation_monitor_config(config):
     """
-    Return the optional generation trace config section, if enabled.
+    Return the optional generation monitor config section, if enabled.
     """
-    trace = getattr(config, "generation_trace", None)
+    trace = getattr(config, "generation_monitor", None)
     if trace is None or not bool(getattr(trace, "enabled", False)):
         return None
     return trace
 
 
-def _generation_trace_train_count(config, train_tensor):
+def _random_projected_f_mem_config(config):
+    """
+    Return random projected f_mem config, if present.
+    """
+    return getattr(config, "random_projected_f_mem", None)
+
+
+def _prepare_random_projected_f_mem(config, train_tensor, run_dir, tracker):
+    """
+    Save the fixed projection used by the checkpoint-time monitor.
+    """
+    monitor = _random_projected_f_mem_config(config)
+    if monitor is None:
+        return {"enabled": False, "records": []}
+    if not is_image_batch(train_tensor):
+        return {"enabled": False, "skipped": "non_image_train_tensor", "records": []}
+
+    resize_size = int(getattr(monitor, "resize_size", 16))
+    projection_dim = int(getattr(monitor, "projection_dim", 256))
+    projection_seed = getattr(monitor, "projection_seed", None)
+    if projection_seed is None:
+        projection_seed = int(config.training.seed) + 3001
+    projection_seed = int(projection_seed)
+    input_dim = int(train_tensor.shape[1]) * resize_size * resize_size
+    projection_matrix = make_random_projection_matrix(
+        input_dim,
+        projection_dim,
+        projection_seed,
+    )
+    matrix_path = Path(run_dir) / "artifacts" / "random_projected_f_mem_projection.pt"
+    metadata_path = Path(run_dir) / "artifacts" / "random_projected_f_mem_projection.json"
+    metadata = {
+        "metric": "projected_image_f_mem",
+        "space": "random_projected_pixels",
+        "n_samples": int(getattr(monitor, "n_samples", 512)),
+        "resize_size": resize_size,
+        "projection_dim": projection_dim,
+        "projection_seed": projection_seed,
+        "input_dim": input_dim,
+        "projection_matrix_path": "artifacts/random_projected_f_mem_projection.pt",
+        "metadata_path": "artifacts/random_projected_f_mem_projection.json",
+    }
+    save_tensor(matrix_path, projection_matrix)
+    save_json(metadata_path, metadata)
+    tracker.note(
+        "random projected f_mem monitor prepared "
+        f"samples={metadata['n_samples']} resize={resize_size} "
+        f"projection_dim={projection_dim}",
+        event_type="random_projected_f_mem_prepared",
+        random_projected_f_mem=metadata,
+    )
+    return {
+        "enabled": True,
+        "projection_matrix": projection_matrix,
+        "metadata": metadata,
+        "records": [],
+    }
+
+
+def _sample_monitor_z_init(model, z_init, count, config, device):
+    """
+    Sample a checkpoint monitor batch from the fixed saved source noise.
+    """
+    count = min(int(count), int(z_init.shape[0]))
+    batch_size = max(1, min(int(config.evaluation.batch_size), count))
+    samples = []
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            for start in range(0, count, batch_size):
+                z_batch = z_init[start : start + batch_size].clone().to(device)
+                with autocast_context(config, device):
+                    samples.append(
+                        model.sample(
+                            z_batch,
+                            n_steps=int(config.sampling.n_steps),
+                            method=str(config.sampling.method),
+                            device=device,
+                        ).cpu()
+                    )
+    finally:
+        if was_training:
+            model.train()
+    return torch.cat(samples, dim=0)
+
+
+def _run_random_projected_f_mem(
+    config,
+    model,
+    train_tensor,
+    z_init,
+    monitor_state,
+    device,
+    tracker,
+    step,
+):
+    """
+    Compute and log checkpoint-time random projected f_mem monitor metrics.
+    """
+    if not bool(monitor_state.get("enabled", False)):
+        return None
+    metadata = dict(monitor_state["metadata"])
+    step = int(step)
+    samples = _sample_monitor_z_init(
+        model,
+        z_init,
+        int(metadata["n_samples"]),
+        config,
+        device,
+    )
+    metrics = compute_projected_image_memorization_metrics(
+        samples,
+        train_tensor,
+        resize_size=int(metadata["resize_size"]),
+        projection_dim=int(metadata["projection_dim"]),
+        projection_seed=int(metadata["projection_seed"]),
+        projection_matrix=monitor_state["projection_matrix"],
+        rho=float(getattr(config.evaluation, "ratio_threshold", 0.5)),
+        query_batch_size=min(256, int(samples.shape[0])),
+        reference_batch_size=int(config.evaluation.chunk_size),
+        image_range="-1_1",
+        device=device,
+    )
+    record = {
+        "step": step,
+        **metrics,
+    }
+    monitor_state["records"].append(record)
+    tracker.log_metrics(
+        {
+            "monitor/random_projected_f_mem": record["f_mem"],
+            "monitor/random_projected_f_mem_mean_r": record["mean_r"],
+            "monitor/random_projected_f_mem_median_r": record["median_r"],
+            "monitor/random_projected_f_mem_median_d1": record["median_d1"],
+            "monitor/random_projected_f_mem_median_d2": record["median_d2"],
+            "monitor/random_projected_f_mem_samples": record["n_samples"],
+            "monitor/random_projected_f_mem_resize": record["resize_size"],
+            "monitor/random_projected_f_mem_proj_dim": record["projection_dim"],
+        },
+        step=step,
+    )
+    return record
+
+
+def _generation_monitor_train_count(config, train_tensor):
     """
     Return the number of train examples used in the dataset grid.
     """
-    trace = _generation_trace_config(config)
+    trace = _generation_monitor_config(config)
     if trace is None:
         return 0
     return max(
         1,
-        min(int(getattr(trace, "num_images", 8)), int(train_tensor.shape[0])),
+        min(int(getattr(trace, "n_samples", 8)), int(train_tensor.shape[0])),
     )
 
 
-def _generation_trace_sample_count(config, z_init):
+def _generation_monitor_sample_count(config, z_init):
     """
-    Return the number of generated samples shown in generation trace figures.
+    Return the number of generated samples shown in generation monitor figures.
     """
-    trace = _generation_trace_config(config)
+    trace = _generation_monitor_config(config)
     if trace is None:
         return 0
     return max(
         1,
-        min(int(getattr(trace, "num_images", 8)), int(z_init.shape[0])),
+        min(int(getattr(trace, "n_samples", 8)), int(z_init.shape[0])),
     )
 
 
@@ -464,36 +652,36 @@ def _fork_rng_devices_for(device):
     return [int(torch_device.index)]
 
 
-def _save_generation_trace_train_grid(config, train_tensor, run_dir, tracker):
+def _save_generation_monitor_train_grid(config, train_tensor, run_dir, tracker):
     """
     Save/log the train grid before any model is constructed.
 
     This records what the selected training subset looks like before generated
     samples are added to the same figure style.
     """
-    trace = _generation_trace_config(config)
+    trace = _generation_monitor_config(config)
     if trace is None:
         return None
     if not is_image_batch(train_tensor):
         tracker.warn(
-            "generation trace train grid skipped: expected image tensor shaped [B,C,H,W]"
+            "generation monitor train grid skipped: expected image tensor shaped [B,C,H,W]"
         )
         return None
 
-    count = _generation_trace_train_count(config, train_tensor)
-    figure_path = run_dir / "figures" / "generation_trace_train_grid.png"
+    count = _generation_monitor_train_count(config, train_tensor)
+    figure_path = run_dir / "figures" / "generation_monitor_train_grid.png"
     save_image_rows_figure(
         [train_tensor[:count]],
         ["train"],
         figure_path,
         title=model_context_title(config, "Train grid before model creation"),
     )
-    tracker.register_figure("generation_trace_train_grid", figure_path)
+    tracker.register_figure("generation_monitor_train_grid", figure_path)
     maybe_display_figure(figure_path, bool(getattr(trace, "show", True)))
     return figure_path
 
 
-def _save_generation_trace_samples_figure(
+def _save_generation_monitor_samples_figure(
     model,
     z_init,
     config,
@@ -508,7 +696,7 @@ def _save_generation_trace_samples_figure(
     if not is_image_batch(z_init):
         return None
 
-    count = _generation_trace_sample_count(config, z_init)
+    count = _generation_monitor_sample_count(config, z_init)
     if count < 1:
         return None
 
@@ -533,7 +721,7 @@ def _save_generation_trace_samples_figure(
     )
 
 
-def _save_final_generation_trace_samples(
+def _save_final_generation_monitor_samples(
     config,
     model,
     train_tensor,
@@ -548,7 +736,7 @@ def _save_final_generation_trace_samples(
     The fixed saved `z_init` is reused here so the final panel is comparable to
     checkpoint panels from the same run.
     """
-    trace = _generation_trace_config(config)
+    trace = _generation_monitor_config(config)
     if trace is None:
         return None
     if not is_image_batch(z_init):
@@ -556,25 +744,25 @@ def _save_final_generation_trace_samples(
 
     with torch.random.fork_rng(devices=_fork_rng_devices_for(device), enabled=True):
         torch.manual_seed(int(config.training.seed) + 2003)
-        figure_path = _save_generation_trace_samples_figure(
+        figure_path = _save_generation_monitor_samples_figure(
             model,
             z_init,
             config,
             device,
-            run_dir / "figures" / "generation_trace_samples_final.png",
-            title=model_context_title(config, "Final generation trace samples"),
+            run_dir / "figures" / "generation_monitor_samples_final.png",
+            title=model_context_title(config, "Final generation monitor samples"),
         )
     if figure_path is None:
         return None
 
-    step = int(config.training.n_steps)
+    step = int(config.training.n_training_steps)
     tracker.register_figure(
-        "generation_trace_samples_final",
+        "generation_monitor_samples_final",
         figure_path,
         log_to_wandb=False,
     )
     tracker.log_figure_metric(
-        "generation_trace/samples",
+        "generation_monitor/samples",
         figure_path,
         step=step,
     )
@@ -582,7 +770,7 @@ def _save_final_generation_trace_samples(
     return figure_path
 
 
-def _save_generation_trace_checkpoint_samples(
+def _save_generation_monitor_checkpoint_samples(
     config,
     model,
     train_tensor,
@@ -595,15 +783,15 @@ def _save_generation_trace_checkpoint_samples(
     """
     Save/log generated checkpoint samples from the fixed saved z_init bank.
     """
-    trace = _generation_trace_config(config)
+    trace = _generation_monitor_config(config)
     if trace is None:
         return None
     if not is_image_batch(z_init):
         return None
 
     step = int(step)
-    figure_name = f"generation_trace_samples_step_{step:06d}"
-    figure_path = _save_generation_trace_samples_figure(
+    figure_name = f"generation_monitor_samples_step_{step:06d}"
+    figure_path = _save_generation_monitor_samples_figure(
         model,
         z_init,
         config,
@@ -611,7 +799,7 @@ def _save_generation_trace_checkpoint_samples(
         run_dir / "figures" / f"{figure_name}.png",
         title=model_context_title(
             config,
-            "Generation trace samples",
+            "Generation monitor samples",
             checkpoint_step=step,
             extra="fixed_z_init",
         ),
@@ -621,7 +809,7 @@ def _save_generation_trace_checkpoint_samples(
 
     tracker.register_figure(figure_name, figure_path, log_to_wandb=False)
     tracker.log_figure_metric(
-        "generation_trace/samples",
+        "generation_monitor/samples",
         figure_path,
         step=step,
     )
@@ -824,18 +1012,24 @@ def train_run(config, study_dir, device="cpu"):
         )
         _log_data_summary(tracker, data_summary)
 
-        generation_trace = {
+        generation_monitor = {
             "z_init_path": str((run_dir / "artifacts" / "z_init.pt").resolve())
         }
-        train_grid_path = _save_generation_trace_train_grid(
+        train_grid_path = _save_generation_monitor_train_grid(
             config,
             train_tensor,
             run_dir,
             tracker,
         )
         if train_grid_path is not None:
-            generation_trace["train_grid_path"] = str(Path(train_grid_path).resolve())
-        checkpoint_trace_samples = generation_trace.setdefault("checkpoint_samples", [])
+            generation_monitor["train_grid_path"] = str(Path(train_grid_path).resolve())
+        checkpoint_trace_samples = generation_monitor.setdefault("checkpoint_samples", [])
+        random_projected_f_mem = _prepare_random_projected_f_mem(
+            config,
+            train_tensor,
+            run_dir,
+            tracker,
+        )
 
         # -----------------------------------------------------------------
         # Phase 5: build the model and optimizer.
@@ -882,7 +1076,7 @@ def train_run(config, study_dir, device="cpu"):
         checkpoint_path = save_checkpoint(run_dir, 0, model, optimizer)
         tracker.checkpoint_saved(step=0, checkpoint_path=checkpoint_path)
         try:
-            trace_record = _save_generation_trace_checkpoint_samples(
+            trace_record = _save_generation_monitor_checkpoint_samples(
                 config,
                 model,
                 train_tensor,
@@ -896,7 +1090,7 @@ def train_run(config, study_dir, device="cpu"):
                 checkpoint_trace_samples.append(trace_record)
         except Exception as exc:
             tracker.warn(
-                "generation trace sample grid skipped "
+                "generation monitor sample grid skipped "
                 f"step=0: {type(exc).__name__}: {exc}"
             )
         train_start = time.perf_counter()
@@ -904,7 +1098,7 @@ def train_run(config, study_dir, device="cpu"):
             "training",
             message=(
                 "training started "
-                f"steps={int(config.training.n_steps)} "
+                f"steps={int(config.training.n_training_steps)} "
                 f"checkpoints={len(checkpoint_steps)} "
                 f"batch_cap={batching['batch_cap']} "
                 f"effective_batch_size={batching['effective_batch_size']} "
@@ -916,7 +1110,7 @@ def train_run(config, study_dir, device="cpu"):
             checkpoint_schedule=checkpoint_schedule,
         )
         progress = tqdm(
-            range(1, int(config.training.n_steps) + 1),
+            range(1, int(config.training.n_training_steps) + 1),
             desc=f"train:{config.outputs.run_name}",
             unit="step",
             disable=not tracker.interactive_progress,
@@ -953,7 +1147,7 @@ def train_run(config, study_dir, device="cpu"):
                 if (
                     step == 1
                     or step % int(config.training.log_every) == 0
-                    or step == int(config.training.n_steps)
+                    or step == int(config.training.n_training_steps)
                 ):
                     loss_value = float(loss.item())
                     history.append({"step": int(step), "loss": loss_value})
@@ -961,10 +1155,10 @@ def train_run(config, study_dir, device="cpu"):
                         progress.set_postfix(loss=f"{loss_value:.4f}", refresh=False)
                     tracker.training_progress(
                         step=int(step),
-                        total_steps=int(config.training.n_steps),
+                        total_steps=int(config.training.n_training_steps),
                         loss=loss_value,
                         elapsed_sec=time.perf_counter() - train_start,
-                        force=step == 1 or step == int(config.training.n_steps),
+                        force=step == 1 or step == int(config.training.n_training_steps),
                     )
 
                 # Checkpoints include both model and optimizer state. The final
@@ -974,7 +1168,7 @@ def train_run(config, study_dir, device="cpu"):
                     checkpoint_path = save_checkpoint(run_dir, step, model, optimizer)
                     tracker.checkpoint_saved(step=step, checkpoint_path=checkpoint_path)
                     try:
-                        trace_record = _save_generation_trace_checkpoint_samples(
+                        trace_record = _save_generation_monitor_checkpoint_samples(
                             config,
                             model,
                             train_tensor,
@@ -988,7 +1182,23 @@ def train_run(config, study_dir, device="cpu"):
                             checkpoint_trace_samples.append(trace_record)
                     except Exception as exc:
                         tracker.warn(
-                            "generation trace sample grid skipped "
+                            "generation monitor sample grid skipped "
+                            f"step={int(step)}: {type(exc).__name__}: {exc}"
+                        )
+                    try:
+                        _run_random_projected_f_mem(
+                            config,
+                            model,
+                            train_tensor,
+                            z_init,
+                            random_projected_f_mem,
+                            device,
+                            tracker,
+                            step=step,
+                        )
+                    except Exception as exc:
+                        tracker.warn(
+                            "projected f_mem monitor skipped "
                             f"step={int(step)}: {type(exc).__name__}: {exc}"
                         )
         finally:
@@ -997,7 +1207,7 @@ def train_run(config, study_dir, device="cpu"):
 
         training_wall_time_sec = time.perf_counter() - train_start
         total_wall_time_sec = time.perf_counter() - run_start
-        n_steps = int(config.training.n_steps)
+        n_steps = int(config.training.n_training_steps)
 
         # -----------------------------------------------------------------
         # Phase 7: write final summaries.
@@ -1011,7 +1221,7 @@ def train_run(config, study_dir, device="cpu"):
         if training_figure_path is not None:
             tracker.register_figure("training_loss_vs_step", training_figure_path)
             generated_figures = dict(tracker.status.get("generated_figures") or {})
-        final_trace_path = _save_final_generation_trace_samples(
+        final_trace_path = _save_final_generation_monitor_samples(
             config,
             model,
             train_tensor,
@@ -1021,10 +1231,20 @@ def train_run(config, study_dir, device="cpu"):
             tracker,
         )
         if final_trace_path is not None:
-            generation_trace["final_samples_path"] = str(
+            generation_monitor["final_samples_path"] = str(
                 Path(final_trace_path).resolve()
             )
             generated_figures = dict(tracker.status.get("generated_figures") or {})
+        random_projected_f_mem_summary = {
+            "enabled": bool(random_projected_f_mem.get("enabled", False)),
+            "metadata": random_projected_f_mem.get("metadata"),
+            "records": list(random_projected_f_mem.get("records", [])),
+        }
+        if bool(random_projected_f_mem.get("enabled", False)):
+            save_json(
+                run_dir / "metrics" / "random_projected_f_mem.json",
+                random_projected_f_mem.get("records", []),
+            )
 
         run_summary = {
             "study": config.study.name,
@@ -1034,10 +1254,10 @@ def train_run(config, study_dir, device="cpu"):
             "seed_id": run_dir.parents[1].name,
             "attempt_id": run_dir.name,
             "seed": int(config.training.seed),
-            "n_steps": n_steps,
+            "n_training_steps": n_steps,
             "checkpoint_schedule": checkpoint_schedule,
             "n_train": int(config.data.n_train),
-            "n_eval": int(config.data.n_eval),
+            "n_test": int(config.data.n_test),
             "batching": batching,
             "data_summary": data_summary,
             "batch_cap": int(batching["batch_cap"]),
@@ -1056,7 +1276,8 @@ def train_run(config, study_dir, device="cpu"):
             "status_path": str((run_dir / "status.json").resolve()),
             "attempt_log_path": str((run_dir / "logs" / "attempt.log").resolve()),
             "generated_figures": generated_figures,
-            "generation_trace": generation_trace,
+            "generation_monitor": generation_monitor,
+            "random_projected_f_mem": random_projected_f_mem_summary,
             "wandb": tracker.status.get("wandb"),
         }
         save_json(run_dir / "artifacts" / "run_summary.json", run_summary)
@@ -1084,7 +1305,8 @@ def train_run(config, study_dir, device="cpu"):
             run_summary_path=str((run_dir / "artifacts" / "run_summary.json").resolve()),
             train_history_path=str((run_dir / "metrics" / "train_history.json").resolve()),
             generated_figures=generated_figures,
-            generation_trace=generation_trace,
+            generation_monitor=generation_monitor,
+            random_projected_f_mem=random_projected_f_mem_summary,
             runtime=runtime,
             checkpoint_schedule=checkpoint_schedule,
         )
@@ -1140,7 +1362,7 @@ if __name__ == "__main__":
     # latent mixture.
     config.data.dataset = "gmm_subspace"
     config.data.n_train = 32
-    config.data.n_eval = 16
+    config.data.n_test = 16
     config.data.data_dim = 8
     config.data.intrinsic_dim = 2
     config.data.n_clusters = 3
@@ -1154,7 +1376,7 @@ if __name__ == "__main__":
 
     # Keep the training schedule short enough for the example while still
     # producing multiple checkpoints and multiple loss-history entries.
-    config.training.n_steps = 4
+    config.training.n_training_steps = 4
     config.training.batch_cap = 8
     config.training.batch_size = 8
     config.training.ckpt_every = 2

@@ -77,7 +77,7 @@ def get_base_config():
     data.train_split = "train"
     data.resize_size = 0
     data.n_train = 256
-    data.n_eval = 256
+    data.n_test = 256
     data.ambient_dim = 256
     data.intrinsic_data_dim = 4
     data.data_dim = 256
@@ -98,7 +98,7 @@ def get_base_config():
 
     training = config.training = ConfigDict()
     training.seed = 0
-    training.n_steps = 200
+    training.n_training_steps = 200
     training.batch_cap = 64
     training.batch_size = 64
     training.lr = 1.0e-3
@@ -128,10 +128,16 @@ def get_base_config():
     outputs = config.outputs = ConfigDict()
     outputs.run_name = "run"
 
-    generation_trace = config.generation_trace = ConfigDict()
-    generation_trace.enabled = False
-    generation_trace.num_images = 8
-    generation_trace.show = True
+    generation_monitor = config.generation_monitor = ConfigDict()
+    generation_monitor.enabled = False
+    generation_monitor.n_samples = 64
+    generation_monitor.show = True
+
+    random_projected_f_mem = config.random_projected_f_mem = ConfigDict()
+    random_projected_f_mem.n_samples = 512
+    random_projected_f_mem.resize_size = 16
+    random_projected_f_mem.projection_dim = 256
+    random_projected_f_mem.projection_seed = None
 
     runtime = config.runtime = ConfigDict()
     runtime.precision = "fp32"

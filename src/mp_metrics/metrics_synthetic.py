@@ -481,7 +481,7 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    print("mp_metrics.synthetic example")
+    print("mp_metrics.metrics_synthetic example")
     reference = torch.randn(8, 2)
     samples = reference[:3] + 0.05 * torch.randn(3, 2)
     metrics = compute_memorization_metrics(samples, reference, ratio_threshold=0.5)

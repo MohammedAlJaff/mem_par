@@ -82,17 +82,17 @@ def manual_projected_gmm(args):
     reference_generator = torch.Generator().manual_seed(int(args.seed) + 1)
     reference_labels = torch.randint(
         args.n_clusters,
-        (args.n_eval,),
+        (args.n_test,),
         generator=reference_generator,
     )
     reference_latent = means[reference_labels] + args.sigma_z * torch.randn(
-        args.n_eval,
+        args.n_test,
         args.intrinsic_dim,
         generator=reference_generator,
     )
     reference = reference_latent @ basis.T
     reference = reference + args.sigma_eta * torch.randn(
-        args.n_eval,
+        args.n_test,
         args.data_dim,
         generator=reference_generator,
     )
@@ -143,99 +143,96 @@ class TestProtoRunners(unittest.TestCase):
             self.assertEqual(config.training.optimizer, "adam")
             self.assertEqual(config.training.lr, 1.0e-4)
             self.assertEqual(config.runtime.precision, "fp32")
-            self.assertEqual(config.study.dataset_key, "celeba32_grey")
-            self.assertEqual(config.tracking.wandb.project, "memparam-celeba32_grey-unet")
+            self.assertEqual(config.study.dataset_key, "celeba")
+            self.assertEqual(config.tracking.wandb.project, "memparam-celeba-unet")
             self.assertEqual(
                 config.tracking.wandb.name,
-                "celeba32_grey-unet-N128-B64-v_v-steps30000-s0",
+                "celeba-unet-N128-B64-v_v-steps30000-s0",
             )
             self.assertEqual(
                 config.tracking.wandb.group,
-                "celeba32_grey-unet-steps30000",
+                "celeba-unet-steps30000",
             )
             self.assertEqual(config.training.ckpt_schedule, "bonnaire-1m")
-            self.assertFalse(settings["final_eval"])
-            self.assertIsNone(settings["eval_run_dir"])
 
     def test_image_runner_exposes_train_loss_log_cadence(self):
         settings = image_runner.default_settings()
         settings["log_every"] = 7
         config = image_runner.build_config(settings)
-        args = image_runner.parse_args(["--log-every", "7"])
+        args = image_runner.parse_args(["--log_every", "7"])
         default_args = image_runner.parse_args([])
 
         self.assertEqual(config.training.log_every, 7)
         self.assertEqual(args.log_every, 7)
         self.assertEqual(default_args.precision, "fp32")
-        self.assertFalse(default_args.compare_numerics)
         self.assertFalse(default_args.data_summary)
-        self.assertFalse(default_args.final_eval)
-        self.assertIsNone(default_args.eval_run_dir)
 
     def test_image_runner_accepts_slim_cli_surface(self):
         args = image_runner.parse_args(
             [
                 "--device",
                 "cpu",
-                "--out-dir",
+                "--out_dir",
                 "tmp/image32",
-                "--run-name",
+                "--run_name",
                 "slim",
                 "--seed",
                 "3",
                 "--dataset",
                 "mnist",
-                "--image-size",
+                "--image_size",
                 "32",
                 "--model",
                 "unet",
-                "--config-preset",
+                "--config_preset",
                 "image32_32",
-                "--prediction-space",
+                "--prediction_space",
                 "eps",
-                "--loss-space",
+                "--loss_space",
                 "eps",
-                "--n-train",
+                "--n_train",
                 "12",
-                "--n-eval",
+                "--n_test",
                 "10",
-                "--n-steps",
+                "--n_training_steps",
                 "5",
-                "--ckpt-every",
+                "--ckpt_every",
                 "2",
-                "--log-every",
+                "--log_every",
                 "1",
-                "--batch-cap",
+                "--batch_cap",
                 "4",
                 "--precision",
                 "bf16",
-                "--compare-numerics",
-                "--data-summary",
-                "--final-eval",
-                "--eval-run-dir",
-                "DONE_some_attempt",
-                "--eval-samples",
+                "--data_summary",
+                "--generation_monitor_samples",
                 "6",
-                "--sampling-steps",
+                "--sampling_steps",
                 "3",
                 "--root",
                 "data",
-                "--no-download",
-                "--no-wandb",
-                "--wandb-mode",
+                "--no_download",
+                "--no_wandb",
+                "--wandb_mode",
                 "offline",
-                "--wandb-project",
+                "--wandb_project",
                 "proj",
-                "--wandb-name",
+                "--wandb_name",
                 "name",
-                "--wandb-group",
+                "--wandb_group",
                 "group",
-                "--wandb-tags",
+                "--wandb_tags",
                 "a,b",
-                "--generation-trace",
-                "--generation-trace-count",
-                "2",
-                "--no-generation-trace-show",
+                "--generation_monitor",
+                "--no_generation_monitor_show",
+                "--random_projected_f_mem_samples",
+                "7",
+                "--random_projected_f_mem_resize",
+                "8",
+                "--random_projected_f_mem_proj_dim",
+                "4",
+                "--random_projected_f_mem_proj_seed",
+                "23",
             ]
         )
         config = image_runner.build_config(args)
@@ -249,25 +246,33 @@ class TestProtoRunners(unittest.TestCase):
         self.assertFalse(args.download)
         self.assertFalse(args.wandb)
         self.assertEqual(args.precision, "bf16")
-        self.assertTrue(args.compare_numerics)
         self.assertTrue(args.data_summary)
-        self.assertTrue(args.final_eval)
-        self.assertEqual(args.eval_run_dir, "DONE_some_attempt")
-        self.assertTrue(args.generation_trace)
+        self.assertTrue(args.generation_monitor)
         self.assertEqual(config.runtime.precision, "bf16")
         self.assertEqual(config.tracking.wandb.project, "proj")
         self.assertEqual(config.tracking.wandb.name, "name")
         self.assertEqual(config.tracking.wandb.group, "group")
-        self.assertEqual(config.generation_trace.num_images, 2)
-        self.assertFalse(config.generation_trace.show)
+        self.assertEqual(config.generation_monitor.n_samples, 6)
+        self.assertFalse(config.generation_monitor.show)
+        self.assertEqual(config.random_projected_f_mem.n_samples, 7)
+        self.assertEqual(config.random_projected_f_mem.resize_size, 8)
+        self.assertEqual(config.random_projected_f_mem.projection_dim, 4)
+        self.assertEqual(config.random_projected_f_mem.projection_seed, 23)
         self.assertEqual(config.tracking.wandb.tags, ["a", "b"])
+
+    def test_image_runner_rejects_inline_eval_flags(self):
+        for flag in ("--final-eval", "--eval-run-dir"):
+            with self.subTest(flag=flag):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        image_runner.parse_args([flag, "DONE_some_attempt"])
 
     def test_image_runner_accepts_checkpoint_schedule_flags(self):
         args = image_runner.parse_args(
             [
-                "--n-steps",
+                "--n_training_steps",
                 "1000000",
-                "--ckpt-schedule",
+                "--ckpt_schedule",
                 "bonnaire-1m",
             ]
         )
@@ -279,7 +284,7 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(config.training.resolved_ckpt_steps[-1], 1000000)
 
     def test_image_runner_ckpt_every_flag_selects_interval_schedule(self):
-        args = image_runner.parse_args(["--n-steps", "250", "--ckpt-every", "100"])
+        args = image_runner.parse_args(["--n_training_steps", "250", "--ckpt_every", "100"])
         config = image_runner.build_config(vars(args))
 
         self.assertEqual(config.training.ckpt_schedule, "interval")
@@ -287,12 +292,12 @@ class TestProtoRunners(unittest.TestCase):
 
     def test_image32_config_preset_owns_rare_geometry_and_architecture(self):
         settings = image_runner.default_settings()
-        settings.update({"dataset": "flowers102", "config_preset": "image32_128"})
+        settings.update({"dataset": "flowers", "config_preset": "image32_128"})
 
         config = image_runner.build_config(settings)
 
         self.assertEqual(config.data.dataset, "flowers102")
-        self.assertEqual(config.study.dataset_key, "flowers102")
+        self.assertEqual(config.study.dataset_key, "flowers")
         self.assertEqual(config.data.train_split, "test")
         self.assertEqual(config.data.reference_split, "train")
         self.assertEqual(config.data.image_size, 128)
@@ -303,16 +308,16 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(tuple(config.network.attn_resolutions), (16,))
         self.assertEqual(config.network.dropout, 0.0)
 
-    def test_flowers102_64_profile_sets_data_and_unet_shape(self):
+    def test_flowers_64_profile_sets_data_and_unet_shape(self):
         settings = image_runner.default_settings()
-        settings.update({"dataset": "flowers102_64"})
+        settings.update({"dataset": "flowers", "image_size": 64})
 
         config = image_runner.build_config(settings)
-        args = image_runner.parse_args(["--dataset", "flowers102_64"])
+        args = image_runner.parse_args(["--dataset", "flowers", "--image_size", "64"])
 
-        self.assertEqual(args.dataset, "flowers102_64")
+        self.assertEqual(args.dataset, "flowers")
         self.assertEqual(config.data.dataset, "flowers102")
-        self.assertEqual(config.study.dataset_key, "flowers102_64")
+        self.assertEqual(config.study.dataset_key, "flowers")
         self.assertEqual(config.data.image_size, 64)
         self.assertEqual(config.data.resize_size, 64)
         self.assertEqual(config.data.image_channels, 3)
@@ -327,8 +332,8 @@ class TestProtoRunners(unittest.TestCase):
         args = image_runner.parse_args(
             [
                 "--dataset",
-                "flowers102",
-                "--image-size",
+                "flowers",
+                "--image_size",
                 "64",
                 "--model",
                 "unet",
@@ -336,7 +341,7 @@ class TestProtoRunners(unittest.TestCase):
         )
         config = image_runner.build_config(vars(args))
 
-        self.assertEqual(config.study.dataset_key, "flowers102_64")
+        self.assertEqual(config.study.dataset_key, "flowers")
         self.assertEqual(config.data.dataset, "flowers102")
         self.assertEqual(config.data.image_size, 64)
         self.assertEqual(config.data.resize_size, 64)
@@ -349,7 +354,7 @@ class TestProtoRunners(unittest.TestCase):
             [
                 "--dataset",
                 "mnist",
-                "--image-size",
+                "--image_size",
                 "64",
                 "--model",
                 "unet",
@@ -357,7 +362,7 @@ class TestProtoRunners(unittest.TestCase):
         )
         config = image_runner.build_config(vars(args))
 
-        self.assertEqual(config.study.dataset_key, "mnist_64")
+        self.assertEqual(config.study.dataset_key, "mnist")
         self.assertEqual(config.data.dataset, "mnist")
         self.assertEqual(config.data.image_size, 64)
         self.assertEqual(config.network.arch, "unet")
@@ -366,14 +371,45 @@ class TestProtoRunners(unittest.TestCase):
 
     def test_image32_wandb_project_uses_dataset_key_and_model(self):
         settings = image_runner.default_settings()
-        settings.update({"dataset": "flowers102_128"})
+        settings.update({"dataset": "flowers", "image_size": 128})
 
         config = image_runner.build_config(settings)
 
         self.assertEqual(config.data.dataset, "flowers102")
-        self.assertEqual(config.study.dataset_key, "flowers102_128")
+        self.assertEqual(config.study.dataset_key, "flowers")
         self.assertEqual(config.network.arch, "unet")
-        self.assertEqual(config.tracking.wandb.project, "memparam-flowers102_128-unet")
+        self.assertEqual(config.tracking.wandb.project, "memparam-flowers-unet")
+
+    def test_image_runner_public_dataset_names_and_size_errors(self):
+        valid_pairs = [
+            ("mnist", 32),
+            ("flowers", 64),
+            ("afhq", 128),
+            ("ffhq", 128),
+            ("celeba", 32),
+        ]
+        for dataset, image_size in valid_pairs:
+            with self.subTest(dataset=dataset, image_size=image_size):
+                args = image_runner.parse_args(
+                    ["--dataset", dataset, "--image_size", str(image_size)]
+                )
+                config = image_runner.build_config(vars(args))
+                self.assertEqual(config.study.dataset_key, dataset)
+                self.assertEqual(config.data.image_size, image_size)
+
+        for dataset, image_size in (("ffhq", 64), ("celeba", 128)):
+            with self.subTest(dataset=dataset, image_size=image_size):
+                args = image_runner.parse_args(
+                    ["--dataset", dataset, "--image_size", str(image_size)]
+                )
+                with self.assertRaisesRegex(ValueError, "only supports image_size"):
+                    image_runner.build_config(vars(args))
+
+        for dataset in ("flowers102_64", "flowers102_128", "ffhq128", "celeba32_grey", "afhq_v2"):
+            with self.subTest(dataset=dataset):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit):
+                        image_runner.parse_args(["--dataset", dataset])
 
     def test_image32_legacy_broad_wandb_project_routes_to_dataset_project(self):
         settings = image_runner.default_settings()
@@ -392,7 +428,7 @@ class TestProtoRunners(unittest.TestCase):
             [
                 "--dataset",
                 "mnist",
-                "--wandb-project",
+                "--wandb_project",
                 "memparam-image32-unet",
             ]
         )
@@ -402,15 +438,15 @@ class TestProtoRunners(unittest.TestCase):
 
     def test_image_config_rejects_impossible_known_dataset_counts(self):
         settings = image_runner.default_settings()
-        settings.update({"dataset": "flowers102_64", "n_train": 7000})
+        settings.update({"dataset": "flowers", "image_size": 64, "n_train": 7000})
 
         with self.assertRaisesRegex(ValueError, "n_train=7000 exceeds flowers102"):
             image_runner.build_config(settings)
 
         settings = image_runner.default_settings()
-        settings.update({"dataset": "flowers102_64", "n_eval": 2000})
+        settings.update({"dataset": "flowers", "image_size": 64, "n_test": 2000})
 
-        with self.assertRaisesRegex(ValueError, "n_eval=2000 exceeds flowers102"):
+        with self.assertRaisesRegex(ValueError, "n_test=2000 exceeds flowers102"):
             image_runner.build_config(settings)
 
     def test_image_runners_accept_parameterization_spaces(self):
@@ -422,8 +458,8 @@ class TestProtoRunners(unittest.TestCase):
                         "prediction_space": space,
                         "loss_space": space,
                         "n_train": 4,
-                        "n_eval": 4,
-                        "n_steps": 2,
+                        "n_test": 4,
+                        "n_training_steps": 2,
                         "ckpt_every": 1,
                     }
                 )
@@ -472,6 +508,23 @@ class TestProtoRunners(unittest.TestCase):
                     (module, ["--visual-sanity-updates", "1"]),
                     (module, ["--visual-sanity-show"]),
                     (module, ["--generation-trace-updates", "1"]),
+                    (module, ["--run-name", "old"]),
+                    (module, ["--image-size", "32"]),
+                    (module, ["--config-preset", "image32_32"]),
+                    (module, ["--prediction-space", "v"]),
+                    (module, ["--loss-space", "v"]),
+                    (module, ["--n-eval", "4"]),
+                    (module, ["--n-steps", "4"]),
+                    (module, ["--eval-samples", "4"]),
+                    (module, ["--generation-trace"]),
+                    (module, ["--train-monitor-projected-f-mem"]),
+                    (module, ["--compare-numerics"]),
+                    (module, ["--n_eval", "4"]),
+                    (module, ["--n_steps", "4"]),
+                    (module, ["--eval_samples", "4"]),
+                    (module, ["--generation_trace"]),
+                    (module, ["--train_monitor_projected_f_mem"]),
+                    (module, ["--compare_numerics"]),
                     (module, ["--precision", "fp16"]),
                 ]
             )
@@ -499,7 +552,7 @@ class TestProtoRunners(unittest.TestCase):
         )
         self.assertEqual(args.prediction_space, "eps")
         self.assertEqual(args.loss_space, "eps")
-        self.assertEqual(args.n_eval, 11)
+        self.assertEqual(args.n_test, 11)
         self.assertEqual(args.ambient_dim, 7)
         self.assertEqual(args.intrinsic_data_dim, 3)
         self.assertEqual(args.data_dim, 7)
@@ -674,11 +727,11 @@ class TestProtoRunners(unittest.TestCase):
             {
                 "dataset": "mnist",
                 "n_train": 10,
-                "n_eval": 10,
-                "n_steps": 2,
+                "n_test": 10,
+                "n_training_steps": 2,
                 "ckpt_every": 1,
                 "batch_cap": 2,
-                "eval_samples": 2,
+                "generation_monitor_samples": 2,
                 "sampling_steps": 2,
                 "image_size": 16,
                 "base_channels": 8,
@@ -707,11 +760,11 @@ class TestProtoRunners(unittest.TestCase):
         settings.update(
             {
                 "n_train": 4,
-                "n_eval": 4,
-                "n_steps": 2,
+                "n_test": 4,
+                "n_training_steps": 2,
                 "ckpt_every": 1,
                 "batch_cap": 2,
-                "eval_samples": 2,
+                "generation_monitor_samples": 2,
                 "sampling_steps": 2,
                 "base_channels": 8,
                 "channel_mult": (1, 2),
@@ -731,17 +784,17 @@ class TestProtoRunners(unittest.TestCase):
         self.assertIn("f_mem", metrics["reference_memory"])
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_image_runner_default_run_skips_final_eval_but_keeps_generation_trace(self):
+    def test_image_runner_default_run_keeps_generation_monitor_and_random_projected_f_mem(self):
         settings = image_runner.default_settings()
         settings.update(
             {
                 "dataset": "mnist",
                 "n_train": 4,
-                "n_eval": 4,
-                "n_steps": 1,
+                "n_test": 4,
+                "n_training_steps": 1,
                 "ckpt_every": 1,
                 "batch_cap": 2,
-                "eval_samples": 2,
+                "generation_monitor_samples": 3,
                 "sampling_steps": 2,
                 "image_size": 16,
                 "base_channels": 8,
@@ -753,9 +806,12 @@ class TestProtoRunners(unittest.TestCase):
                 "balance_train_classes": False,
                 "balance_reference_classes": False,
                 "wandb": False,
-                "generation_trace": True,
-                "generation_trace_count": 2,
-                "generation_trace_show": False,
+                "generation_monitor": True,
+                "generation_monitor_show": False,
+                "random_projected_f_mem_samples": 3,
+                "random_projected_f_mem_resize": 8,
+                "random_projected_f_mem_proj_dim": 4,
+                "random_projected_f_mem_proj_seed": 23,
             }
         )
         config = image_runner.build_config(settings)
@@ -764,9 +820,9 @@ class TestProtoRunners(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 result = image_runner.run_full_job(config, tmpdir, "cpu")
 
-            self.assertEqual(result["checkpoint_metrics"], [])
-            self.assertEqual(result["loss_eval"], [])
-            self.assertEqual(result["checkpoint_sample_previews"], [])
+            self.assertNotIn("checkpoint_metrics", result)
+            self.assertNotIn("loss_eval", result)
+            self.assertNotIn("checkpoint_sample_previews", result)
             self.assertFalse(Path(result["artifacts"]["checkpoint_metrics"]["path"]).exists())
             self.assertFalse(Path(result["artifacts"]["loss_eval"]["path"]).exists())
             self.assertFalse(
@@ -774,23 +830,41 @@ class TestProtoRunners(unittest.TestCase):
             )
             summary_path = Path(result["run_dir"]) / "artifacts" / "run_summary.json"
             run_summary = json.loads(summary_path.read_text())
-            trace = run_summary["generation_trace"]
+            trace = run_summary["generation_monitor"]
             self.assertTrue(Path(trace["z_init_path"]).is_file())
             self.assertTrue(Path(trace["train_grid_path"]).is_file())
             self.assertTrue(Path(trace["final_samples_path"]).is_file())
             self.assertGreater(len(trace["checkpoint_samples"]), 0)
+            monitor = run_summary["random_projected_f_mem"]
+            self.assertTrue(monitor["enabled"])
+            self.assertEqual(monitor["metadata"]["n_samples"], 3)
+            self.assertEqual(monitor["metadata"]["resize_size"], 8)
+            self.assertEqual(monitor["metadata"]["projection_dim"], 4)
+            self.assertTrue(
+                (Path(result["run_dir"]) / monitor["metadata"]["projection_matrix_path"]).is_file()
+            )
+            self.assertEqual(len(monitor["records"]), 1)
+            self.assertEqual(monitor["records"][0]["step"], 1)
+            self.assertIn("f_mem", monitor["records"][0])
+            self.assertTrue(
+                (
+                    Path(result["run_dir"])
+                    / "metrics"
+                    / "random_projected_f_mem.json"
+                ).is_file()
+            )
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_generation_trace_sample_grid_is_not_capped_by_train_grid(self):
+    def test_generation_monitor_sample_grid_is_not_capped_by_train_grid(self):
         settings = image_runner.default_settings()
         settings.update(
             {
                 "dataset": "mnist",
                 "n_train": 2,
-                "n_eval": 4,
-                "n_steps": 1,
+                "n_test": 4,
+                "n_training_steps": 1,
                 "batch_cap": 2,
-                "eval_samples": 4,
+                "generation_monitor_samples": 4,
                 "sampling_steps": 2,
                 "image_size": 16,
                 "base_channels": 8,
@@ -802,9 +876,8 @@ class TestProtoRunners(unittest.TestCase):
                 "balance_train_classes": False,
                 "balance_reference_classes": False,
                 "wandb": False,
-                "generation_trace": True,
-                "generation_trace_count": 4,
-                "generation_trace_show": False,
+                "generation_monitor": True,
+                "generation_monitor_show": False,
             }
         )
         config = image_runner.build_config(settings)
@@ -829,12 +902,12 @@ class TestProtoRunners(unittest.TestCase):
                     image_runner.run_full_job(config, tmpdir, "cpu")
 
         train_grid = next(
-            item for item in saved_grids if item["name"] == "generation_trace_train_grid.png"
+            item for item in saved_grids if item["name"] == "generation_monitor_train_grid.png"
         )
         sample_grids = [
             item
             for item in saved_grids
-            if item["name"].startswith("generation_trace_samples_")
+            if item["name"].startswith("generation_monitor_samples_")
         ]
 
         self.assertEqual(train_grid["row_labels"], ["train"])
@@ -846,17 +919,17 @@ class TestProtoRunners(unittest.TestCase):
         self.assertTrue(all(item["row_counts"] == [4] for item in sample_grids))
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_image32_generation_trace_full_run_writes_checkpoint_previews(self):
+    def test_image32_train_run_writes_generation_monitor_checkpoint_panels(self):
         settings = image_runner.default_settings()
         settings.update(
             {
                 "dataset": "mnist",
                 "n_train": 4,
-                "n_eval": 4,
-                "n_steps": 1,
+                "n_test": 4,
+                "n_training_steps": 1,
                 "ckpt_every": 1,
                 "batch_cap": 2,
-                "eval_samples": 2,
+                "generation_monitor_samples": 2,
                 "sampling_steps": 2,
                 "image_size": 16,
                 "base_channels": 8,
@@ -868,25 +941,19 @@ class TestProtoRunners(unittest.TestCase):
                 "balance_train_classes": False,
                 "balance_reference_classes": False,
                 "wandb": False,
-                "generation_trace": True,
-                "generation_trace_count": 2,
-                "generation_trace_show": False,
+                "generation_monitor": True,
+                "generation_monitor_show": False,
             }
         )
         config = image_runner.build_config(settings)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with contextlib.redirect_stdout(io.StringIO()):
-                result = image_runner.run_full_job(config, tmpdir, "cpu", evaluate=True)
+                result = image_runner.run_full_job(config, tmpdir, "cpu")
 
-            previews = result["checkpoint_sample_previews"]
-            self.assertGreater(len(previews), 0)
-            self.assertTrue(Path(result["artifacts"]["checkpoint_sample_previews"]["path"]).is_file())
-            self.assertTrue(Path(previews[-1]["samples_path"]).is_file())
-            self.assertTrue(Path(previews[-1]["figure_path"]).is_file())
             summary_path = Path(result["run_dir"]) / "artifacts" / "run_summary.json"
             run_summary = json.loads(summary_path.read_text())
-            trace = run_summary["generation_trace"]
+            trace = run_summary["generation_monitor"]
             self.assertTrue(Path(trace["z_init_path"]).is_file())
             self.assertTrue(Path(trace["train_grid_path"]).is_file())
             self.assertTrue(Path(trace["final_samples_path"]).is_file())
@@ -894,75 +961,6 @@ class TestProtoRunners(unittest.TestCase):
             self.assertGreater(len(checkpoint_trace), 0)
             self.assertEqual(checkpoint_trace[0]["step"], 0)
             self.assertTrue(Path(checkpoint_trace[-1]["path"]).is_file())
-
-    @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
-    def test_image_runner_eval_run_dir_replays_finished_done_run(self):
-        settings = image_runner.default_settings()
-        settings.update(
-            {
-                "dataset": "mnist",
-                "n_train": 4,
-                "n_eval": 4,
-                "n_steps": 1,
-                "ckpt_every": 1,
-                "batch_cap": 2,
-                "eval_samples": 2,
-                "sampling_steps": 2,
-                "image_size": 16,
-                "base_channels": 8,
-                "channel_mult": (1, 2),
-                "attn_resolutions": (8,),
-                "num_res_blocks": 1,
-                "time_emb_dim": 16,
-                "download": False,
-                "balance_train_classes": False,
-                "balance_reference_classes": False,
-                "wandb": False,
-                "generation_trace": False,
-            }
-        )
-        config = image_runner.build_config(settings)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with contextlib.redirect_stdout(io.StringIO()):
-                train_result = image_runner.run_full_job(config, tmpdir, "cpu")
-            run_dir = Path(train_result["run_dir"])
-            self.assertTrue(run_dir.name.startswith("DONE_"))
-            self.assertFalse(Path(train_result["artifacts"]["checkpoint_metrics"]["path"]).exists())
-
-            with contextlib.redirect_stdout(io.StringIO()):
-                eval_result = image_runner.main(
-                    ["--device", "cpu", "--eval-run-dir", str(run_dir)]
-                )
-
-            self.assertEqual(eval_result["mode"], "eval_run_dir")
-            self.assertEqual(Path(eval_result["run_dir"]), run_dir)
-            self.assertGreater(len(eval_result["checkpoint_metrics"]), 0)
-            self.assertGreater(len(eval_result["loss_eval"]), 0)
-            self.assertGreater(len(eval_result["checkpoint_sample_previews"]), 0)
-            self.assertTrue(Path(eval_result["artifacts"]["checkpoint_metrics"]["path"]).is_file())
-            status = json.loads((run_dir / "status.json").read_text())
-            self.assertEqual(status["state"], "completed")
-
-    def test_image_runner_eval_run_dir_rejects_unfinished_or_incomplete_runs(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-
-            with self.assertRaisesRegex(ValueError, "DONE_"):
-                image_runner.run_eval_job(root / "attempt_0001", "cpu")
-
-            for state in ("failed", "aborted"):
-                done_bad = root / f"DONE_{state}"
-                done_bad.mkdir()
-                (done_bad / "status.json").write_text(json.dumps({"state": state}))
-                with self.assertRaisesRegex(ValueError, "trained"):
-                    image_runner.run_eval_job(done_bad, "cpu")
-
-            done_incomplete = root / "DONE_incomplete"
-            done_incomplete.mkdir()
-            (done_incomplete / "status.json").write_text(json.dumps({"state": "trained"}))
-            with self.assertRaisesRegex(FileNotFoundError, "required saved-run artifacts"):
-                image_runner.run_eval_job(done_incomplete, "cpu")
 
     def test_synthetic_tiny_full_run_writes_release_metrics(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1044,7 +1042,7 @@ class TestProtoRunners(unittest.TestCase):
         settings.update(
             {
                 "n_train": 6,
-                "n_eval": 8,
+                "n_test": 8,
                 "batch_cap": 3,
                 "eval_samples": 3,
                 "sampling_steps": 2,
@@ -1077,7 +1075,7 @@ class TestProtoRunners(unittest.TestCase):
         settings.update(
             {
                 "n_train": 6,
-                "n_eval": 8,
+                "n_test": 8,
                 "batch_cap": 3,
                 "eval_samples": 3,
                 "sampling_steps": 2,

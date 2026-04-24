@@ -119,7 +119,7 @@ DATASET_DEFAULTS = {
         "dataset_subdir": "",
         **_UNET_PROFILES[32],
     },
-    "celeba32_grey": {
+    "celeba": {
         "dataset": "celeba32_grey",
         "config_profile": "image32_32",
         "image_size": 32,
@@ -130,7 +130,7 @@ DATASET_DEFAULTS = {
         "dataset_subdir": "",
         **_UNET_PROFILES[32],
     },
-    "flowers102": {
+    "flowers": {
         "dataset": "flowers102",
         "config_profile": "image32_32",
         "image_size": 32,
@@ -145,52 +145,7 @@ DATASET_DEFAULTS = {
         "dataset_subdir": "",
         **_UNET_PROFILES[32],
     },
-    "flowers102_64": {
-        "dataset": "flowers102",
-        "config_profile": "image32_64",
-        "image_size": 64,
-        "image_channels": 3,
-        "resize_size": 64,
-        # Flowers102's official train split has only 1,020 images.
-        # For generative runs we train on the large official test split and use
-        # the small official train split as the held-out/reference set.
-        "train_split": "test",
-        "reference_split": "train",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-        **_UNET_PROFILES[64],
-    },
-    "flowers102_128": {
-        "dataset": "flowers102",
-        "config_profile": "image32_128",
-        "image_size": 128,
-        "image_channels": 3,
-        "resize_size": 128,
-        # Flowers102's official train split has only 1,020 images.
-        # For generative runs we train on the large official test split and use
-        # the small official train split as the held-out/reference set.
-        "train_split": "test",
-        "reference_split": "train",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-        **_UNET_PROFILES[128],
-    },
-    "flowers102_256": {
-        "dataset": "flowers102",
-        "config_profile": "image32_256",
-        "image_size": 256,
-        "image_channels": 3,
-        "resize_size": 256,
-        # Flowers102's official train split has only 1,020 images.
-        # For generative runs we train on the large official test split and use
-        # the small official train split as the held-out/reference set.
-        "train_split": "test",
-        "reference_split": "train",
-        "allow_same_source_reference": False,
-        "dataset_subdir": "",
-        **_UNET_PROFILES[256],
-    },
-    "afhq_v2": {
+    "afhq": {
         "dataset": "afhq_v2",
         "config_profile": "image32_32",
         "image_size": 32,
@@ -201,7 +156,7 @@ DATASET_DEFAULTS = {
         "dataset_subdir": "afhq_v2",
         **_UNET_PROFILES[32],
     },
-    "ffhq128": {
+    "ffhq": {
         "dataset": "ffhq128",
         "config_profile": "image32_128",
         "image_size": 128,
@@ -215,10 +170,8 @@ DATASET_DEFAULTS = {
 }
 
 
-SCALABLE_IMAGE_DATASETS = {"mnist", "flowers102", "afhq_v2"}
-DATASET_ALIASES = {
-    "ffhq": "ffhq128",
-}
+PUBLIC_DATASETS = ("mnist", "celeba", "flowers", "afhq", "ffhq")
+SCALABLE_IMAGE_DATASETS = {"mnist", "flowers", "afhq"}
 
 
 DEFAULT_SETTINGS = {
@@ -229,7 +182,7 @@ DEFAULT_SETTINGS = {
     "seed": 0,
 
     # Data/model runner selection.
-    "dataset": "celeba32_grey",
+    "dataset": "celeba",
     "config_preset": None,
     "model": "unet",
     "prediction_space": "v",
@@ -237,12 +190,12 @@ DEFAULT_SETTINGS = {
 
     # Dataset sizes.
     # n_train: real images used for optimization.
-    # n_eval: real held-out/reference images loaded for evaluation/baselines.
+    # n_test: real held-out/reference images loaded for evaluation/baselines.
     "n_train": 128,
-    "n_eval": 128,
+    "n_test": 128,
 
     # Training schedule.
-    "n_steps": 30000,
+    "n_training_steps": 30000,
     "ckpt_every": 2000,
     "ckpt_schedule": "bonnaire-1m",
     "ckpt_steps": "",
@@ -252,15 +205,12 @@ DEFAULT_SETTINGS = {
     # Runtime numerics.
     # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
     "precision": "fp32",
-    "compare_numerics": False,
     "data_summary": False,
-    "final_eval": False,
-    "eval_run_dir": None,
 
-    # Sampling/evaluation.
-    # eval_samples: generated samples per checkpoint; also the size of z_init.pt.
+    # Sampling/monitoring.
+    # generation_monitor_samples: generated fixed-z samples saved for monitors.
     # sampling_steps: numerical solver steps used when turning z_init into images.
-    "eval_samples": 64,
+    "generation_monitor_samples": 64,
     "sampling_steps": 24,
 
     # Data location.
@@ -293,14 +243,21 @@ DEFAULT_SETTINGS = {
     "wandb_name": "",
     "wandb_group": "",
     "wandb_tags": "",
+    "wandb_log_figures": True,
     "wandb_notes": "",
     "wandb_strict": False,
 
-    # Optional visual trace during training.
+    # Optional visual monitor during training.
     # Uses the same saved z_init.pt at step 0, each checkpoint, and final model.
-    "generation_trace": False,
-    "generation_trace_count": 8,
-    "generation_trace_show": True,
+    "generation_monitor": False,
+    "generation_monitor_show": True,
+    "compact_model_summary": True,
+
+    # Always-on image train-time monitor. This is not post-hoc checkpoint evaluation.
+    "random_projected_f_mem_samples": 512,
+    "random_projected_f_mem_resize": 16,
+    "random_projected_f_mem_proj_dim": 256,
+    "random_projected_f_mem_proj_seed": None,
 }
 
 
@@ -344,7 +301,7 @@ def get_default_settings():
 
 def list_datasets():
     """Return supported dataset keys for this runner."""
-    return tuple(sorted(set(DATASET_DEFAULTS.keys()) | set(DATASET_ALIASES.keys())))
+    return PUBLIC_DATASETS
 
 
 def list_models():
@@ -418,14 +375,8 @@ def _resolve_requested_image_size(raw_size):
 
 
 def _profile_key_for_size(dataset, image_size):
-    """Return the user-facing dataset key for a base dataset and image size."""
-    candidate = f"{dataset}_{int(image_size)}"
-    if candidate in DATASET_DEFAULTS:
-        return candidate
-    default_size = int(DATASET_DEFAULTS[dataset]["image_size"])
-    if int(image_size) == default_size:
-        return dataset
-    return candidate
+    """Return the public dataset key for a requested size."""
+    return dataset
 
 
 def _sized_dataset_defaults(dataset, image_size):
@@ -445,14 +396,18 @@ def _resolve_dataset_profile(raw_settings):
     Resolve dataset, image size, and model into one concrete dataset profile.
 
     This is the main convenience path for the image runner: callers can pass a
-    base dataset such as `flowers102`, an image size such as `64`, and a model
+    public dataset such as `flowers`, an image size such as `64`, and a model
     such as `unet`; the runner chooses the matching data/model defaults.
     """
     model = _resolve_model(raw_settings.get("model", DEFAULT_SETTINGS["model"]))
     raw_dataset = str(_coalesce(raw_settings.get("dataset"), DEFAULT_SETTINGS["dataset"]))
-    dataset = DATASET_ALIASES.get(raw_dataset, raw_dataset)
+    dataset = raw_dataset
     if dataset not in DATASET_DEFAULTS:
-        raise ValueError(f"Unknown image runner dataset: {raw_dataset}")
+        choices = ", ".join(PUBLIC_DATASETS)
+        raise ValueError(
+            f"Unknown image runner dataset: {raw_dataset}. "
+            f"Use one of: {choices}"
+        )
 
     image_size = _resolve_requested_image_size(raw_settings.get("image_size"))
     defaults = DATASET_DEFAULTS[dataset]
@@ -463,20 +418,13 @@ def _resolve_dataset_profile(raw_settings):
     if int(image_size) == default_size:
         return dataset, defaults, model
 
-    if dataset != str(defaults["dataset"]):
-        raise ValueError(
-            f"Dataset key {dataset!r} already fixes image_size={default_size}. "
-            f"Use --dataset {defaults['dataset']} --image-size {int(image_size)}."
-        )
-
     if dataset not in SCALABLE_IMAGE_DATASETS:
         raise ValueError(
-            f"Dataset {dataset!r} does not support automatic image_size={int(image_size)}."
+            f"Dataset {dataset!r} only supports image_size={default_size}; "
+            f"got image_size={int(image_size)}."
         )
 
     profile_key = _profile_key_for_size(dataset, image_size)
-    if profile_key in DATASET_DEFAULTS:
-        return profile_key, DATASET_DEFAULTS[profile_key], model
     return profile_key, _sized_dataset_defaults(dataset, image_size), model
 
 
@@ -514,13 +462,20 @@ def _validate_image_counts(config):
     folder loaders begin materializing images.
     """
     _validate_positive_count("n_train", config.data.n_train)
-    _validate_positive_count("n_eval", config.data.n_eval)
-    _validate_positive_count("eval_samples", config.evaluation.n_samples)
-    _validate_positive_count("n_steps", config.training.n_steps)
+    _validate_positive_count("n_test", config.data.n_test)
+    _validate_positive_count("generation_monitor_samples", config.evaluation.n_samples)
+    _validate_positive_count("n_training_steps", config.training.n_training_steps)
     _validate_positive_count("ckpt_every", config.training.ckpt_every)
     _validate_positive_count("batch_cap", config.training.batch_cap)
     _validate_positive_count("sampling_steps", config.sampling.n_steps)
-    _validate_positive_count("generation_trace_count", config.generation_trace.num_images)
+    _validate_positive_count(
+        "generation_monitor_samples",
+        config.generation_monitor.n_samples,
+    )
+    monitor = config.random_projected_f_mem
+    _validate_positive_count("random_projected_f_mem_samples", monitor.n_samples)
+    _validate_positive_count("random_projected_f_mem_resize", monitor.resize_size)
+    _validate_positive_count("random_projected_f_mem_proj_dim", monitor.projection_dim)
 
     _validate_split_count(
         config,
@@ -530,9 +485,9 @@ def _validate_image_counts(config):
     )
     _validate_split_count(
         config,
-        field_name="n_eval",
+        field_name="n_test",
         split_name=getattr(config.data, "reference_split", "test"),
-        count=config.data.n_eval,
+        count=config.data.n_test,
     )
 
 
@@ -622,7 +577,7 @@ def build_config(settings):
         )
     )
     config.data.n_train = int(settings["n_train"])
-    config.data.n_eval = int(settings["n_eval"])
+    config.data.n_test = int(settings["n_test"])
     config.data.image_size = int(data_setting("image_size"))
     config.data.image_channels = int(data_setting("image_channels"))
     config.data.resize_size = int(data_setting("resize_size"))
@@ -652,7 +607,7 @@ def build_config(settings):
 
     # Training.
     config.training.seed = int(settings["seed"])
-    config.training.n_steps = int(settings["n_steps"])
+    config.training.n_training_steps = int(settings["n_training_steps"])
     config.training.ckpt_every = int(settings["ckpt_every"])
     config.training.ckpt_schedule = str(settings["ckpt_schedule"])
     config.training.ckpt_steps = parse_checkpoint_steps(settings["ckpt_steps"])
@@ -685,9 +640,10 @@ def build_config(settings):
     config.runtime.non_blocking_h2d = False
 
     # Evaluation.
-    config.evaluation.n_samples = int(
-        _coalesce(settings["eval_samples"], defaults.evaluation.n_samples)
+    monitor_samples = int(
+        _coalesce(settings["generation_monitor_samples"], defaults.evaluation.n_samples)
     )
+    config.evaluation.n_samples = monitor_samples
     config.evaluation.batch_size = batch_cap
     config.evaluation.sample_panel_count = min(
         int(_coalesce(defaults.evaluation.sample_panel_count, 8)),
@@ -705,7 +661,7 @@ def build_config(settings):
     config.evaluation.chunk_size = max(
         int(_coalesce(defaults.evaluation.chunk_size, 128)),
         int(config.evaluation.n_samples),
-        int(config.data.n_eval),
+        int(config.data.n_test),
         int(config.data.n_train),
     )
 
@@ -715,16 +671,27 @@ def build_config(settings):
         _coalesce(settings["sampling_steps"], defaults.sampling.n_steps)
     )
 
-    # Generation trace.
-    config.generation_trace.enabled = bool(settings["generation_trace"])
-    config.generation_trace.num_images = int(settings["generation_trace_count"])
-    config.generation_trace.show = bool(settings["generation_trace_show"])
+    # Generation monitor.
+    config.generation_monitor.enabled = bool(settings["generation_monitor"])
+    config.generation_monitor.n_samples = monitor_samples
+    config.generation_monitor.show = bool(settings["generation_monitor_show"])
+
+    # Random projected f_mem monitor.
+    monitor = config.random_projected_f_mem
+    monitor.n_samples = int(settings["random_projected_f_mem_samples"])
+    monitor.resize_size = int(settings["random_projected_f_mem_resize"])
+    monitor.projection_dim = int(settings["random_projected_f_mem_proj_dim"])
+    projection_seed = settings.get("random_projected_f_mem_proj_seed")
+    if projection_seed is None:
+        projection_seed = int(config.training.seed) + 3001
+    monitor.projection_seed = int(projection_seed)
 
     # Tracking.
     config.tracking.console.summary_every_steps = int(config.training.log_every)
     config.tracking.console.summary_every_seconds = float(
         defaults.tracking.console.summary_every_seconds
     )
+    config.tracking.console.compact_model_summary = bool(settings["compact_model_summary"])
     config.tracking.wandb.enabled = bool(settings["wandb"])
     config.tracking.wandb.mode = str(settings["wandb_mode"])
     if bool(settings.get("wandb_project_provided", False)):
@@ -768,6 +735,7 @@ def build_config(settings):
         for item in str(settings["wandb_tags"]).split(",")
         if item.strip()
     ]
+    config.tracking.wandb.log_figures = bool(settings["wandb_log_figures"])
     config.tracking.wandb.strict = bool(wandb_strict)
     resolve_wandb_identity(config)
 

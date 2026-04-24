@@ -35,7 +35,7 @@ class CheckpointScheduleTests(unittest.TestCase):
 
     def test_bonnaire_1m_schedule_clips_to_short_runs(self):
         config = _small_config()
-        config.training.n_steps = 1200
+        config.training.n_training_steps = 1200
         config.training.ckpt_schedule = "bonnaire-1m"
         config.training.ckpt_steps = ()
 
@@ -47,14 +47,14 @@ class CheckpointScheduleTests(unittest.TestCase):
 
     def test_interval_schedule_includes_final_step(self):
         config = _small_config()
-        config.training.n_steps = 5
+        config.training.n_training_steps = 5
         config.training.ckpt_every = 2
 
         self.assertEqual(resolve_checkpoint_steps(config), (0, 2, 4, 5))
 
     def test_explicit_checkpoint_steps_have_priority(self):
         config = _small_config()
-        config.training.n_steps = 3
+        config.training.n_training_steps = 3
         config.training.ckpt_every = 2
         config.training.ckpt_schedule = "bonnaire-1m"
         config.training.ckpt_steps = (0, 1, 3)
@@ -63,7 +63,7 @@ class CheckpointScheduleTests(unittest.TestCase):
 
     def test_explicit_checkpoint_steps_reject_bad_values(self):
         config = _small_config()
-        config.training.n_steps = 3
+        config.training.n_training_steps = 3
         with self.assertRaisesRegex(ValueError, "comma-separated"):
             parse_checkpoint_steps("1,,2")
 
@@ -73,7 +73,7 @@ class CheckpointScheduleTests(unittest.TestCase):
 
     def test_training_saves_only_resolved_checkpoint_steps(self):
         config = _small_config()
-        config.training.n_steps = 3
+        config.training.n_training_steps = 3
         config.training.ckpt_every = 2
         config.training.ckpt_steps = (0, 1, 3)
 
@@ -112,7 +112,7 @@ def _small_config():
     config.data.dataset = "gmm_subspace"
     config.data.root = "synthetic"
     config.data.n_train = 4
-    config.data.n_eval = 4
+    config.data.n_test = 4
     config.data.ambient_dim = 2
     config.data.intrinsic_data_dim = 2
     config.data.data_dim = 2
@@ -127,7 +127,7 @@ def _small_config():
     config.network.time_emb_dim = 8
 
     config.training.seed = 0
-    config.training.n_steps = 3
+    config.training.n_training_steps = 3
     config.training.batch_cap = 2
     config.training.batch_size = 2
     config.training.lr = 1.0e-3

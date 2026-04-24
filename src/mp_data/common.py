@@ -192,7 +192,7 @@ if __name__ == "__main__":
     config = get_base_config()
     config.data.dataset = "gmm_subspace"
     config.data.n_train = 8
-    config.data.n_eval = 6
+    config.data.n_test = 6
     config.data.data_dim = 8
     config.data.intrinsic_dim = 2
     config.data.n_clusters = 3

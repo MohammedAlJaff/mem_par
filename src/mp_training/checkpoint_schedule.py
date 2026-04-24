@@ -45,10 +45,10 @@ def bonnaire_1m_checkpoint_steps(n_steps=BONNAIRE_1M_MAX_STEPS):
     """
     n_steps = int(n_steps)
     if n_steps < 1:
-        raise ValueError(f"training.n_steps must be >= 1, got {n_steps}")
+        raise ValueError(f"training.n_training_steps must be >= 1, got {n_steps}")
     if n_steps > BONNAIRE_1M_MAX_STEPS:
         raise ValueError(
-            "bonnaire-1m checkpoint schedule requires training.n_steps <= 1000000."
+            "bonnaire-1m checkpoint schedule requires training.n_training_steps <= 1000000."
         )
 
     phase1 = _snapped_logspace(math.log10(251), 4.0, 10, 250)
@@ -69,9 +69,9 @@ def resolve_checkpoint_steps(config):
     step are always included.
     """
     training = config.training
-    n_steps = int(training.n_steps)
+    n_steps = int(training.n_training_steps)
     if n_steps < 1:
-        raise ValueError(f"training.n_steps must be >= 1, got {n_steps}")
+        raise ValueError(f"training.n_training_steps must be >= 1, got {n_steps}")
 
     explicit_steps = parse_checkpoint_steps(getattr(training, "ckpt_steps", ()))
     if explicit_steps:

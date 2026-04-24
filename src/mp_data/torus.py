@@ -122,7 +122,7 @@ def load_torus3d_bundle(config):
     reference, reference_torus_xyz, reference_angles, reference_angle_features = _sample_torus(
         config,
         basis,
-        int(config.data.n_eval),
+        int(config.data.n_test),
         int(config.training.seed) + 1,
     )
     major_radius = torch.tensor(float(config.data.major_radius))
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     config = get_base_config()
     config.data.dataset = "torus3d"
     config.data.n_train = 8
-    config.data.n_eval = 6
+    config.data.n_test = 6
     config.data.ambient_dim = 8
     config.data.data_dim = 8
 

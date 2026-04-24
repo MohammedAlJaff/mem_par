@@ -173,7 +173,7 @@ def load_mnist_bundle(config):
     test_data, test_targets = _load_mnist_split(root, train=False, download=download)
 
     train_count = int(config.data.n_train)
-    reference_count = int(config.data.n_eval)
+    reference_count = int(config.data.n_test)
     requested_balance_train = bool(getattr(config.data, "balance_train_classes", False))
     requested_balance_reference = bool(
         getattr(config.data, "balance_reference_classes", False)
@@ -263,7 +263,7 @@ if __name__ == "__main__":
     config.data.dataset = "mnist"
     config.data.root = "data"
     config.data.n_train = 8
-    config.data.n_eval = 6
+    config.data.n_test = 6
     config.data.image_size = 32
     config.data.image_channels = 1
     config.data.flatten = False

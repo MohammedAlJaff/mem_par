@@ -84,7 +84,7 @@ PYTHONPATH=src python -m experiments.mnist.run \
   --download \
   --device cuda \
   --wandb \
-  --wandb-mode offline
+  --wandb_mode offline
 ```
 
 When W&B is enabled, one W&B run corresponds to one attempt. By default the
@@ -92,10 +92,10 @@ project is derived from the dataset+model combo, such as `memparam-mnist-unet`,
 and the visible run name includes dataset, model, `N`, batch cap,
 prediction/loss parameterization, training steps, and seed. The default W&B
 group is dataset+model+training steps, so `x`, `eps`, `v`, batch-size, seed, and
-`N` sweeps stay together inside one dataset/model project. Image32 runners use
-the user-facing dataset key, so `flowers102_128` goes to
-`memparam-flowers102_128-unet` rather than mixing with other Image32 datasets.
-Pass `--wandb-project`, `--wandb-name`, or `--wandb-group` to override these
+`N` sweeps stay together inside one dataset/model project. Image runners use
+the clean public dataset key, so `flowers --image_size 128` logs under
+`memparam-flowers-unet`.
+Pass `--wandb_project`, `--wandb_name`, or `--wandb_group` to override these
 values explicitly. Local offline files are stored under the attempt's
 `logs/wandb/` directory for later `wandb sync`.
 

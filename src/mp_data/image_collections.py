@@ -175,7 +175,7 @@ def load_flowers102_bundle(config):
         len(train_set), int(config.data.n_train), int(config.training.seed)
     )
     reference_indices = seeded_indices(
-        len(reference_set), int(config.data.n_eval), int(config.training.seed) + 1
+        len(reference_set), int(config.data.n_test), int(config.training.seed) + 1
     )
     train_tensor, train_labels = _stack_subset(train_set, train_indices)
     reference_tensor, reference_labels = _stack_subset(reference_set, reference_indices)
@@ -237,7 +237,7 @@ def load_afhq_v2_bundle(config):
         len(train_set), int(config.data.n_train), int(config.training.seed)
     )
     reference_indices = seeded_indices(
-        len(reference_set), int(config.data.n_eval), int(config.training.seed) + 1
+        len(reference_set), int(config.data.n_test), int(config.training.seed) + 1
     )
     train_tensor, train_labels = _stack_subset(train_set, train_indices)
     reference_tensor, reference_labels = _stack_subset(reference_set, reference_indices)
@@ -295,7 +295,7 @@ def load_ffhq128_bundle(config):
         "FFHQ thumbnails",
     )
     dataset = RecursiveImageDataset(base_dir, transform=_build_transform(config))
-    count = int(config.data.n_train) + int(config.data.n_eval)
+    count = int(config.data.n_train) + int(config.data.n_test)
     combined = seeded_indices(len(dataset), count, int(config.training.seed))
     train_indices = combined[: int(config.data.n_train)]
     reference_indices = combined[int(config.data.n_train) :]

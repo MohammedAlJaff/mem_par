@@ -26,7 +26,7 @@ from mp_runners.image_eval import (
     collect_checkpoint_sample_preview_record,
 )
 from mp_metrics.loss_eval import collect_loss_eval_record
-from mp_metrics.synthetic import compute_nn_stats
+from mp_metrics.metrics_synthetic import compute_nn_stats
 from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker, loss_eval_metric_payload
 

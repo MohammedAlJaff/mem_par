@@ -4,7 +4,7 @@ Runner for controlled synthetic datasets with an MLP.
 This is the canonical synthetic command-line workflow. It supports train-only,
 train plus final evaluation, and replay evaluation from an existing finished
 `DONE_` attempt. The runner owns synthetic CLI/config choices; shared training
-stays in `mp_training.trainer`; synthetic metrics stay in `mp_metrics.synthetic`.
+stays in `mp_training.trainer`; synthetic metrics stay in `mp_metrics.metrics_synthetic`.
 """
 
 import argparse
@@ -19,7 +19,7 @@ from mp_artifacts import list_checkpoint_paths, load_attempt_status
 from mp_config import clone_config, get_base_config
 from mp_data import build_data_bundle
 from mp_metrics.loss_eval import collect_loss_eval_record
-from mp_metrics.synthetic import (
+from mp_metrics.metrics_synthetic import (
     collect_controlled_synthetic_metric_record,
     intrinsic_geometry_parts,
 )
@@ -75,7 +75,7 @@ def default_settings():
         "data_dim": 2,
         "intrinsic_dim": 2,
         "n_train": 10,
-        "n_eval": 1024,
+        "n_test": 1024,
         "n_clusters": 3,
         "sigma_z": 0.10,
         "sigma_eta": 1.0e-3,
@@ -173,7 +173,7 @@ def build_config(settings):
     config.data.download = False
     config.data.data_source = "canonical"
     config.data.n_train = int(settings["n_train"])
-    config.data.n_eval = int(settings["n_eval"])
+    config.data.n_test = int(settings["n_test"])
     if dataset == "torus3d":
         ambient_dim = int(settings["ambient_dim"])
         if ambient_dim < 3:
@@ -206,7 +206,7 @@ def build_config(settings):
     config.network.time_emb_dim = int(settings["time_emb_dim"])
 
     config.training.seed = int(settings["seed"])
-    config.training.n_steps = int(settings["n_steps"])
+    config.training.n_training_steps = int(settings["n_steps"])
     config.training.batch_cap = int(settings["batch_cap"])
     config.training.batch_size = int(settings["batch_cap"])
     config.training.lr = float(settings["lr"])
@@ -484,7 +484,7 @@ def parse_args(argv=None):
         help="d: true intrinsic data dimension for controlled synthetic data.",
     )
     parser.add_argument("--n-train", type=int, default=settings["n_train"])
-    parser.add_argument("--n-reference", "--n-eval", dest="n_eval", type=int, default=settings["n_eval"])
+    parser.add_argument("--n-reference", "--n-eval", dest="n_test", type=int, default=settings["n_test"])
     parser.add_argument("--n-clusters", type=int, default=settings["n_clusters"])
     parser.add_argument("--sigma-z", type=float, default=settings["sigma_z"])
     parser.add_argument("--sigma-eta", type=float, default=settings["sigma_eta"])
@@ -569,7 +569,7 @@ def _validate_args(args):
     """Validate synthetic runner command-line arguments."""
     checks = [
         (args.n_train >= 2, "--n-train must be at least 2 for nearest-neighbor metrics."),
-        (args.n_eval >= 1, "--n-reference/--n-eval must be at least 1."),
+        (args.n_test >= 1, "--n-reference/--n-eval must be at least 1."),
         (args.eval_samples >= 1, "--eval-samples must be at least 1."),
         (args.ambient_dim >= 1, "--ambient-dim must be at least 1."),
         (args.intrinsic_data_dim >= 1, "--intrinsic-data-dim must be at least 1."),

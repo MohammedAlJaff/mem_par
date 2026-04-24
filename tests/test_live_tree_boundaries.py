@@ -38,8 +38,8 @@ class TestLiveTreeBoundaries(unittest.TestCase):
     def test_active_runners_live_under_src(self):
         self.assertTrue(Path("src/mp_runners/synthetic_runner.py").is_file())
         self.assertTrue(Path("src/mp_runners/image_runner.py").is_file())
-        self.assertTrue(Path("src/mp_metrics/synthetic.py").is_file())
-        self.assertTrue(Path("src/mp_metrics/images.py").is_file())
+        self.assertTrue(Path("src/mp_metrics/metrics_synthetic.py").is_file())
+        self.assertTrue(Path("src/mp_metrics/metrics_images.py").is_file())
 
         removed_active_paths = [
             "prototyping/runners/synthetic_runner.py",
