@@ -30,7 +30,7 @@ def parse_checkpoint_steps(value):
             return ()
         parts = [part.strip() for part in text.split(",")]
         if any(part == "" for part in parts):
-            raise ValueError("--ckpt-steps must be a comma-separated list of integers.")
+            raise ValueError("--ckpt_steps must be a comma-separated list of integers.")
         return tuple(_parse_single_step(part) for part in parts)
     return tuple(_parse_single_step(item) for item in value)
 

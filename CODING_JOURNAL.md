@@ -1,5 +1,63 @@
 # Coding Journal
 
+## 2026-04-25T01:45:22Z - Pre-Submission Train/Eval Runner Split
+
+### Context
+Cleaned up runner boundaries before deleting local outputs and starting larger
+NeurIPS-facing training sweeps.
+
+### Intent
+Make train runners train-only, make checkpoint evaluation replay from saved
+artifacts, and fix reproducibility issues that could silently contaminate
+comparisons across parameterizations and runs.
+
+### Changed / Observed
+- Hard-renamed `mp_runners.image_runner` to `mp_runners.image_train_runner`
+  and `mp_runners.synthetic_runner` to `mp_runners.synthetic_train_runner`
+  with no compatibility wrappers.
+- Added `mp_runners.eval_synthetic --run_dir ...` for synthetic checkpoint
+  metric replay and removed synthetic inline eval flags/paths.
+- Seeded training through shared trainer setup so `training.seed` controls
+  torch CPU/CUDA RNGs, model init, DataLoader order, training noise/t sampling,
+  and a fixed saved `z_init` bank.
+- Added `evaluation.sample_bank_size` / `--eval_sample_bank_size` with default
+  `1024`; `z_init` now covers eval plus monitor requirements without changing
+  step-0 model initialization.
+- Removed public image `--config_preset`; image architecture/data profiles are
+  derived internally from `--dataset` and `--image_size`.
+- Marked `dataset=celeba,image_size=32` runs with `data.recipe =
+  bonnaire_celeba32`.
+- Moved saved train/reference leakage checks into a shared eval helper used by
+  image eval, synthetic eval, and generic checkpoint eval.
+- Updated docs, notebooks, and tests for the new train/eval module names and
+  underscore-only public CLI.
+
+### Commands / Checks
+- `PYTHONPATH=src:. python -m py_compile src/mp_runners/image_train_runner.py src/mp_runners/synthetic_train_runner.py src/mp_runners/eval_synthetic.py src/mp_runners/image_config.py src/mp_runners/evaluate_checkpoints.py src/mp_training/trainer.py src/mp_visualization.py src/mp_training/checkpoint_schedule.py tests/test_proto_runners.py tests/test_torus_synthetic.py tests/test_live_tree_boundaries.py`
+- `PYTHONPATH=src:. python -m unittest tests.test_proto_runners`
+- `PYTHONPATH=src:. python -m unittest tests.test_torus_synthetic`
+- `PYTHONPATH=src:. python -m unittest tests.test_live_tree_boundaries`
+- `PYTHONPATH=src:. python -m unittest tests.test_checkpoint_schedule`
+- `PYTHONPATH=src:. python -m unittest tests.test_tracking`
+- `PYTHONPATH=src:. python -m unittest tests.test_mp_metrics`
+- `PYTHONPATH=src:. python -m unittest tests.test_src_examples`
+- `PYTHONPATH=src:. python -m unittest tests.test_checkpoint_previews`
+- `PYTHONPATH=src:. python -m unittest tests.test_data_leakage_guards`
+- `PYTHONPATH=src:. python -m unittest tests.test_experiment_pipeline`
+- `python -m json.tool prototyping/runners/notebooks/image_train_runner.ipynb`
+- `python -m json.tool prototyping/runners/notebooks/synthetic_train_runner.ipynb`
+
+### Results
+- Focused checks passed.
+- Same-seed tiny CPU train runs now reproduce `z_init`, step-0 weights, and
+  final checkpoint weights.
+- Changing eval bank size no longer perturbs step-0 model initialization.
+- Tests still emit PyTorch `torch.load(weights_only=False)` FutureWarnings.
+
+### Next
+Push this state to `origin/main`, then remove local generated outputs and tmp
+artifacts separately.
+
 ## 2026-04-24T22:05:38Z - Image Runner API Cleanup And Projected f_mem Monitor
 
 ### Context

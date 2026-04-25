@@ -76,7 +76,7 @@ def model_context_title(config, heading, *, checkpoint_step=None, extra=None):
         run_parts.append(str(extra))
     run_parts.extend(
         [
-            f"train_steps={_config_value(config, 'training', 'n_steps')}",
+            f"train_steps={_config_value(config, 'training', 'n_training_steps')}",
             f"sample_steps={_config_value(config, 'sampling', 'n_steps')}",
             (
                 f"data={_config_value(config, 'data', 'dataset')}"

@@ -10,8 +10,8 @@ model, training, metrics, and artifacts.
 
 | Name | Dataset | Backbone | Style | Module | Notebook |
 | --- | --- | --- | --- | --- | --- |
-| `synthetic_runner` | `gmm_subspace`, `torus3d` | `mlp` | recipe functions | `mp_runners.synthetic_runner` | `notebooks/synthetic_runner.ipynb` |
-| `image_runner` | `mnist`, `celeba`, `flowers`, `afhq`, `ffhq` | `unet` | recipe functions | `mp_runners.image_runner` | `notebooks/image_runner.ipynb` |
+| `synthetic_train_runner` | `gmm_subspace`, `torus3d` | `mlp` | recipe functions | `mp_runners.synthetic_train_runner` | `notebooks/synthetic_train_runner.ipynb` |
+| `image_train_runner` | `mnist`, `celeba`, `flowers`, `afhq`, `ffhq` | `unet` | recipe functions | `mp_runners.image_train_runner` | `notebooks/image_train_runner.ipynb` |
 
 ## Command Examples
 
@@ -25,41 +25,40 @@ mamba activate mem_param_env
 Synthetic recipe run:
 
 ```bash
-PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
+PYTHONPATH=src:. python -m mp_runners.synthetic_train_runner \
   --device cpu \
-  --out-dir outputs/runners/synthetic_runner \
-  --prediction-space v \
-  --loss-space v \
-  --ambient-dim 8 \
-  --intrinsic-data-dim 2 \
-  --batch-cap 64 \
-  --n-steps 200 \
-  --ckpt-every 50
+  --out_dir outputs/runners/synthetic_train_runner \
+  --prediction_space v \
+  --loss_space v \
+  --ambient_dim 8 \
+  --intrinsic_data_dim 2 \
+  --batch_cap 64 \
+  --n_training_steps 200 \
+  --ckpt_every 50
 
-# Run train+eval immediately for a tiny smoke.
-PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
+# Run a tiny train smoke.
+PYTHONPATH=src:. python -m mp_runners.synthetic_train_runner \
   --device cpu \
   --dataset torus3d \
-  --ambient-dim 3 \
-  --n-train 16 \
-  --n-eval 32 \
-  --batch-cap 8 \
-  --n-steps 2 \
-  --ckpt-every 1 \
-  --final-eval
+  --ambient_dim 3 \
+  --n_train 16 \
+  --n_test 32 \
+  --batch_cap 8 \
+  --n_training_steps 2 \
+  --ckpt_every 1
 
 # Replay synthetic checkpoint metrics later from a finished training attempt.
-PYTHONPATH=src:. python -m mp_runners.synthetic_runner \
+PYTHONPATH=src:. python -m mp_runners.eval_synthetic \
   --device cuda \
-  --eval-run-dir outputs/runners/synthetic_runner/runs/.../DONE_...
+  --run_dir outputs/runners/synthetic_train_runner/runs/.../DONE_...
 ```
 
 Image recipe run:
 
 ```bash
-PYTHONPATH=src:. python -m mp_runners.image_runner \
+PYTHONPATH=src:. python -m mp_runners.image_train_runner \
   --device cuda \
-  --out_dir outputs/runners/image_runner \
+  --out_dir outputs/runners/image_train_runner \
   --dataset celeba \
   --image_size 32 \
   --model unet \
@@ -71,7 +70,7 @@ PYTHONPATH=src:. python -m mp_runners.image_runner \
   --no_download
 
 # Run the same train pipeline with tiny step counts before submitting a long job.
-PYTHONPATH=src:. python -m mp_runners.image_runner \
+PYTHONPATH=src:. python -m mp_runners.image_train_runner \
   --device cuda \
   --dataset flowers \
   --image_size 128 \
@@ -90,8 +89,8 @@ The image runner CLI is intentionally slim. Public dataset names are only
 public resolution control. For example, `--dataset flowers --image_size 64
 --model unet` resolves internally to the matching Flowers102 loader/profile.
 
-`image_runner` is the single-process image entrypoint. Future multi-GPU/DDP
-experiments should live in a separate script such as `image_runner_ddp`, launched
+`image_train_runner` is the single-process image entrypoint. Future multi-GPU/DDP
+experiments should live in a separate script such as `image_train_runner_ddp`, launched
 with `torchrun`, so distributed concerns do not leak into this runner.
 
 The core image-runner size knobs mean exactly this:
@@ -154,15 +153,15 @@ successfully written, so completed-training folders are visible from the
 filesystem while failed or aborted attempts keep their original names.
 
 Synthetic MLP runners now use the same checkpoint-first lifecycle. Training
-always saves the canonical attempt tree plus controlled geometry. Immediate
-checkpoint metrics are opt-in with `--final-eval`; otherwise replay them later
-with `--eval-run-dir`. Public synthetic metric names use `intrinsic_*` for true
+always saves the canonical attempt tree plus controlled geometry. Checkpoint
+metrics are replayed later with `python -m mp_runners.eval_synthetic --run_dir
+<DONE_...>`. Public synthetic metric names use `intrinsic_*` for true
 low-dimensional metric coordinates across both projected GMM and torus data.
-For projected GMM runs, `--ambient-dim` is the observed vector dimension `D`
-and `--intrinsic-data-dim` is the controlled linear subspace dimension `d`; the
-old `--data-dim` and `--intrinsic-dim` flags remain compatibility aliases. For
-`torus3d`, `--ambient-dim` embeds a canonical 3D torus into observed dimension
-`D`; the local manifold dimension is fixed at 2 and `--intrinsic-data-dim` is
+For projected GMM runs, `--ambient_dim` is the observed vector dimension `D`
+and `--intrinsic_data_dim` is the controlled linear subspace dimension `d`;
+legacy `data_dim`/`intrinsic_dim` public aliases were removed. For
+`torus3d`, `--ambient_dim` embeds a canonical 3D torus into observed dimension
+`D`; the local manifold dimension is fixed at 2 and `--intrinsic_data_dim` is
 rejected because there is no configurable global linear intrinsic space.
 Held-out true-data checks use the `holdout_*` prefix. Old `latent_*`,
 `baseline_*`, and component-coverage metric aliases are removed.

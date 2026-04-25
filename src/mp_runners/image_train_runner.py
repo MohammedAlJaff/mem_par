@@ -28,7 +28,6 @@ from mp_runners.image_config import (
     list_image_sizes as _list_image_sizes,
     list_models as _list_models,
 )
-from mp_runners.image_presets import list_presets
 
 from gdfm import GDFM
 from mp_data import build_data_bundle
@@ -187,13 +186,6 @@ def parse_args(argv=None):
         default=settings["model"],
         help="Image model family. The runner chooses the matching architecture defaults.",
     )
-    parser.add_argument(
-        "--config_preset",
-        choices=tuple(list_presets()),
-        default=settings.get("config_preset"),
-        help="Optional explicit UNet preset (overrides dataset default).",
-    )
-
     # Objective and sweep settings.
     parser.add_argument(
         "--prediction_space",
@@ -269,6 +261,12 @@ def parse_args(argv=None):
         type=int,
         default=settings["generation_monitor_samples"],
         help="Number of fixed-z samples available to train-time image monitors.",
+    )
+    parser.add_argument(
+        "--eval_sample_bank_size",
+        type=int,
+        default=settings["eval_sample_bank_size"],
+        help="Fixed-z sample bank saved for post-hoc checkpoint evaluation.",
     )
     parser.add_argument(
         "--sampling_steps",

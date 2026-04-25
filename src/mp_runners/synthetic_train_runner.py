@@ -1,10 +1,11 @@
 """
-Runner for controlled synthetic datasets with an MLP.
+Train runner for controlled synthetic datasets with an MLP.
 
-This is the canonical synthetic command-line workflow. It supports train-only,
-train plus final evaluation, and replay evaluation from an existing finished
-`DONE_` attempt. The runner owns synthetic CLI/config choices; shared training
-stays in `mp_training.trainer`; synthetic metrics stay in `mp_metrics.metrics_synthetic`.
+This is the canonical synthetic training workflow. It trains a model and saves
+the replayable artifact tree; checkpoint evaluation lives in
+`mp_runners.eval_synthetic`. The runner owns synthetic CLI/config choices,
+shared training stays in `mp_training.trainer`, and synthetic metrics stay in
+`mp_metrics.metrics_synthetic`.
 """
 
 import argparse
@@ -15,7 +16,6 @@ import sys
 import torch
 
 from gdfm import GDFM
-from mp_artifacts import list_checkpoint_paths, load_attempt_status
 from mp_config import clone_config, get_base_config
 from mp_data import build_data_bundle
 from mp_metrics.loss_eval import collect_loss_eval_record
@@ -28,7 +28,6 @@ from mp_runners.common import (
     artifact_paths,
     count_parameters,
 )
-from mp_runners.synthetic_eval import evaluate_synthetic_run
 from mp_training import (
     CHECKPOINT_SCHEDULE_CHOICES,
     parse_checkpoint_steps,
@@ -38,21 +37,11 @@ from mp_training import (
 from mp_tracking import resolve_wandb_identity
 
 
-RUNNER_NAME = "synthetic_runner"
-DEFAULT_OUT_DIR = "outputs/runners/synthetic_runner"
+RUNNER_NAME = "synthetic_train_runner"
+DEFAULT_OUT_DIR = "outputs/runners/synthetic_train_runner"
 DEFAULT_RUN_NAME = "synthetic_projected_gmm_mlp"
 SYNTHETIC_DATASETS = ("gmm_subspace", "torus3d")
-DONE_ATTEMPT_PREFIX = "DONE_"
-EVAL_READY_STATES = {"trained", "completed"}
-EVAL_REQUIRED_FILES = (
-    "status.json",
-    "artifacts/config.json",
-    "artifacts/train_tensor.pt",
-    "artifacts/reference_tensor.pt",
-    "artifacts/z_init.pt",
-    "artifacts/geometry.pt",
-    "artifacts/run_summary.json",
-)
+DEFAULT_EVAL_SAMPLE_BANK_SIZE = 1024
 
 
 def _default_wandb_entity(fallback):
@@ -70,10 +59,6 @@ def default_settings():
         "dataset": "gmm_subspace",
         "ambient_dim": 2,
         "intrinsic_data_dim": 2,
-        # Legacy aliases kept for notebooks/scripts while the public CLI moves
-        # to D/d language.
-        "data_dim": 2,
-        "intrinsic_dim": 2,
         "n_train": 10,
         "n_test": 1024,
         "n_clusters": 3,
@@ -87,7 +72,7 @@ def default_settings():
         "time_emb_dim": 64,
         "prediction_space": "v",
         "loss_space": "v",
-        "n_steps": 10000,
+        "n_training_steps": 10000,
         "batch_cap": 10,
         "lr": 1.0e-3,
         "weight_decay": 0.0,
@@ -95,16 +80,14 @@ def default_settings():
         "ckpt_every": 2000,
         "ckpt_schedule": "bonnaire-1m",
         "ckpt_steps": "",
-        "eval_samples": 256,
+        "eval_sample_bank_size": DEFAULT_EVAL_SAMPLE_BANK_SIZE,
         "sampling_method": "heun",
         "sampling_steps": 128,
         "ratio_threshold": 0.3,
         "chunk_size": 512,
         "sliced_w2_projections": 128,
-        "final_eval": False,
-        "eval_run_dir": None,
-        "wandb": False,
-        "wandb_mode": "offline",
+        "wandb": True,
+        "wandb_mode": "online",
         "wandb_project": "",
         "wandb_entity": _default_wandb_entity("maj90"),
         "wandb_name": "",
@@ -130,30 +113,10 @@ def build_config(settings):
 
     The public settings use research-facing names: `ambient_dim` for emitted
     data dimension and `intrinsic_data_dim` for the known generator dimension.
-    The config also keeps old aliases so notebooks can still read saved runs.
     """
     defaults = default_settings()
     provided = _as_settings(settings)
     settings = {**defaults, **provided}
-    if (
-        "data_dim" in provided
-        and (
-            "ambient_dim" not in provided
-            or int(provided["ambient_dim"]) == int(defaults["ambient_dim"])
-        )
-    ):
-        settings["ambient_dim"] = provided["data_dim"]
-    if (
-        "intrinsic_dim" in provided
-        and (
-            "intrinsic_data_dim" not in provided
-            or int(provided["intrinsic_data_dim"])
-            == int(defaults["intrinsic_data_dim"])
-        )
-    ):
-        settings["intrinsic_data_dim"] = provided["intrinsic_dim"]
-    settings["data_dim"] = settings["ambient_dim"]
-    settings["intrinsic_dim"] = settings["intrinsic_data_dim"]
     dataset = str(settings["dataset"])
     if dataset not in SYNTHETIC_DATASETS:
         raise ValueError(f"Unknown synthetic dataset: {dataset}")
@@ -177,7 +140,7 @@ def build_config(settings):
     if dataset == "torus3d":
         ambient_dim = int(settings["ambient_dim"])
         if ambient_dim < 3:
-            raise ValueError("torus3d requires --ambient-dim >= 3.")
+            raise ValueError("torus3d requires --ambient_dim >= 3.")
         config.data.ambient_dim = ambient_dim
         # Torus has local manifold dimension 2, but no configurable global
         # linear intrinsic data dimension. Keep legacy fields equal to D.
@@ -206,7 +169,7 @@ def build_config(settings):
     config.network.time_emb_dim = int(settings["time_emb_dim"])
 
     config.training.seed = int(settings["seed"])
-    config.training.n_training_steps = int(settings["n_steps"])
+    config.training.n_training_steps = int(settings["n_training_steps"])
     config.training.batch_cap = int(settings["batch_cap"])
     config.training.batch_size = int(settings["batch_cap"])
     config.training.lr = float(settings["lr"])
@@ -218,11 +181,12 @@ def build_config(settings):
     config.training.log_every = int(settings["log_every"])
     config.training.optimizer = "adam"
 
-    config.evaluation.n_samples = int(settings["eval_samples"])
+    config.evaluation.sample_bank_size = int(settings["eval_sample_bank_size"])
+    config.evaluation.n_samples = int(settings["eval_sample_bank_size"])
     config.evaluation.batch_size = int(settings["batch_cap"])
     config.evaluation.ratio_threshold = float(settings["ratio_threshold"])
     config.evaluation.chunk_size = int(settings["chunk_size"])
-    config.evaluation.sample_panel_count = min(8, int(settings["eval_samples"]))
+    config.evaluation.sample_panel_count = min(8, int(settings["eval_sample_bank_size"]))
     config.evaluation.loss_eval_times = (0.5, 0.75)
     config.evaluation.loss_eval_batch_size = int(settings["batch_cap"])
 
@@ -325,36 +289,17 @@ def inspect_metrics(config, data_bundle, model=None, device="cpu"):
     return result
 
 
-def run_full_job(config, out_dir, device, evaluate=False):
+def run_full_job(config, out_dir, device):
     """
-    Run canonical training, then synthetic checkpoint metrics if requested.
+    Run canonical synthetic training.
 
-    Training saves the replayable attempt directory. The optional evaluation
-    step reads the saved tensors, geometry, and fixed `z_init` from that
-    directory.
+    Training saves the replayable attempt directory. Checkpoint metrics are
+    replayed separately by `mp_runners.eval_synthetic`.
     """
     device = _resolve_device(device)
     run_dir = train_run(config, Path(out_dir), device=device)
-    evaluation = (
-        evaluate_synthetic_run(run_dir, device=device)
-        if evaluate
-        else {
-            "checkpoint_metrics": [],
-            "loss_eval": [],
-            "checkpoint_sample_previews": [],
-            "figures": {},
-            "final_metrics": {},
-            "final_loss_eval": {},
-        }
-    )
     return {
         "run_dir": str(run_dir),
-        "checkpoint_metrics": evaluation["checkpoint_metrics"],
-        "loss_eval": evaluation["loss_eval"],
-        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
-        "figures": evaluation.get("figures", {}),
-        "final_metrics": evaluation.get("final_metrics", {}),
-        "final_loss_eval": evaluation.get("final_loss_eval", {}),
         "config": config,
         "batch": {
             "batch_cap": int(config.training.batch_cap),
@@ -369,69 +314,9 @@ def run_full_job(config, out_dir, device, evaluate=False):
             "status": str(Path(run_dir) / "status.json"),
             "train_history": str(Path(run_dir) / "metrics" / "train_history.json"),
             "metrics_along_training": str(Path(run_dir) / "metrics" / "metrics_along_training.json"),
-            "checkpoint_metrics": str(Path(run_dir) / "metrics" / "checkpoint_metrics.json"),
-            "loss_eval": str(Path(run_dir) / "metrics" / "loss_eval.json"),
-            "checkpoint_sample_previews": str(Path(run_dir) / "metrics" / "checkpoint_sample_previews.json"),
-            "final_samples": str(Path(run_dir) / "metrics" / "final_samples.pt"),
             "figures": str(Path(run_dir) / "figures"),
             "checkpoints": str(Path(run_dir) / "checkpoints"),
         },
-    }
-
-
-def _validate_eval_run_dir(run_dir):
-    """Return a replayable DONE attempt directory or raise a clear error."""
-    run_dir = Path(run_dir).expanduser().resolve()
-    if not run_dir.name.startswith(DONE_ATTEMPT_PREFIX):
-        raise ValueError(
-            "eval-run-dir must be a finished DONE_ attempt directory; "
-            f"got {run_dir}"
-        )
-    status_path = run_dir / "status.json"
-    if not status_path.is_file():
-        raise FileNotFoundError(f"eval-run-dir is missing status.json: {run_dir}")
-    status = load_attempt_status(run_dir)
-    state = str(status.get("state", ""))
-    if state not in EVAL_READY_STATES:
-        raise ValueError(
-            "eval-run-dir must have status state 'trained' or 'completed'; "
-            f"got {state!r} for {run_dir}"
-        )
-    missing = [
-        str((run_dir / relative_path).resolve())
-        for relative_path in EVAL_REQUIRED_FILES
-        if not (run_dir / relative_path).is_file()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            "eval-run-dir is missing required saved-run artifacts: "
-            + ", ".join(missing)
-        )
-    if not list_checkpoint_paths(run_dir):
-        raise FileNotFoundError(f"eval-run-dir has no checkpoints: {run_dir / 'checkpoints'}")
-    return run_dir
-
-
-def run_eval_job(run_dir, device):
-    """
-    Replay synthetic checkpoint metrics for one finished DONE attempt.
-
-    Replay uses saved artifacts rather than rebuilding the synthetic dataset
-    from current defaults.
-    """
-    device = _resolve_device(device)
-    run_dir = _validate_eval_run_dir(run_dir)
-    evaluation = evaluate_synthetic_run(run_dir, device=device)
-    return {
-        "mode": "eval_run_dir",
-        "run_dir": str(run_dir),
-        "checkpoint_metrics": evaluation["checkpoint_metrics"],
-        "loss_eval": evaluation["loss_eval"],
-        "checkpoint_sample_previews": evaluation["checkpoint_sample_previews"],
-        "figures": evaluation.get("figures", {}),
-        "final_metrics": evaluation.get("final_metrics", {}),
-        "final_loss_eval": evaluation.get("final_loss_eval", {}),
-        "artifacts": artifact_paths(run_dir),
     }
 
 
@@ -439,108 +324,96 @@ def parse_args(argv=None):
     """Parse the synthetic MLP runner command line."""
     settings = default_settings()
     argv_list = sys.argv[1:] if argv is None else list(argv)
-    ckpt_every_provided = _flag_present(argv_list, "--ckpt-every", "--ckpt_every")
-    ckpt_steps_provided = _flag_present(argv_list, "--ckpt-steps", "--ckpt_steps")
-    wandb_project_provided = _flag_present(argv_list, "--wandb-project", "--wandb_project")
-    wandb_name_provided = _flag_present(argv_list, "--wandb-name", "--wandb_name")
-    wandb_group_provided = _flag_present(argv_list, "--wandb-group", "--wandb_group")
+    ckpt_every_provided = _flag_present(argv_list, "--ckpt_every")
+    ckpt_steps_provided = _flag_present(argv_list, "--ckpt_steps")
+    wandb_project_provided = _flag_present(argv_list, "--wandb_project")
+    wandb_name_provided = _flag_present(argv_list, "--wandb_name")
+    wandb_group_provided = _flag_present(argv_list, "--wandb_group")
     ambient_dim_provided = any(
-        token == "--ambient-dim"
-        or token.startswith("--ambient-dim=")
-        or token == "--data-dim"
-        or token.startswith("--data-dim=")
+        token == "--ambient_dim"
+        or token.startswith("--ambient_dim=")
         for token in argv_list
     )
     intrinsic_data_dim_provided = any(
-        token == "--intrinsic-data-dim"
-        or token.startswith("--intrinsic-data-dim=")
-        or token == "--intrinsic-dim"
-        or token.startswith("--intrinsic-dim=")
+        token == "--intrinsic_data_dim"
+        or token.startswith("--intrinsic_data_dim=")
         for token in argv_list
     )
     parser = argparse.ArgumentParser(
-        description="Train a controlled synthetic GDFM MLP and replay synthetic metrics."
+        description="Train a controlled synthetic GDFM MLP."
     )
     parser.add_argument("--device", default=settings["device"], help="auto, cuda, cuda:0, cpu, ...")
-    parser.add_argument("--out-dir", default=settings["out_dir"])
-    parser.add_argument("--run-name", default=settings["run_name"])
+    parser.add_argument("--out_dir", default=settings["out_dir"])
+    parser.add_argument("--run_name", default=settings["run_name"])
     parser.add_argument("--seed", type=int, default=settings["seed"])
 
     parser.add_argument("--dataset", choices=SYNTHETIC_DATASETS, default=settings["dataset"])
     parser.add_argument(
-        "--ambient-dim",
-        "--data-dim",
-        dest="ambient_dim",
+        "--ambient_dim",
         type=int,
         default=settings["ambient_dim"],
         help="D: ambient emitted-data dimension for controlled synthetic vectors.",
     )
     parser.add_argument(
-        "--intrinsic-data-dim",
-        "--intrinsic-dim",
-        dest="intrinsic_data_dim",
+        "--intrinsic_data_dim",
         type=int,
         default=settings["intrinsic_data_dim"],
         help="d: true intrinsic data dimension for controlled synthetic data.",
     )
-    parser.add_argument("--n-train", type=int, default=settings["n_train"])
-    parser.add_argument("--n-reference", "--n-eval", dest="n_test", type=int, default=settings["n_test"])
-    parser.add_argument("--n-clusters", type=int, default=settings["n_clusters"])
-    parser.add_argument("--sigma-z", type=float, default=settings["sigma_z"])
-    parser.add_argument("--sigma-eta", type=float, default=settings["sigma_eta"])
-    parser.add_argument("--geometry-seed", type=int, default=settings["geometry_seed"])
-    parser.add_argument("--major-radius", type=float, default=settings["major_radius"])
-    parser.add_argument("--minor-radius", type=float, default=settings["minor_radius"])
+    parser.add_argument("--n_train", type=int, default=settings["n_train"])
+    parser.add_argument("--n_test", type=int, default=settings["n_test"])
+    parser.add_argument("--n_clusters", type=int, default=settings["n_clusters"])
+    parser.add_argument("--sigma_z", type=float, default=settings["sigma_z"])
+    parser.add_argument("--sigma_eta", type=float, default=settings["sigma_eta"])
+    parser.add_argument("--geometry_seed", type=int, default=settings["geometry_seed"])
+    parser.add_argument("--major_radius", type=float, default=settings["major_radius"])
+    parser.add_argument("--minor_radius", type=float, default=settings["minor_radius"])
 
-    parser.add_argument("--hidden-dim", type=int, default=settings["hidden_dim"])
-    parser.add_argument("--n-layers", type=int, default=settings["n_layers"])
-    parser.add_argument("--time-emb-dim", type=int, default=settings["time_emb_dim"])
-    parser.add_argument("--prediction-space", choices=PARAMETERIZATION_CHOICES, default=settings["prediction_space"])
-    parser.add_argument("--loss-space", choices=PARAMETERIZATION_CHOICES, default=settings["loss_space"])
+    parser.add_argument("--hidden_dim", type=int, default=settings["hidden_dim"])
+    parser.add_argument("--n_layers", type=int, default=settings["n_layers"])
+    parser.add_argument("--time_emb_dim", type=int, default=settings["time_emb_dim"])
+    parser.add_argument("--prediction_space", choices=PARAMETERIZATION_CHOICES, default=settings["prediction_space"])
+    parser.add_argument("--loss_space", choices=PARAMETERIZATION_CHOICES, default=settings["loss_space"])
 
-    parser.add_argument("--n-steps", type=int, default=settings["n_steps"])
-    parser.add_argument("--batch-cap", type=int, default=settings["batch_cap"])
+    parser.add_argument("--n_training_steps", type=int, default=settings["n_training_steps"])
+    parser.add_argument("--batch_cap", type=int, default=settings["batch_cap"])
     parser.add_argument("--lr", type=float, default=settings["lr"])
-    parser.add_argument("--weight-decay", type=float, default=settings["weight_decay"])
-    parser.add_argument("--log-every", type=int, default=settings["log_every"])
+    parser.add_argument("--weight_decay", type=float, default=settings["weight_decay"])
+    parser.add_argument("--log_every", type=int, default=settings["log_every"])
     parser.add_argument(
-        "--ckpt-every",
         "--ckpt_every",
         type=int,
         default=settings["ckpt_every"],
     )
     parser.add_argument(
-        "--ckpt-schedule",
         "--ckpt_schedule",
         choices=CHECKPOINT_SCHEDULE_CHOICES,
         default=settings["ckpt_schedule"],
-        help="Checkpoint schedule. Explicit --ckpt-steps has priority.",
+        help="Checkpoint schedule. Explicit --ckpt_steps has priority.",
     )
     parser.add_argument(
-        "--ckpt-steps",
         "--ckpt_steps",
         default=settings["ckpt_steps"],
         help="Comma-separated checkpoint steps. Step 0 and final step are always saved.",
     )
 
-    parser.add_argument("--eval-samples", type=int, default=settings["eval_samples"])
-    parser.add_argument("--sampling-method", choices=("euler", "heun"), default=settings["sampling_method"])
-    parser.add_argument("--sampling-steps", type=int, default=settings["sampling_steps"])
-    parser.add_argument("--ratio-threshold", type=float, default=settings["ratio_threshold"])
-    parser.add_argument("--chunk-size", type=int, default=settings["chunk_size"])
-    parser.add_argument("--sliced-w2-projections", type=int, default=settings["sliced_w2_projections"])
-    parser.add_argument("--final-eval", action=argparse.BooleanOptionalAction, default=settings["final_eval"])
-    parser.add_argument("--eval-run-dir", default=settings["eval_run_dir"])
+    parser.add_argument("--eval_sample_bank_size", type=int, default=settings["eval_sample_bank_size"])
+    parser.add_argument("--sampling_method", choices=("euler", "heun"), default=settings["sampling_method"])
+    parser.add_argument("--sampling_steps", type=int, default=settings["sampling_steps"])
+    parser.add_argument("--ratio_threshold", type=float, default=settings["ratio_threshold"])
+    parser.add_argument("--chunk_size", type=int, default=settings["chunk_size"])
+    parser.add_argument("--sliced_w2_projections", type=int, default=settings["sliced_w2_projections"])
 
-    parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=settings["wandb"])
-    parser.add_argument("--wandb-mode", choices=("offline", "online"), default=settings["wandb_mode"])
-    parser.add_argument("--wandb-project", default=settings["wandb_project"])
-    parser.add_argument("--wandb-entity", default=settings["wandb_entity"])
-    parser.add_argument("--wandb-name", default=settings["wandb_name"])
-    parser.add_argument("--wandb-group", default=settings["wandb_group"])
-    parser.add_argument("--wandb-tags", default=settings["wandb_tags"])
-    parser.add_argument("--wandb-notes", default=settings["wandb_notes"])
-    parser.add_argument("--wandb-strict", action="store_true", default=settings["wandb_strict"])
+    parser.add_argument("--wandb", dest="wandb", action="store_true", default=settings["wandb"])
+    parser.add_argument("--no_wandb", dest="wandb", action="store_false")
+    parser.add_argument("--wandb_mode", choices=("offline", "online"), default=settings["wandb_mode"])
+    parser.add_argument("--wandb_project", default=settings["wandb_project"])
+    parser.add_argument("--wandb_entity", default=settings["wandb_entity"])
+    parser.add_argument("--wandb_name", default=settings["wandb_name"])
+    parser.add_argument("--wandb_group", default=settings["wandb_group"])
+    parser.add_argument("--wandb_tags", default=settings["wandb_tags"])
+    parser.add_argument("--wandb_notes", default=settings["wandb_notes"])
+    parser.add_argument("--wandb_strict", action="store_true", default=settings["wandb_strict"])
     args = parser.parse_args(argv_list)
     args.ckpt_every_provided = bool(ckpt_every_provided)
     args.ckpt_steps_provided = bool(ckpt_steps_provided)
@@ -553,9 +426,6 @@ def parse_args(argv=None):
     args.intrinsic_data_dim_provided = bool(intrinsic_data_dim_provided)
     if args.dataset == "torus3d" and not args.ambient_dim_provided:
         args.ambient_dim = 3
-    # Compatibility attributes for old helper code and notebooks.
-    args.data_dim = int(args.ambient_dim)
-    args.intrinsic_dim = int(args.intrinsic_data_dim)
     return args
 
 
@@ -568,35 +438,35 @@ def _flag_present(argv, *names):
 def _validate_args(args):
     """Validate synthetic runner command-line arguments."""
     checks = [
-        (args.n_train >= 2, "--n-train must be at least 2 for nearest-neighbor metrics."),
-        (args.n_test >= 1, "--n-reference/--n-eval must be at least 1."),
-        (args.eval_samples >= 1, "--eval-samples must be at least 1."),
-        (args.ambient_dim >= 1, "--ambient-dim must be at least 1."),
-        (args.intrinsic_data_dim >= 1, "--intrinsic-data-dim must be at least 1."),
+        (args.n_train >= 2, "--n_train must be at least 2 for nearest-neighbor metrics."),
+        (args.n_test >= 1, "--n_test must be at least 1."),
+        (args.eval_sample_bank_size >= 1, "--eval_sample_bank_size must be at least 1."),
+        (args.ambient_dim >= 1, "--ambient_dim must be at least 1."),
+        (args.intrinsic_data_dim >= 1, "--intrinsic_data_dim must be at least 1."),
         (
             args.dataset != "torus3d" or args.ambient_dim >= 3,
-            "torus3d requires --ambient-dim >= 3.",
+            "torus3d requires --ambient_dim >= 3.",
         ),
         (
             args.dataset != "torus3d" or not bool(getattr(args, "intrinsic_data_dim_provided", False)),
-            "torus3d has local_manifold_dim=2 but no configurable --intrinsic-data-dim.",
+            "torus3d has local_manifold_dim=2 but no configurable --intrinsic_data_dim.",
         ),
         (
             args.intrinsic_data_dim <= args.ambient_dim or args.dataset == "torus3d",
-            "--intrinsic-data-dim must be <= --ambient-dim.",
+            "--intrinsic_data_dim must be <= --ambient_dim.",
         ),
-        (args.n_clusters >= 1, "--n-clusters must be at least 1."),
-        (args.sigma_z > 0.0, "--sigma-z must be positive."),
-        (args.sigma_eta >= 0.0, "--sigma-eta must be non-negative."),
-        (args.major_radius > 0.0, "--major-radius must be positive."),
-        (args.minor_radius > 0.0, "--minor-radius must be positive."),
-        (args.sliced_w2_projections >= 1, "--sliced-w2-projections must be at least 1."),
-        (args.n_steps >= 1, "--n-steps must be at least 1."),
-        (args.batch_cap >= 1, "--batch-cap must be at least 1."),
-        (args.log_every >= 1, "--log-every must be at least 1."),
-        (args.ckpt_every >= 1, "--ckpt-every must be at least 1."),
-        (args.sampling_steps >= 1, "--sampling-steps must be at least 1."),
-        (args.chunk_size >= 1, "--chunk-size must be at least 1."),
+        (args.n_clusters >= 1, "--n_clusters must be at least 1."),
+        (args.sigma_z > 0.0, "--sigma_z must be positive."),
+        (args.sigma_eta >= 0.0, "--sigma_eta must be non-negative."),
+        (args.major_radius > 0.0, "--major_radius must be positive."),
+        (args.minor_radius > 0.0, "--minor_radius must be positive."),
+        (args.sliced_w2_projections >= 1, "--sliced_w2_projections must be at least 1."),
+        (args.n_training_steps >= 1, "--n_training_steps must be at least 1."),
+        (args.batch_cap >= 1, "--batch_cap must be at least 1."),
+        (args.log_every >= 1, "--log_every must be at least 1."),
+        (args.ckpt_every >= 1, "--ckpt_every must be at least 1."),
+        (args.sampling_steps >= 1, "--sampling_steps must be at least 1."),
+        (args.chunk_size >= 1, "--chunk_size must be at least 1."),
     ]
     for ok, message in checks:
         if not ok:
@@ -613,18 +483,8 @@ def _print_result(result):
     _print_model_summary(result["config"])
     _print_field("run_dir", result["run_dir"])
     _print_field("checkpoints", result["artifacts"]["checkpoints"]["path"])
-    _print_field("metrics", result["paths"]["checkpoint_metrics"])
-    _print_field("loss_eval", result["paths"]["loss_eval"])
-    if not result["checkpoint_metrics"]:
-        _print_field("final_eval", "skipped; replay later with --eval-run-dir")
-
-
-def _print_eval_result(result):
-    """Print a concise eval-run result."""
-    _print_field("eval_run_dir", result["run_dir"])
-    _print_field("checkpoints", len(result["checkpoint_metrics"]))
-    _print_field("metrics", result["artifacts"]["checkpoint_metrics"]["path"])
-    _print_field("loss_eval", result["artifacts"]["loss_eval"]["path"])
+    _print_field("train_history", result["paths"]["train_history"])
+    _print_field("eval", "replay later with python -m mp_runners.eval_synthetic --run_dir <DONE_...>")
 
 
 def _print_model_summary(config):
@@ -641,19 +501,9 @@ def _print_model_summary(config):
 def main(argv=None):
     """CLI entrypoint for the controlled synthetic MLP runner."""
     args = parse_args(argv)
-    if args.eval_run_dir is not None:
-        result = run_eval_job(args.eval_run_dir, args.device)
-        _print_eval_result(result)
-        return result
-
     _validate_args(args)
     config = build_config(args)
-    result = run_full_job(
-        config,
-        args.out_dir,
-        args.device,
-        evaluate=bool(args.final_eval),
-    )
+    result = run_full_job(config, args.out_dir, args.device)
     _print_result(result)
     return result
 

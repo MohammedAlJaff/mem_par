@@ -14,7 +14,6 @@ import re
 from mp_config import clone_config, get_base_config
 from mp_metrics.loss_eval import DEFAULT_LOSS_EVAL_TIMES
 from mp_runners.common import resolve_batch_cap
-from mp_runners.image_presets import get_default_configs
 from mp_training.checkpoint_schedule import (
     parse_checkpoint_steps,
     resolve_checkpoint_steps,
@@ -22,9 +21,14 @@ from mp_training.checkpoint_schedule import (
 from mp_tracking import resolve_wandb_identity
 
 
-RUNNER_NAME = "image_runner"
-DEFAULT_STUDY_DIR = "outputs/runners/image_runner"
+RUNNER_NAME = "image_train_runner"
+DEFAULT_STUDY_DIR = "outputs/runners/image_train_runner"
 MODEL_CHOICES = ("unet",)
+DEFAULT_IMAGE_LR = 1.0e-4
+DEFAULT_IMAGE_WEIGHT_DECAY = 0.0
+DEFAULT_IMAGE_OPTIMIZER = "adam"
+DEFAULT_CONSOLE_SUMMARY_SECONDS = 60.0
+DEFAULT_EVAL_SAMPLE_BANK_SIZE = 1024
 
 
 def _default_wandb_entity(fallback):
@@ -111,7 +115,7 @@ _KNOWN_SPLIT_SIZES = {
 DATASET_DEFAULTS = {
     "mnist": {
         "dataset": "mnist",
-        "config_profile": "image32_32",
+        "recipe": "default",
         "image_size": 32,
         "image_channels": 1,
         "resize_size": 0,
@@ -122,7 +126,7 @@ DATASET_DEFAULTS = {
     },
     "celeba": {
         "dataset": "celeba32_grey",
-        "config_profile": "image32_32",
+        "recipe": "bonnaire_celeba32",
         "image_size": 32,
         "image_channels": 1,
         "resize_size": 0,
@@ -133,7 +137,7 @@ DATASET_DEFAULTS = {
     },
     "flowers": {
         "dataset": "flowers102",
-        "config_profile": "image32_32",
+        "recipe": "default",
         "image_size": 32,
         "image_channels": 3,
         "resize_size": 0,
@@ -148,7 +152,7 @@ DATASET_DEFAULTS = {
     },
     "afhq": {
         "dataset": "afhq_v2",
-        "config_profile": "image32_32",
+        "recipe": "default",
         "image_size": 32,
         "image_channels": 3,
         "resize_size": 0,
@@ -159,7 +163,7 @@ DATASET_DEFAULTS = {
     },
     "ffhq": {
         "dataset": "ffhq128",
-        "config_profile": "image32_128",
+        "recipe": "default",
         "image_size": 128,
         "image_channels": 3,
         "resize_size": 128,
@@ -184,7 +188,6 @@ DEFAULT_SETTINGS = {
 
     # Data/model runner selection.
     "dataset": "celeba",
-    "config_preset": None,
     "model": "unet",
     "prediction_space": "v",
     "loss_space": "v",
@@ -202,6 +205,8 @@ DEFAULT_SETTINGS = {
     "ckpt_steps": "",
     "log_every": None,
     "batch_cap": 64,
+    "lr": DEFAULT_IMAGE_LR,
+    "weight_decay": DEFAULT_IMAGE_WEIGHT_DECAY,
 
     # Runtime numerics.
     # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
@@ -209,8 +214,10 @@ DEFAULT_SETTINGS = {
     "data_summary": False,
 
     # Sampling/monitoring.
-    # generation_monitor_samples: generated fixed-z samples saved for monitors.
+    # eval_sample_bank_size: fixed-z bank saved for post-hoc checkpoint eval.
+    # generation_monitor_samples: generated fixed-z samples shown in monitors.
     # sampling_steps: numerical solver steps used when turning z_init into images.
+    "eval_sample_bank_size": DEFAULT_EVAL_SAMPLE_BANK_SIZE,
     "generation_monitor_samples": 64,
     "sampling_steps": 24,
 
@@ -261,11 +268,12 @@ DEFAULT_SETTINGS = {
 }
 
 
-_PRESET_OWNED_SETTING_KEYS = {
+_PROFILE_OWNED_SETTING_KEYS = {
     "dataset_subdir",
     "train_split",
     "reference_split",
     "allow_same_source_reference",
+    "recipe",
     "image_size",
     "image_channels",
     "resize_size",
@@ -295,7 +303,7 @@ _MODEL_SETTING_KEYS = {
 
 
 def get_default_settings():
-    """Return canonical base defaults for image32 UNet runs."""
+    """Return canonical base defaults for image UNet train runs."""
     return copy.deepcopy(DEFAULT_SETTINGS)
 
 
@@ -343,7 +351,7 @@ def _merge_settings(raw_settings, dataset_defaults):
     merged = {**DEFAULT_SETTINGS, **dataset_defaults}
     for key, value in raw_settings.items():
         if (
-            key in _PRESET_OWNED_SETTING_KEYS
+            key in _PROFILE_OWNED_SETTING_KEYS
             and key in DEFAULT_SETTINGS
             and value == DEFAULT_SETTINGS[key]
         ):
@@ -385,7 +393,6 @@ def _sized_dataset_defaults(dataset, image_size):
     defaults = copy.deepcopy(DATASET_DEFAULTS[dataset])
     if image_size in _UNET_PROFILES:
         defaults.update(_UNET_PROFILES[image_size])
-        defaults["config_profile"] = f"image32_{image_size}"
     defaults["image_size"] = image_size
     defaults["resize_size"] = 0 if image_size == 32 else image_size
     return defaults
@@ -463,7 +470,7 @@ def _validate_image_counts(config):
     """
     _validate_positive_count("n_train", config.data.n_train)
     _validate_positive_count("n_test", config.data.n_test)
-    _validate_positive_count("generation_monitor_samples", config.evaluation.n_samples)
+    _validate_positive_count("eval_sample_bank_size", config.evaluation.n_samples)
     _validate_positive_count("n_training_steps", config.training.n_training_steps)
     _validate_positive_count("ckpt_every", config.training.ckpt_every)
     _validate_positive_count("batch_cap", config.training.batch_cap)
@@ -491,26 +498,13 @@ def _validate_image_counts(config):
     )
 
 
-def _preset_value(defaults, section_name, key, fallback):
-    """Read a value from a preset section with a fallback."""
-    section = getattr(defaults, section_name, None)
-    if section is None:
-        return fallback
-    try:
-        value = getattr(section, key)
-    except AttributeError:
-        return fallback
-    return _coalesce(value, fallback)
-
-
 def build_config(settings):
     """
     Build the canonical image UNet config from merged run settings.
 
-    Precedence is: base defaults, dataset profile, optional explicit preset,
-    then user-provided sweep values. Dataset-owned fields such as image size and
-    split choice stay with the profile unless a caller explicitly overrides
-    them outside the normal CLI path.
+    Precedence is: base defaults, dataset/size profile, then user-provided
+    sweep values. Dataset-owned fields such as splits stay with the profile
+    unless a caller explicitly overrides them outside the normal CLI path.
     """
     if isinstance(settings, argparse.Namespace):
         raw_settings = vars(settings)
@@ -521,20 +515,9 @@ def build_config(settings):
     settings["dataset"] = dataset
     settings["model"] = model
 
-    explicit_preset = _coalesce(raw_settings.get("config_preset"), None) is not None
-    preset_name = str(
-        _coalesce(
-            raw_settings.get("config_preset"),
-            dataset_defaults.get("config_profile", "image32_32"),
-        )
-    )
-    defaults = get_default_configs(preset_name)
-
     def data_setting(key):
         if _raw_overrides_default(raw_settings, key):
             return raw_settings[key]
-        if explicit_preset:
-            return _preset_value(defaults, "data", key, settings[key])
         return settings[key]
 
     def model_setting(key):
@@ -542,8 +525,6 @@ def build_config(settings):
             raise KeyError(key)
         if _raw_overrides_default(raw_settings, key):
             return raw_settings[key]
-        if explicit_preset:
-            return _preset_value(defaults, "model", key, settings[key])
         return settings[key]
 
     config = clone_config(get_base_config())
@@ -555,7 +536,7 @@ def build_config(settings):
     config.outputs.run_name = str(settings["run_name"])
 
     # Framework.
-    config.framework.family = defaults.framework.family
+    config.framework.family = "fm"
     config.framework.prediction_space = str(settings["prediction_space"])
     config.framework.loss_space = str(settings["loss_space"])
 
@@ -578,6 +559,7 @@ def build_config(settings):
     )
     config.data.n_train = int(settings["n_train"])
     config.data.n_test = int(settings["n_test"])
+    config.data.recipe = str(dataset_defaults.get("recipe", "default"))
     config.data.image_size = int(data_setting("image_size"))
     config.data.image_channels = int(data_setting("image_channels"))
     config.data.resize_size = int(data_setting("resize_size"))
@@ -595,12 +577,8 @@ def build_config(settings):
     # Model / network.
     config.network.arch = model
     config.network.base_channels = int(model_setting("base_channels"))
-    config.network.channel_mult = tuple(
-        _coalesce(model_setting("channel_mult"), defaults.model.channel_mult)
-    )
-    config.network.attn_resolutions = tuple(
-        _coalesce(model_setting("attn_resolutions"), defaults.model.attn_resolutions)
-    )
+    config.network.channel_mult = tuple(model_setting("channel_mult"))
+    config.network.attn_resolutions = tuple(model_setting("attn_resolutions"))
     config.network.num_res_blocks = int(model_setting("num_res_blocks"))
     config.network.dropout = float(model_setting("dropout"))
     config.network.time_emb_dim = model_setting("time_emb_dim")
@@ -620,16 +598,16 @@ def build_config(settings):
     batch_cap = resolve_batch_cap(settings)
     config.training.batch_cap = batch_cap
     config.training.batch_size = batch_cap
-    config.training.optimizer = defaults.training.optimizer
+    config.training.optimizer = DEFAULT_IMAGE_OPTIMIZER
     lr = raw_settings["lr"] if _raw_overrides_default(raw_settings, "lr") else None
-    config.training.lr = float(_coalesce(lr, defaults.training.lr))
+    config.training.lr = float(_coalesce(lr, DEFAULT_IMAGE_LR))
     weight_decay = (
         raw_settings["weight_decay"]
         if _raw_overrides_default(raw_settings, "weight_decay")
         else None
     )
     config.training.weight_decay = float(
-        _coalesce(weight_decay, defaults.training.weight_decay)
+        _coalesce(weight_decay, DEFAULT_IMAGE_WEIGHT_DECAY)
     )
 
     # Runtime.
@@ -640,36 +618,32 @@ def build_config(settings):
     config.runtime.non_blocking_h2d = False
 
     # Evaluation.
-    monitor_samples = int(
-        _coalesce(settings["generation_monitor_samples"], defaults.evaluation.n_samples)
-    )
-    config.evaluation.n_samples = monitor_samples
+    eval_sample_bank_size = int(settings["eval_sample_bank_size"])
+    monitor_samples = int(settings["generation_monitor_samples"])
+    config.evaluation.sample_bank_size = eval_sample_bank_size
+    config.evaluation.n_samples = eval_sample_bank_size
     config.evaluation.batch_size = batch_cap
     config.evaluation.sample_panel_count = min(
-        int(_coalesce(defaults.evaluation.sample_panel_count, 8)),
+        8,
         int(config.evaluation.n_samples),
     )
     loss_eval_times = (
         raw_settings["loss_eval_times"]
         if _raw_overrides_default(raw_settings, "loss_eval_times")
-        else defaults.evaluation.loss_eval_times
+        else DEFAULT_LOSS_EVAL_TIMES
     )
     config.evaluation.loss_eval_times = tuple(float(item) for item in loss_eval_times)
-    config.evaluation.loss_eval_batch_size = int(
-        _coalesce(getattr(defaults.evaluation, "loss_eval_batch_size", 0), 0)
-    )
+    config.evaluation.loss_eval_batch_size = 0
     config.evaluation.chunk_size = max(
-        int(_coalesce(defaults.evaluation.chunk_size, 128)),
+        128,
         int(config.evaluation.n_samples),
         int(config.data.n_test),
         int(config.data.n_train),
     )
 
     # Sampling.
-    config.sampling.method = defaults.sampling.method
-    config.sampling.n_steps = int(
-        _coalesce(settings["sampling_steps"], defaults.sampling.n_steps)
-    )
+    config.sampling.method = "heun"
+    config.sampling.n_steps = int(settings["sampling_steps"])
 
     # Generation monitor.
     config.generation_monitor.enabled = bool(settings["generation_monitor"])
@@ -689,7 +663,7 @@ def build_config(settings):
     # Tracking.
     config.tracking.console.summary_every_steps = int(config.training.log_every)
     config.tracking.console.summary_every_seconds = float(
-        defaults.tracking.console.summary_every_seconds
+        DEFAULT_CONSOLE_SUMMARY_SECONDS
     )
     config.tracking.console.compact_model_summary = bool(settings["compact_model_summary"])
     config.tracking.wandb.enabled = bool(settings["wandb"])
@@ -715,17 +689,17 @@ def build_config(settings):
     wandb_entity = (
         raw_settings["wandb_entity"]
         if _raw_overrides_default(raw_settings, "wandb_entity")
-        else defaults.tracking.wandb.entity
+        else DEFAULT_SETTINGS["wandb_entity"]
     )
     wandb_notes = (
         raw_settings["wandb_notes"]
         if _raw_overrides_default(raw_settings, "wandb_notes")
-        else defaults.tracking.wandb.notes
+        else DEFAULT_SETTINGS["wandb_notes"]
     )
     wandb_strict = (
         raw_settings["wandb_strict"]
         if _raw_overrides_default(raw_settings, "wandb_strict")
-        else defaults.tracking.wandb.strict
+        else DEFAULT_SETTINGS["wandb_strict"]
     )
     config.tracking.wandb.entity = str(wandb_entity)
     config.tracking.wandb.notes = str(wandb_notes)

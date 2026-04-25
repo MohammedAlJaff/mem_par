@@ -18,6 +18,7 @@ from mp_artifacts import (
     save_json,
     save_tensor,
 )
+from mp_runners.eval_safety import eval_z_init_bank, validate_saved_train_reference
 from mp_metrics.loss_eval import collect_loss_eval_record
 from mp_metrics.metrics_synthetic import (
     collect_controlled_synthetic_metric_record,
@@ -122,7 +123,9 @@ def evaluate_synthetic_run(run_dir, device="cpu", fixed_times=None):
             run_dir / "artifacts" / "reference_tensor.pt",
             map_location="cpu",
         )
+        validate_saved_train_reference(run_dir, train_tensor, reference_tensor)
         z_init = torch.load(run_dir / "artifacts" / "z_init.pt", map_location="cpu")
+        z_eval = eval_z_init_bank(config, z_init)
         geometry = torch.load(run_dir / "artifacts" / "geometry.pt", map_location="cpu")
 
         # Intrinsic coordinates are computed once from saved tensors and reused
@@ -155,7 +158,7 @@ def evaluate_synthetic_run(run_dir, device="cpu", fixed_times=None):
             model.load_state_dict(state["model"])
             with autocast_context(config, device):
                 samples = model.sample(
-                    z_init.clone().to(device),
+                    z_eval.clone().to(device),
                     n_steps=int(config.sampling.n_steps),
                     method=str(config.sampling.method),
                     device=device,

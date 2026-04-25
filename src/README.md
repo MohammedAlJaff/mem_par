@@ -20,8 +20,8 @@ research runners.
 
 - `mp_runners/`
   Runnable workflows and CLI entry points. Use
-  `python -m mp_runners.synthetic_runner` and
-  `python -m mp_runners.image_runner`.
+  `python -m mp_runners.synthetic_train_runner` and
+  `python -m mp_runners.image_train_runner`.
 
 - `mp_artifacts/`
   Experiment/run/seed/attempt layout, config snapshots, checkpoints, tensors,

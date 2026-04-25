@@ -95,6 +95,7 @@ def get_base_config():
     data.major_radius = 2.0
     data.minor_radius = 0.5
     data.reference_split = "valid"
+    data.recipe = "default"
 
     training = config.training = ConfigDict()
     training.seed = 0
@@ -114,6 +115,7 @@ def get_base_config():
 
     evaluation = config.evaluation = ConfigDict()
     evaluation.n_samples = 64
+    evaluation.sample_bank_size = 1024
     evaluation.batch_size = 64
     evaluation.ratio_threshold = 0.5
     evaluation.sample_panel_count = 8

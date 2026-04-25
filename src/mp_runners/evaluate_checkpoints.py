@@ -21,6 +21,7 @@ from mp_artifacts import (
     save_tensor,
     update_attempt_status,
 )
+from mp_runners.eval_safety import eval_z_init_bank, validate_saved_train_reference
 from mp_runners.image_eval import (
     checkpoint_preview_figure_name,
     collect_checkpoint_sample_preview_record,
@@ -29,77 +30,6 @@ from mp_metrics.loss_eval import collect_loss_eval_record
 from mp_metrics.metrics_synthetic import compute_nn_stats
 from mp_runtime import autocast_context, configure_torch_runtime
 from mp_tracking import AttemptTracker, loss_eval_metric_payload
-
-
-
-def _validate_saved_holdout_metadata(run_dir):
-    """
-    Re-check saved train/reference source metadata before checkpoint evaluation.
-
-    Evaluation should never silently compare generated samples against a
-    reference tensor that overlaps the training tensor.
-    """
-    run_dir = Path(run_dir)
-    data_meta_path = run_dir / "artifacts" / "data_meta.json"
-    if not data_meta_path.exists():
-        return
-
-    data_meta = load_json(data_meta_path)
-    train_source_id = data_meta.get("train_source_id")
-    reference_source_id = data_meta.get("reference_source_id")
-    if train_source_id is None or reference_source_id is None:
-        return
-
-    if str(train_source_id) != str(reference_source_id):
-        return
-
-    train_indices_path = run_dir / "artifacts" / "train_indices.pt"
-    reference_indices_path = run_dir / "artifacts" / "reference_indices.pt"
-    if not train_indices_path.exists() or not reference_indices_path.exists():
-        raise ValueError(
-            "Data leakage guard failed during evaluation: train/reference share "
-            f"source {train_source_id!r}, but saved source indices are missing."
-        )
-
-    train_indices = set(
-        int(item)
-        for item in torch.load(train_indices_path, map_location="cpu").flatten().tolist()
-    )
-    reference_indices = set(
-        int(item)
-        for item in torch.load(reference_indices_path, map_location="cpu").flatten().tolist()
-    )
-    overlap = train_indices.intersection(reference_indices)
-    if overlap:
-        examples = sorted(overlap)[:10]
-        raise ValueError(
-            "Data leakage guard failed during evaluation: saved train/reference "
-            f"indices overlap for source {train_source_id!r}. "
-            f"overlap_count={len(overlap)}, examples={examples}"
-        )
-
-    validation = data_meta.get("data_validation") or {}
-    if not bool(validation.get("same_source_allowed", False)):
-        raise ValueError(
-            "Data leakage guard failed during evaluation: train/reference share "
-            f"source {train_source_id!r}. This run was not marked as an allowed "
-            "same-source disjoint holdout."
-        )
-
-
-def _validate_saved_tensor_identity(train_tensor, reference_tensor):
-    """
-    Fail if saved train/reference tensors are exactly identical full batches.
-    """
-    if train_tensor.shape == reference_tensor.shape and torch.equal(
-        train_tensor,
-        reference_tensor,
-    ):
-        raise ValueError(
-            "Data leakage guard failed during evaluation: train and reference "
-            "tensors are exactly equal."
-        )
-
 
 def _save_checkpoint_metric_figures(records, figures_dir):
     """
@@ -185,7 +115,6 @@ def evaluate_run(run_dir, device="cpu"):
         configure_torch_runtime(config, device)
         tracker = AttemptTracker(config, run_dir)
         tracker.stage("evaluating", message=f"checkpoint evaluation started device={device}")
-        _validate_saved_holdout_metadata(run_dir)
 
         train_tensor = torch.load(
             run_dir / "artifacts" / "train_tensor.pt",
@@ -195,8 +124,9 @@ def evaluate_run(run_dir, device="cpu"):
             run_dir / "artifacts" / "reference_tensor.pt",
             map_location="cpu",
         )
-        _validate_saved_tensor_identity(train_tensor, reference_tensor)
+        validate_saved_train_reference(run_dir, train_tensor, reference_tensor)
         z_init = torch.load(run_dir / "artifacts" / "z_init.pt", map_location="cpu")
+        z_eval = eval_z_init_bank(config, z_init)
 
         model = GDFM(config).to(device)
         records = []
@@ -234,7 +164,7 @@ def evaluate_run(run_dir, device="cpu"):
                 tracker.log_metrics(loss_eval_metric_payload(loss_record), step=step)
                 with autocast_context(config, device):
                     samples = model.sample(
-                        z_init.clone().to(device),
+                        z_eval.clone().to(device),
                         n_steps=int(config.sampling.n_steps),
                         method=str(config.sampling.method),
                         device=device,

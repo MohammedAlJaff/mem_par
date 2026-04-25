@@ -197,6 +197,31 @@ def _model_summary(config, model):
     return summary
 
 
+def _seed_training_rngs(config, device):
+    """
+    Seed the global torch RNGs that affect model init, z_init, and training loss.
+
+    This intentionally does not enable strict deterministic algorithms: the goal
+    is same-seed reproducibility under the normal kernels chosen by the run.
+    """
+    seed = int(config.training.seed)
+    torch.manual_seed(seed)
+
+    torch_device = torch.device(f"cuda:{device}" if isinstance(device, int) else device)
+    cuda_seeded = bool(torch_device.type == "cuda" and torch.cuda.is_available())
+    if cuda_seeded:
+        torch.cuda.manual_seed_all(seed)
+
+    return {
+        "training_seed": seed,
+        "torch_manual_seed": True,
+        "cuda_manual_seed_all": cuda_seeded,
+        "z_init_seed": seed + 2003,
+        "dataloader_seed": seed,
+        "deterministic_algorithms": False,
+    }
+
+
 def _log_model_summary(tracker, model, summary):
     """Print and persist a compact or full model summary."""
     console_settings = getattr(
@@ -404,19 +429,26 @@ def _make_z_init(config, train_tensor):
     gives `[B, C, H, W]`.
     """
     sample_shape = tuple(train_tensor.shape[1:])
-    n_samples = int(getattr(config.evaluation, "n_samples", 64))
+    n_samples = int(
+        getattr(
+            config.evaluation,
+            "sample_bank_size",
+            getattr(config.evaluation, "n_samples", 64),
+        )
+    )
     generation_monitor = getattr(config, "generation_monitor", None)
     if generation_monitor is not None and bool(
         getattr(generation_monitor, "enabled", False)
     ):
         n_samples = max(n_samples, int(getattr(generation_monitor, "n_samples", 64)))
     random_projected_f_mem = _random_projected_f_mem_config(config)
-    if random_projected_f_mem is not None:
+    if random_projected_f_mem is not None and is_image_batch(train_tensor):
         n_samples = max(
             n_samples,
             int(getattr(random_projected_f_mem, "n_samples", 512)),
         )
-    return torch.randn(n_samples, *sample_shape)
+    generator = torch.Generator().manual_seed(int(config.training.seed) + 2003)
+    return torch.randn(n_samples, *sample_shape, generator=generator)
 
 
 def _save_training_loss_figure(history, figures_dir):
@@ -861,6 +893,7 @@ def train_run(config, study_dir, device="cpu"):
         # Resolve numerical mode and H2D movement before the tracker starts so
         # the saved config and W&B config include the exact runtime settings.
         runtime = configure_torch_runtime(config, device)
+        seed_policy = _seed_training_rngs(config, device)
 
         checkpoint_steps = resolve_checkpoint_steps(config)
         checkpoint_step_set = set(checkpoint_steps)
@@ -981,6 +1014,7 @@ def train_run(config, study_dir, device="cpu"):
             "data_validation": data_bundle.get("data_validation"),
             "batching": batching,
             "runtime": runtime,
+            "seed_policy": seed_policy,
         }
         save_json(run_dir / "artifacts" / "data_meta.json", data_meta)
         data_summary = _data_summary(
@@ -1003,6 +1037,7 @@ def train_run(config, study_dir, device="cpu"):
             data_meta_path=str((run_dir / "artifacts" / "data_meta.json").resolve()),
             batching=batching,
             runtime=runtime,
+            seed_policy=seed_policy,
             data_summary=data_summary,
         )
         _log_data_summary(tracker, data_summary)
@@ -1261,6 +1296,7 @@ def train_run(config, study_dir, device="cpu"):
             "optimizer": str(config.training.optimizer),
             "model_summary": model_summary,
             "runtime": runtime,
+            "seed_policy": seed_policy,
             "training_wall_time_sec": training_wall_time_sec,
             "training_seconds_per_step": (
                 training_wall_time_sec / n_steps if n_steps > 0 else 0.0
@@ -1303,6 +1339,7 @@ def train_run(config, study_dir, device="cpu"):
             generation_monitor=generation_monitor,
             random_projected_f_mem=random_projected_f_mem_summary,
             runtime=runtime,
+            seed_policy=seed_policy,
             checkpoint_schedule=checkpoint_schedule,
         )
         run_dir = mark_attempt_done(run_dir)

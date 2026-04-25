@@ -12,7 +12,7 @@ try:
         torus_angles_to_xyz,
         torus_periodic_features,
     )
-    from mp_runners import synthetic_runner
+    from mp_runners import eval_synthetic, synthetic_train_runner
     from mp_metrics.metrics_synthetic import (
         collect_controlled_synthetic_metric_record,
         intrinsic_geometry_parts,
@@ -23,7 +23,8 @@ except ModuleNotFoundError:
     build_data_bundle = None
     torus_angles_to_xyz = None
     torus_periodic_features = None
-    synthetic_runner = None
+    synthetic_train_runner = None
+    eval_synthetic = None
     collect_controlled_synthetic_metric_record = None
     intrinsic_geometry_parts = None
     torus3d_metrics = None
@@ -35,21 +36,21 @@ except ModuleNotFoundError:
 )
 class TestTorusSynthetic(unittest.TestCase):
     def make_config(self, sigma_eta=0.0):
-        settings = synthetic_runner.default_settings()
+        settings = synthetic_train_runner.default_settings()
         settings.update(
             {
                 "dataset": "torus3d",
                 "ambient_dim": 3,
                 "n_train": 16,
                 "n_test": 18,
-                "eval_samples": 8,
+                "eval_sample_bank_size": 8,
                 "sigma_eta": sigma_eta,
                 "major_radius": 2.0,
                 "minor_radius": 0.5,
                 "sliced_w2_projections": 4,
             }
         )
-        return synthetic_runner.build_config(settings)
+        return synthetic_train_runner.build_config(settings)
 
     def test_torus3d_bundle_contains_angles_and_geometry(self):
         bundle = build_data_bundle(self.make_config())
@@ -147,8 +148,8 @@ class TestTorusSynthetic(unittest.TestCase):
         self.assertNotIn("torus_distance_mean", record)
         self.assertNotIn("geometry_error_mean", record)
 
-    def test_torus_final_eval_writes_train_and_checkpoint_donut_figures(self):
-        settings = synthetic_runner.default_settings()
+    def test_torus_eval_replay_writes_train_and_checkpoint_donut_figures(self):
+        settings = synthetic_train_runner.default_settings()
         settings.update(
             {
                 "dataset": "torus3d",
@@ -156,22 +157,23 @@ class TestTorusSynthetic(unittest.TestCase):
                 "n_train": 8,
                 "n_test": 8,
                 "batch_cap": 4,
-                "eval_samples": 4,
+                "eval_sample_bank_size": 4,
                 "sampling_steps": 2,
                 "hidden_dim": 16,
                 "n_layers": 2,
                 "time_emb_dim": 16,
                 "sliced_w2_projections": 4,
-                "n_steps": 1,
+                "n_training_steps": 1,
                 "ckpt_every": 1,
                 "log_every": 1,
                 "wandb": False,
             }
         )
-        config = synthetic_runner.build_config(settings)
+        config = synthetic_train_runner.build_config(settings)
         with tempfile.TemporaryDirectory() as tmpdir:
             with contextlib.redirect_stdout(io.StringIO()):
-                result = synthetic_runner.run_full_job(config, tmpdir, "cpu", evaluate=True)
+                train_result = synthetic_train_runner.run_full_job(config, tmpdir, "cpu")
+                result = eval_synthetic.run_eval_job(train_result["run_dir"], "cpu")
 
             figures = result["figures"]
             self.assertTrue(
