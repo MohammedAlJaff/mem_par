@@ -155,8 +155,11 @@ class TestProtoRunners(unittest.TestCase):
             self.assertIsNone(config.network.time_emb_dim)
             self.assertEqual(config.training.optimizer, "adam")
             self.assertEqual(config.training.lr, 1.0e-4)
+            self.assertEqual(config.training.weight_decay, 0.0)
+            self.assertEqual(config.training.momentum, 0.9)
             self.assertEqual(config.runtime.precision, "fp32")
             self.assertEqual(config.study.dataset_key, "celeba")
+            self.assertEqual(config.monitoring.batch_size, settings["batch_cap"])
             self.assertEqual(config.tracking.wandb.project, "memparam-celeba-32-unet")
             self.assertEqual(
                 config.tracking.wandb.name,
@@ -167,6 +170,43 @@ class TestProtoRunners(unittest.TestCase):
                 "celeba-32-unet-steps30000",
             )
             self.assertEqual(config.training.ckpt_schedule, "bonnaire-1m")
+
+    def test_image_runner_accepts_explicit_sgd_momentum_settings(self):
+        settings = image_train_runner.default_settings()
+        settings.update(
+            {
+                "optimizer": "sgd",
+                "lr": 1.0e-2,
+                "weight_decay": 0.0,
+                "momentum": 0.95,
+            }
+        )
+
+        config = image_train_runner.build_config(settings)
+
+        self.assertEqual(config.training.optimizer, "sgd")
+        self.assertEqual(config.training.lr, 1.0e-2)
+        self.assertEqual(config.training.weight_decay, 0.0)
+        self.assertEqual(config.training.momentum, 0.95)
+
+    def test_image_runner_cli_exposes_optimizer_settings(self):
+        args = image_train_runner.parse_args(
+            [
+                "--optimizer",
+                "sgd",
+                "--lr",
+                "0.01",
+                "--weight_decay",
+                "0.0",
+                "--momentum",
+                "0.95",
+            ]
+        )
+
+        self.assertEqual(args.optimizer, "sgd")
+        self.assertEqual(args.lr, 0.01)
+        self.assertEqual(args.weight_decay, 0.0)
+        self.assertEqual(args.momentum, 0.95)
 
     def test_image_runner_exposes_train_loss_log_cadence(self):
         settings = image_train_runner.default_settings()
@@ -179,6 +219,16 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(args.log_every, 7)
         self.assertEqual(default_args.precision, "fp32")
         self.assertFalse(default_args.data_summary)
+
+    def test_image_monitor_batch_size_must_be_positive(self):
+        settings = image_train_runner.default_settings()
+        settings["monitor_batch_size"] = 0
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "monitor_batch_size must be >= 1",
+        ):
+            image_train_runner.build_config(settings)
 
     def test_image_runner_accepts_slim_cli_surface(self):
         args = image_train_runner.parse_args(
@@ -220,6 +270,8 @@ class TestProtoRunners(unittest.TestCase):
                 "9",
                 "--generation_monitor_samples",
                 "6",
+                "--monitor_batch_size",
+                "11",
                 "--sampling_steps",
                 "3",
                 "--root",
@@ -268,6 +320,9 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(config.evaluation.sample_bank_size, 9)
         self.assertEqual(config.evaluation.n_samples, 9)
         self.assertEqual(config.generation_monitor.n_samples, 6)
+        self.assertEqual(args.monitor_batch_size, 11)
+        self.assertEqual(config.monitoring.batch_size, 11)
+        self.assertEqual(config.training.batch_cap, 4)
         self.assertFalse(config.generation_monitor.show)
         self.assertEqual(config.random_projected_f_mem.n_samples, 7)
         self.assertEqual(config.random_projected_f_mem.resize_size, 8)
@@ -378,6 +433,36 @@ class TestProtoRunners(unittest.TestCase):
         self.assertEqual(config.network.base_channels, 64)
         self.assertEqual(tuple(config.network.channel_mult), (1, 2, 4, 4))
 
+    def test_image_runner_accepts_unet_capacity_overrides(self):
+        args = image_train_runner.parse_args(
+            [
+                "--dataset",
+                "celeba",
+                "--image_size",
+                "32",
+                "--model",
+                "unet",
+                "--base_channels",
+                "64",
+                "--channel_mult",
+                "1,2,4,4",
+                "--attn_resolutions",
+                "16,8",
+                "--num_res_blocks",
+                "2",
+                "--dropout",
+                "0.1",
+            ]
+        )
+        config = image_train_runner.build_config(vars(args))
+
+        self.assertEqual(config.data.dataset, "celeba32_grey")
+        self.assertEqual(config.network.base_channels, 64)
+        self.assertEqual(tuple(config.network.channel_mult), (1, 2, 4, 4))
+        self.assertEqual(tuple(config.network.attn_resolutions), (16, 8))
+        self.assertEqual(config.network.num_res_blocks, 2)
+        self.assertAlmostEqual(config.network.dropout, 0.1)
+
     def test_image_runner_can_resize_mnist_from_simple_inputs(self):
         args = image_train_runner.parse_args(
             [
@@ -415,6 +500,7 @@ class TestProtoRunners(unittest.TestCase):
             ("flowers", 64),
             ("afhq", 128),
             ("ffhq", 128),
+            ("ffhq", 64),
             ("celeba", 32),
         ]
         for dataset, image_size in valid_pairs:
@@ -426,7 +512,7 @@ class TestProtoRunners(unittest.TestCase):
                 self.assertEqual(config.study.dataset_key, dataset)
                 self.assertEqual(config.data.image_size, image_size)
 
-        for dataset, image_size in (("ffhq", 64), ("celeba", 128)):
+        for dataset, image_size in (("celeba", 128),):
             with self.subTest(dataset=dataset, image_size=image_size):
                 args = image_train_runner.parse_args(
                     ["--dataset", dataset, "--image_size", str(image_size)]
@@ -881,18 +967,32 @@ class TestProtoRunners(unittest.TestCase):
             self.assertTrue(Path(trace["train_grid_path"]).is_file())
             self.assertTrue(Path(trace["final_samples_path"]).is_file())
             self.assertGreater(len(trace["checkpoint_samples"]), 0)
+            self.assertIn("total_elapsed_sec", trace["checkpoint_samples"][0])
             monitor = run_summary["random_projected_f_mem"]
             self.assertTrue(monitor["enabled"])
             self.assertEqual(monitor["metadata"]["n_samples"], 3)
             self.assertEqual(monitor["metadata"]["resize_size"], 8)
             self.assertEqual(monitor["metadata"]["projection_dim"], 4)
+            self.assertIn(
+                "reference_projection_elapsed_sec",
+                monitor["metadata"],
+            )
             self.assertTrue(
                 (Path(result["run_dir"]) / monitor["metadata"]["projection_matrix_path"]).is_file()
             )
+            self.assertTrue(
+                (Path(result["run_dir"]) / monitor["metadata"]["reference_vectors_path"]).is_file()
+            )
+            self.assertTrue(monitor["metadata"]["projected_reference_cached"])
+            self.assertEqual(monitor["metadata"]["reference_vectors_shape"], [4, 4])
             self.assertEqual(len(monitor["records"]), 1)
             self.assertEqual(monitor["records"][0]["step"], 1)
             self.assertIn("f_mem", monitor["records"][0])
             self.assertIn("std_r", monitor["records"][0])
+            self.assertIn("sampling_elapsed_sec", monitor["records"][0])
+            self.assertIn("metric_elapsed_sec", monitor["records"][0])
+            self.assertIn("total_elapsed_sec", monitor["records"][0])
+            self.assertTrue(monitor["records"][0]["projected_reference_cached"])
             self.assertTrue(
                 (
                     Path(result["run_dir"])
@@ -900,6 +1000,65 @@ class TestProtoRunners(unittest.TestCase):
                     / "random_projected_f_mem.json"
                 ).is_file()
             )
+
+    @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
+    def test_image_monitor_batch_size_can_exceed_training_batch_cap(self):
+        settings = image_train_runner.default_settings()
+        settings.update(
+            {
+                "dataset": "mnist",
+                "n_train": 4,
+                "n_test": 4,
+                "n_training_steps": 1,
+                "ckpt_every": 1,
+                "batch_cap": 2,
+                "monitor_batch_size": 4,
+                "eval_sample_bank_size": 4,
+                "generation_monitor_samples": 4,
+                "sampling_steps": 1,
+                "image_size": 16,
+                "base_channels": 8,
+                "channel_mult": (1, 2),
+                "attn_resolutions": (8,),
+                "num_res_blocks": 1,
+                "time_emb_dim": 16,
+                "download": False,
+                "balance_train_classes": False,
+                "balance_reference_classes": False,
+                "wandb": False,
+                "generation_monitor": True,
+                "generation_monitor_show": False,
+                "random_projected_f_mem_samples": 4,
+                "random_projected_f_mem_resize": 8,
+                "random_projected_f_mem_proj_dim": 4,
+                "random_projected_f_mem_proj_seed": 23,
+            }
+        )
+        config = image_train_runner.build_config(settings)
+        sample_batch_sizes = []
+
+        def fake_sample(self, z, *args, **kwargs):
+            sample_batch_sizes.append(int(z.shape[0]))
+            return z
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch("mp_training.trainer.GDFM.sample", fake_sample):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = image_train_runner.run_full_job(config, tmpdir, "cpu")
+
+            run_summary = json.loads(
+                (Path(result["run_dir"]) / "artifacts" / "run_summary.json").read_text()
+            )
+
+        self.assertEqual(config.training.batch_cap, 2)
+        self.assertEqual(config.monitoring.batch_size, 4)
+        self.assertIn(4, sample_batch_sizes)
+        self.assertTrue(all(size <= 4 for size in sample_batch_sizes))
+        self.assertEqual(run_summary["generation_monitor"]["monitor_batch_size"], 4)
+        self.assertEqual(
+            run_summary["random_projected_f_mem"]["metadata"]["monitor_batch_size"],
+            4,
+        )
 
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_generation_monitor_sample_grid_is_not_capped_by_train_grid(self):

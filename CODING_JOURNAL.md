@@ -1,5 +1,152 @@
 # Coding Journal
 
+## 2026-04-27T02:47:12Z - Lower-LR SGD+Momentum x/v Smoke Queued
+
+### Context
+The Bonnaire SGD settings (`lr=0.01`, momentum `0.95`) were stable for the
+diagonal parameterizations but caused systematic NaNs for the `x/v` slice. We
+created a lower-learning-rate sibling set to test whether this is an LR-driven
+stability issue.
+
+### Changed / Observed
+- Added `jobs/job_sets/mem_gen_boundary_sgdm_lr0p001_20260427`.
+- The new job set mirrors the 84-row SGD grid but uses `lr=0.001`.
+- It writes to a distinct output/group identity:
+  `mem_gen_boundary_sgdm_lr0p001_20260427`.
+- It intentionally uses the same W&B project as the `lr=0.01` SGD set:
+  `memparam-mem_gen_boundary_sgdm_20260427`.
+- Run names include `sgd_m0p95_lr0p001` to avoid collision with the
+  `sgd_m0p95_lr0p01` runs.
+- Submitted an offline smoke for task `3`, the smallest `x/v` run, as Slurm job
+  `16443574`.
+- The smoke is currently pending on Slurm priority.
+
+### Commands / Checks
+- `bash -n jobs/job_sets/mem_gen_boundary_sgdm_lr0p001_20260427/submit.sh`
+- Manifest validation: 84 rows, fixed `optimizer=sgd`, `lr=0.001`,
+  `weight_decay=0.0`, `momentum=0.95`.
+- Smoke submit:
+  `WANDB_MODE=offline N_TRAINING_STEPS=2000 CKPT_SCHEDULE=interval CKPT_EVERY=500 sbatch --array=3 jobs/job_sets/mem_gen_boundary_sgdm_lr0p001_20260427/submit.sh`.
+
+### Next
+- Wait for smoke job `16443574_3` to run.
+- Accept the smoke only if it reaches `2000/2000`, confirms `lr=0.001`,
+  writes checkpoints/monitor figures, and has no NaN/error signatures.
+- Submit the full lower-LR array only after this `x/v` smoke passes.
+
+## 2026-04-27T02:36:43Z - SGD+Momentum Array Launched; x/v Cancelled
+
+### Context
+After the required offline smoke passed, launched the full CelebA32
+SGD+momentum sister array to anchor the Bonnaire optimizer comparison.
+
+### Changed / Observed
+- Submitted `jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh` as Slurm
+  array job `16443527`.
+- Early logs confirmed online W&B logging, run names containing
+  `sgd_m0p95_lr0p01`, and the intended optimizer settings:
+  `optimizer=sgd`, `lr=0.01`, `momentum=0.95`, `weight_decay=0.0`.
+- The `x/v` tasks produced systematic `loss=nan` early under SGD+momentum,
+  while diagonal tasks (`x/x`, `eps/eps`, `v/v`) remained finite.
+- Cancelled only the `x/v` slice to avoid wasting GPU time:
+  tasks `3,7,11,15,19,23,27,31,35,39,43,47,51,55,59,63,67,71,75,79,83`.
+- Left the diagonal SGD comparisons running; the current Slurm array still has
+  active/pending non-`x/v` tasks.
+
+### Commands / Checks
+- `sbatch jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh`
+- `squeue -u x_moalj -j 16443527 -o "%.200i %.2t %.10M %.40R"`
+- Grep/rg scan of SGD logs for `loss=nan`, `loss=inf`, traceback, OOM,
+  runtime error, and failed markers.
+- Filtered the log scan to non-`x/v` tasks after cancellation.
+
+### Results
+- Full array submission succeeded as job `16443527`.
+- The instability is specific to the launched `x/v` slice so far.
+- No NaN/inf/runtime markers were found in the remaining diagonal task logs.
+- Latest diagonal task losses were finite, with early tasks around
+  `8500-9500/1000000` steps and newer tasks around `1500-2000/1000000`.
+
+### Next
+- Continue monitoring the diagonal SGD runs.
+- Treat `x/v` with Bonnaire SGD settings as unstable until separately tuned
+  or explicitly documented as failing at `lr=0.01`, momentum `0.95`.
+
+## 2026-04-27T02:05:40Z - SGD+Momentum Smoke Passed
+
+### Context
+Ran the required offline smoke task before considering the full SGD+momentum
+CelebA32 sister array.
+
+### Changed / Observed
+- Submitted `jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh` as Slurm
+  job `16443452`, array task `0`, with:
+  `WANDB_MODE=offline N_TRAINING_STEPS=2000 CKPT_SCHEDULE=interval CKPT_EVERY=500`.
+- Slurm accounting reports `COMPLETED` with exit code `0:0`.
+- Stdout confirms `optimizer=sgd`, `lr=0.01`, `momentum=0.95`,
+  `weight_decay=0.0`, and run name containing `sgd_m0p95_lr0p01`.
+- Training reached `2000/2000`; the attempt was renamed to `DONE_20260427_035957`.
+- Checkpoints were written at steps `0`, `500`, `1000`, `1500`, and `2000`.
+- Generation monitor figures and `training_loss_vs_step.png` were written.
+- Status and run summary record `state=trained`, `optimizer=sgd`, `lr=0.01`,
+  `momentum=0.95`, and `completed_step=2000`.
+
+### Commands / Checks
+- `sacct -j 16443452 --format=JobID,JobName%16,State,Elapsed,Timelimit,ExitCode -P`
+- Grep of smoke stdout/stderr for traceback, OOM, failed, cancellation,
+  runtime error, missing-file, `nan`, and `inf` signatures.
+- Artifact checks for expected checkpoint and figure files.
+
+### Results
+- Smoke passed. No error signatures were found in stdout/stderr.
+
+### Next
+- The full SGD+momentum 84-task array is ready to submit when compute budget is
+  approved:
+  `sbatch jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh`.
+
+## 2026-04-27T01:50:32Z - SGD+Momentum CelebA32 Sister Sweep
+
+### Context
+Reviewer-facing concern: Bonnaire's main CelebA results use SGD with momentum,
+while the active `mem_gen_boundary_20260427` sweep uses Adam. We need a direct
+optimizer-control sister set that anchors the central comparison to Bonnaire's
+optimizer.
+
+### Changed / Observed
+- Added public image-runner optimizer controls: `--optimizer`, `--lr`,
+  `--weight_decay`, and `--momentum`.
+- Preserved existing image defaults: Adam, `lr=1e-4`, `weight_decay=0.0`, and
+  default momentum `0.9`.
+- Added optimizer, learning-rate, weight-decay, and momentum fields to status
+  files, W&B tags, and local run summaries.
+- Added `jobs/job_sets/mem_gen_boundary_sgdm_20260427` as an 84-task mirror of
+  the active Adam CelebA32 boundary grid, with SGD, `lr=0.01`, momentum `0.95`,
+  `weight_decay=0.0`, and `batch_cap=256`.
+- Documented the Bonnaire capacity sanity check: our active CelebA32 UNet has
+  `3,917,409` trainable parameters; vendored Bonnaire `run_Unet.py -W 32` has
+  `4,055,233` total and `4,023,233` trainable parameters.
+
+### Commands / Checks
+- `bash -n jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh`
+- Manifest validation: 84 data rows, 16 TSV fields, fixed SGD optimizer fields.
+- Manifest comparison against `mem_gen_boundary_20260427`: 84 matched Adam-grid
+  rows after accounting for the added optimizer columns.
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m py_compile src/mp_runners/image_train_runner.py src/mp_runners/image_config.py src/mp_training/trainer.py src/mp_tracking.py src/mp_artifacts/artifacts.py`
+- `module load Mambaforge && mamba activate mem_param_env && PYTHONPATH=src:. python -m unittest tests.test_proto_runners tests.test_tracking`
+- `git diff --check`
+
+### Results
+- Shell syntax, manifest validation/comparison, and byte-compile passed.
+- Focused proto-runner and tracking tests passed: 51 tests.
+- `git diff --check` passed.
+
+### Next
+- Run the required offline smoke task before submitting the full SGD array:
+  `WANDB_MODE=offline N_TRAINING_STEPS=2000 CKPT_SCHEDULE=interval CKPT_EVERY=500 sbatch --array=0 jobs/job_sets/mem_gen_boundary_sgdm_20260427/submit.sh`.
+- Submit the full array only after smoke stdout confirms `optimizer=sgd`,
+  `lr=0.01`, `momentum=0.95`, and reaches `2000/2000` without error markers.
+
 ## 2026-04-27T00:13:44Z - Mem-Gen-Boundary Submitted And Sanity Checked
 
 ### Context
@@ -1780,6 +1927,52 @@ Keep runner workflow code separate from metric definitions:
 
 ### Blockers
 - None expected.
+
+## 2026-04-27 - End-Of-Day Sweep Status And Same-UNet Pilot Plan
+
+### Context
+- Launched the CelebA32 Adam mem-gen-boundary baseline and prepared the
+  capacity-control follow-up for checking whether the observed boundary is
+  stable under larger UNet capacity.
+- Discussed a Li-and-He-inspired MNIST image-size pilot where image size changes
+  ambient dimension while the digit semantics remain roughly fixed.
+
+### Job Status Snapshot
+- Main Adam CelebA32 boundary job `16443304`: `84/84` running, healthy.
+- Progress: `210000` to `228500` steps out of `1M`.
+- Speed min/avg/max: `14.58 / 15.43 / 15.90` steps/s.
+- Slurm log scan: `0` error hits.
+- Capacity-control Adam sweep `16443588_[0-107]`: pending, reason `Priority`,
+  with no local status files yet.
+- SGDM sweep: `52` training, `1` trained, with no Slurm error hits.
+- SGDM lr `1e-3`: pending, with no local status files yet.
+
+### Same-Big-UNet MNIST Pilot Plan
+- Dataset/settings: MNIST, image sizes `32`, `64`, and `256`, fixed
+  `n_train=4096`, `n_test=1024`, `batch_cap=16`, Adam, TF32, and `1000`
+  pilot training steps.
+- Parameterizations for the pilot: `x/v` and `v/v`, seed `0`.
+- Arm 1, exact fixed-capacity UNet: use the same roughly `108M` parameter UNet
+  at all image sizes, with `base_channels=64` and
+  `channel_mult=1,2,4,4,8,8`.
+- Arm 2, bottleneck-matched UNets: use approximately `8x8` bottlenecks with
+  `15.6M`, `25.8M`, and `108.4M` parameter UNets for `32`, `64`, and `256`
+  respectively.
+- Pilot size: `12` jobs.
+- Decision rule: use the exact `108M` UNet for the full fixed-capacity MNIST
+  image-size sweep if fit and speed are tolerable; otherwise use the
+  bottleneck-matched arm and report parameter count as an explicit covariate.
+
+### Checks
+- Planned before commit: `bash -n` on the capacity submit script.
+- Planned before commit: confirm the capacity manifest has `108` data rows.
+- Planned before commit: run the targeted image-runner UNet override unit test.
+
+### Next
+- Re-check queue health tomorrow.
+- If the capacity-control sweep starts cleanly, let it run behind the Adam
+  baseline.
+- Implement the 12-job MNIST same-big-UNet pilot as a separate job set.
 
 ## 2026-04-24T22:53:11Z - Image Runner W&B Monitor Cleanup
 

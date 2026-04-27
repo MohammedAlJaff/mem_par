@@ -19,6 +19,7 @@ from mp_runners.image_eval import collect_reference_memory
 from mp_runners.common import (
     PARAMETERIZATION_CHOICES,
     artifact_paths,
+    as_int_tuple,
     count_parameters,
 )
 from mp_runners.image_config import (
@@ -27,6 +28,7 @@ from mp_runners.image_config import (
     list_datasets as _list_datasets,
     list_image_sizes as _list_image_sizes,
     list_models as _list_models,
+    list_optimizers as _list_optimizers,
 )
 
 from gdfm import GDFM
@@ -186,6 +188,36 @@ def parse_args(argv=None):
         default=settings["model"],
         help="Image model family. The runner chooses the matching architecture defaults.",
     )
+    parser.add_argument(
+        "--base_channels",
+        type=int,
+        default=settings["base_channels"],
+        help="Optional UNet width override. Defaults to the selected image-size profile.",
+    )
+    parser.add_argument(
+        "--channel_mult",
+        type=as_int_tuple,
+        default=settings["channel_mult"],
+        help="Optional comma-separated UNet channel multipliers, e.g. 1,2,4,4.",
+    )
+    parser.add_argument(
+        "--attn_resolutions",
+        type=as_int_tuple,
+        default=settings["attn_resolutions"],
+        help="Optional comma-separated UNet attention resolutions, e.g. 16,8.",
+    )
+    parser.add_argument(
+        "--num_res_blocks",
+        type=int,
+        default=settings["num_res_blocks"],
+        help="Optional UNet residual blocks per resolution override.",
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=settings["dropout"],
+        help="Optional UNet dropout override.",
+    )
     # Objective and sweep settings.
     parser.add_argument(
         "--prediction_space",
@@ -262,6 +294,30 @@ def parse_args(argv=None):
         type=int,
         default=settings["batch_cap"],
         help="Maximum minibatch size; smaller datasets use the dataset size.",
+    )
+    parser.add_argument(
+        "--optimizer",
+        choices=tuple(_list_optimizers()),
+        default=settings["optimizer"],
+        help="Optimizer used for image training.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=settings["lr"],
+        help="Optimizer learning rate.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=settings["weight_decay"],
+        help="Optimizer weight decay.",
+    )
+    parser.add_argument(
+        "--momentum",
+        type=float,
+        default=settings["momentum"],
+        help="Momentum used by SGD; ignored by Adam.",
     )
     parser.add_argument(
         "--precision",
