@@ -268,6 +268,47 @@ class TestSrcPipeline(unittest.TestCase):
     def test_gmm_runtime_smoke(self):
         self._run_pipeline(self.make_gmm_config(), "gmm_subspace")
 
+    def test_resume_from_attempt_continues_absolute_steps(self):
+        config = self.make_gmm_config()
+        config.training.n_training_steps = 6
+        config.training.stop_after_step = 3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            study_dir = Path(tmpdir) / "resume_smoke"
+            first = train_run(config, study_dir, device="cpu")
+            self.assertTrue((first / "checkpoints" / "step_000003.pt").exists())
+
+            resumed = self.make_gmm_config()
+            resumed.training.n_training_steps = 6
+            resumed.training.resume_from_attempt = str(first)
+            second = train_run(resumed, study_dir, device="cpu")
+
+            self.assertTrue((second / "checkpoints" / "step_000003.pt").exists())
+            self.assertTrue((second / "checkpoints" / "step_000006.pt").exists())
+            self.assertFalse((second / "checkpoints" / "step_000000.pt").exists())
+
+            status = loads((second / "status.json").read_text())
+            self.assertEqual(status["resume"]["source_step"], 3)
+            self.assertEqual(status["resume"]["logical_target_step"], 6)
+            history = loads((second / "metrics" / "train_history.json").read_text())
+            self.assertEqual(history[-1]["step"], 6)
+
+    def test_resume_rejects_config_mismatch(self):
+        config = self.make_gmm_config()
+        config.training.n_training_steps = 3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            study_dir = Path(tmpdir) / "resume_mismatch"
+            first = train_run(config, study_dir, device="cpu")
+
+            mismatched = self.make_gmm_config()
+            mismatched.training.n_training_steps = 6
+            mismatched.training.batch_cap = 2
+            mismatched.training.batch_size = 2
+            mismatched.training.resume_from_attempt = str(first)
+            with self.assertRaisesRegex(ValueError, "config does not match"):
+                train_run(mismatched, study_dir, device="cpu")
+
     @mock.patch("mp_data.mnist.datasets.MNIST", FakeMNIST)
     def test_mnist_runtime_smoke(self):
         self._run_pipeline(self.make_mnist_config(), "mnist_runtime")

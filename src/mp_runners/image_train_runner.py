@@ -216,6 +216,25 @@ def parse_args(argv=None):
         help="Number of optimizer steps.",
     )
     parser.add_argument(
+        "--stop_after_step",
+        type=int,
+        default=settings["stop_after_step"],
+        help=(
+            "Optional planned chunk boundary. The logical final target remains "
+            "--n_training_steps."
+        ),
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        default=settings["resume_from_checkpoint"],
+        help="Resume from an explicit checkpoint path.",
+    )
+    parser.add_argument(
+        "--resume_from_attempt",
+        default=settings["resume_from_attempt"],
+        help="Resume from the latest checkpoint inside an attempt directory.",
+    )
+    parser.add_argument(
         "--ckpt_every",
         type=int,
         default=settings["ckpt_every"],
@@ -261,6 +280,15 @@ def parse_args(argv=None):
         type=int,
         default=settings["generation_monitor_samples"],
         help="Number of fixed-z samples available to train-time image monitors.",
+    )
+    parser.add_argument(
+        "--monitor_batch_size",
+        type=int,
+        default=settings["monitor_batch_size"],
+        help=(
+            "No-grad batch size for train-time image monitors. "
+            "Defaults to --batch_cap."
+        ),
     )
     parser.add_argument(
         "--eval_sample_bank_size",
@@ -368,6 +396,8 @@ def parse_args(argv=None):
     args.wandb_group_provided = bool(wandb_group_provided)
     if args.ckpt_every_provided and not args.ckpt_steps_provided:
         args.ckpt_schedule = "interval"
+    if args.resume_from_attempt and args.resume_from_checkpoint:
+        parser.error("--resume_from_attempt and --resume_from_checkpoint are mutually exclusive.")
     return args
 
 

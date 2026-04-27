@@ -226,6 +226,16 @@ class TestArtifactLayout(unittest.TestCase):
 
         self.assertEqual(make_run_id(config), make_run_id(tracked))
 
+    def test_resume_settings_do_not_change_run_identity(self):
+        config = self.make_config()
+        resumed = self.make_config()
+        resumed.training.resume_from_attempt = "/tmp/source_attempt"
+        resumed.training.resume_from_checkpoint = ""
+        resumed.training.stop_after_step = 500
+        resumed.training.resolved_ckpt_steps = (0, 500)
+
+        self.assertEqual(make_run_id(config), make_run_id(resumed))
+
 
 if __name__ == "__main__":
     unittest.main()

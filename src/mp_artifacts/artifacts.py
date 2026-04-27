@@ -26,9 +26,13 @@ Canonical layout:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -79,6 +83,10 @@ def _run_signature_payload(config):
 
     payload.get("training", {}).pop("seed", None)
     payload.get("training", {}).pop("show_progress", None)
+    payload.get("training", {}).pop("resolved_ckpt_steps", None)
+    payload.get("training", {}).pop("resume_from_attempt", None)
+    payload.get("training", {}).pop("resume_from_checkpoint", None)
+    payload.get("training", {}).pop("stop_after_step", None)
     payload.get("outputs", {}).pop("run_name", None)
     payload.get("study", {}).pop("name", None)
     payload.get("study", {}).pop("description", None)
@@ -96,6 +104,16 @@ def _config_hash(config):
     payload = _run_signature_payload(config)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:10]
+
+
+def make_config_hash(config):
+    """
+    Return the stable seed-free semantic hash used in run identifiers.
+
+    This public wrapper lets resume validation compare a candidate config with
+    the source attempt without duplicating the hash rules outside this module.
+    """
+    return _config_hash(config)
 
 
 def _attempt_base_timestamp(now=None):
@@ -188,14 +206,86 @@ def save_json(path, payload):
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2))
+    with _json_file_lock(path):
+        _save_json_atomic(path, payload)
 
 
 def load_json(path):
     """
     Load a JSON artifact from disk.
     """
-    return json.loads(Path(path).read_text())
+    path = Path(path)
+    with _json_file_lock(path):
+        return _load_json_unlocked(path)
+
+
+@contextlib.contextmanager
+def _json_file_lock(path):
+    """
+    Serialize JSON readers/writers for one artifact path.
+
+    Slurm arrays may run many attempts under the same experiment directory.
+    Without an advisory lock, concurrent read/modify/write manifest updates can
+    leave partial JSON on shared filesystems.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _load_json_unlocked(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _save_json_atomic(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    )
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def _update_json_locked(path, default_factory, update_fn):
+    """
+    Load, mutate, and atomically save one JSON file while holding its lock.
+    """
+    path = Path(path)
+    with _json_file_lock(path):
+        payload = (
+            _load_json_unlocked(path)
+            if path.exists()
+            else default_factory()
+        )
+        update_fn(payload)
+        _save_json_atomic(path, payload)
+        return payload
+
+
+def _update_existing_json_locked(path, update_fn):
+    path = Path(path)
+    with _json_file_lock(path):
+        if not path.exists():
+            return None
+        payload = _load_json_unlocked(path)
+        update_fn(payload)
+        _save_json_atomic(path, payload)
+        return payload
 
 
 def save_tensor(path, tensor):
@@ -247,7 +337,10 @@ def _allocate_attempt_id(seed_dir):
     base = _attempt_base_timestamp()
     candidate = base
     suffix = 1
-    while (attempts_dir / candidate).exists():
+    while (
+        (attempts_dir / candidate).exists()
+        or (attempts_dir / f"{DONE_ATTEMPT_PREFIX}{candidate}").exists()
+    ):
         candidate = f"{base}_{suffix:02d}"
         suffix += 1
     return candidate
@@ -405,65 +498,71 @@ def _register_attempt_in_manifests(experiment_dir, config, run_id, seed, attempt
     seed_id = context["seed_id"]
 
     experiment_manifest_path = experiment_dir / "experiment_manifest.json"
-    experiment_manifest = (
-        load_json(experiment_manifest_path)
-        if experiment_manifest_path.exists()
-        else _default_experiment_manifest(experiment_dir, config, now)
+
+    def update_experiment_manifest(experiment_manifest):
+        experiment_manifest["experiment_name"] = str(config.study.name)
+        experiment_manifest["experiment_id"] = _slug(config.study.name) or "experiment"
+        experiment_manifest["root_dir"] = str(experiment_dir.resolve())
+        experiment_manifest.setdefault("created_at", now)
+        experiment_manifest["last_updated_at"] = now
+        experiment_manifest.setdefault("runs", {})
+        experiment_manifest["runs"][run_id] = {
+            "path": _relative_path(run_dir, experiment_dir),
+            "manifest_path": _relative_path(run_dir / "run_manifest.json", experiment_dir),
+            "run_name": str(config.outputs.run_name),
+            "config_hash": _config_hash(config),
+            "last_updated_at": now,
+        }
+
+    _update_json_locked(
+        experiment_manifest_path,
+        lambda: _default_experiment_manifest(experiment_dir, config, now),
+        update_experiment_manifest,
     )
-    experiment_manifest["experiment_name"] = str(config.study.name)
-    experiment_manifest["experiment_id"] = _slug(config.study.name) or "experiment"
-    experiment_manifest["root_dir"] = str(experiment_dir.resolve())
-    experiment_manifest.setdefault("created_at", now)
-    experiment_manifest["last_updated_at"] = now
-    experiment_manifest.setdefault("runs", {})
-    experiment_manifest["runs"][run_id] = {
-        "path": _relative_path(run_dir, experiment_dir),
-        "manifest_path": _relative_path(run_dir / "run_manifest.json", experiment_dir),
-        "run_name": str(config.outputs.run_name),
-        "config_hash": _config_hash(config),
-        "last_updated_at": now,
-    }
-    save_json(experiment_manifest_path, experiment_manifest)
 
     run_manifest_path = run_dir / "run_manifest.json"
-    run_manifest = (
-        load_json(run_manifest_path)
-        if run_manifest_path.exists()
-        else _default_run_manifest(experiment_dir, run_dir, run_id, config, now)
+
+    def update_run_manifest(run_manifest):
+        run_manifest["last_updated_at"] = now
+        run_manifest.setdefault("seeds", {})
+        run_manifest["seeds"].setdefault(
+            seed_id,
+            {
+                "seed": int(seed),
+                "path": _relative_path(seed_dir, experiment_dir),
+                "manifest_path": _relative_path(seed_dir / "seed_manifest.json", experiment_dir),
+                "latest_attempt": None,
+                "latest_completed_attempt": None,
+                "last_updated_at": now,
+            },
+        )
+        run_manifest["seeds"][seed_id]["last_updated_at"] = now
+
+    _update_json_locked(
+        run_manifest_path,
+        lambda: _default_run_manifest(experiment_dir, run_dir, run_id, config, now),
+        update_run_manifest,
     )
-    run_manifest["last_updated_at"] = now
-    run_manifest.setdefault("seeds", {})
-    run_manifest["seeds"].setdefault(
-        seed_id,
-        {
-            "seed": int(seed),
-            "path": _relative_path(seed_dir, experiment_dir),
-            "manifest_path": _relative_path(seed_dir / "seed_manifest.json", experiment_dir),
-            "latest_attempt": None,
-            "latest_completed_attempt": None,
-            "last_updated_at": now,
-        },
-    )
-    run_manifest["seeds"][seed_id]["last_updated_at"] = now
-    save_json(run_manifest_path, run_manifest)
 
     seed_manifest_path = seed_dir / "seed_manifest.json"
-    seed_manifest = (
-        load_json(seed_manifest_path)
-        if seed_manifest_path.exists()
-        else _default_seed_manifest(experiment_dir, seed_dir, run_id, seed, now)
+
+    def update_seed_manifest(seed_manifest):
+        seed_manifest["last_updated_at"] = now
+        seed_manifest["latest_attempt"] = attempt_id
+        seed_manifest.setdefault("attempts", {})
+        seed_manifest["attempts"][attempt_id] = {
+            "path": _relative_path(attempt_dir, experiment_dir),
+            "status_path": _relative_path(attempt_dir / "status.json", experiment_dir),
+            "state": "created",
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    _update_json_locked(
+        seed_manifest_path,
+        lambda: _default_seed_manifest(experiment_dir, seed_dir, run_id, seed, now),
+        update_seed_manifest,
     )
-    seed_manifest["last_updated_at"] = now
-    seed_manifest["latest_attempt"] = attempt_id
-    seed_manifest.setdefault("attempts", {})
-    seed_manifest["attempts"][attempt_id] = {
-        "path": _relative_path(attempt_dir, experiment_dir),
-        "status_path": _relative_path(attempt_dir / "status.json", experiment_dir),
-        "state": "created",
-        "created_at": now,
-        "updated_at": now,
-    }
-    save_json(seed_manifest_path, seed_manifest)
 
 
 def _sync_status_into_manifests(attempt_dir, status):
@@ -479,8 +578,7 @@ def _sync_status_into_manifests(attempt_dir, status):
     seed_id = context["seed_id"]
 
     seed_manifest_path = seed_dir / "seed_manifest.json"
-    if seed_manifest_path.exists():
-        seed_manifest = load_json(seed_manifest_path)
+    def update_seed_manifest(seed_manifest):
         seed_manifest["last_updated_at"] = status["updated_at"]
         seed_manifest["latest_attempt"] = attempt_id
         seed_manifest.setdefault("attempts", {})
@@ -501,11 +599,11 @@ def _sync_status_into_manifests(attempt_dir, status):
             attempt_entry["last_error"] = status["last_error"]
         if status["state"] == "completed":
             seed_manifest["latest_completed_attempt"] = attempt_id
-        save_json(seed_manifest_path, seed_manifest)
+
+    _update_existing_json_locked(seed_manifest_path, update_seed_manifest)
 
     run_manifest_path = run_dir / "run_manifest.json"
-    if run_manifest_path.exists():
-        run_manifest = load_json(run_manifest_path)
+    def update_run_manifest(run_manifest):
         run_manifest["last_updated_at"] = status["updated_at"]
         run_manifest.setdefault("seeds", {})
         run_manifest["seeds"].setdefault(
@@ -521,11 +619,11 @@ def _sync_status_into_manifests(attempt_dir, status):
         seed_entry["last_updated_at"] = status["updated_at"]
         if status["state"] == "completed":
             seed_entry["latest_completed_attempt"] = attempt_id
-        save_json(run_manifest_path, run_manifest)
+
+    _update_existing_json_locked(run_manifest_path, update_run_manifest)
 
     experiment_manifest_path = experiment_dir / "experiment_manifest.json"
-    if experiment_manifest_path.exists():
-        experiment_manifest = load_json(experiment_manifest_path)
+    def update_experiment_manifest(experiment_manifest):
         experiment_manifest["last_updated_at"] = status["updated_at"]
         experiment_manifest.setdefault("runs", {})
         experiment_manifest["runs"].setdefault(
@@ -538,7 +636,8 @@ def _sync_status_into_manifests(attempt_dir, status):
             },
         )
         experiment_manifest["runs"][run_id]["last_updated_at"] = status["updated_at"]
-        save_json(experiment_manifest_path, experiment_manifest)
+
+    _update_existing_json_locked(experiment_manifest_path, update_experiment_manifest)
 
 
 def _remove_old_attempt_manifest_entry(attempt_dir, old_attempt_id, new_attempt_id):
@@ -555,31 +654,31 @@ def _remove_old_attempt_manifest_entry(attempt_dir, old_attempt_id, new_attempt_
     seed_id = context["seed_id"]
 
     seed_manifest_path = seed_dir / "seed_manifest.json"
-    if seed_manifest_path.exists():
-        seed_manifest = load_json(seed_manifest_path)
+    def update_seed_manifest(seed_manifest):
         seed_manifest.get("attempts", {}).pop(old_attempt_id, None)
         if seed_manifest.get("latest_attempt") == old_attempt_id:
             seed_manifest["latest_attempt"] = new_attempt_id
         if seed_manifest.get("latest_completed_attempt") == old_attempt_id:
             seed_manifest["latest_completed_attempt"] = new_attempt_id
-        save_json(seed_manifest_path, seed_manifest)
+
+    _update_existing_json_locked(seed_manifest_path, update_seed_manifest)
 
     run_manifest_path = run_dir / "run_manifest.json"
-    if run_manifest_path.exists():
-        run_manifest = load_json(run_manifest_path)
+    def update_run_manifest(run_manifest):
         seed_entry = run_manifest.get("seeds", {}).get(seed_id)
         if seed_entry is not None:
             if seed_entry.get("latest_attempt") == old_attempt_id:
                 seed_entry["latest_attempt"] = new_attempt_id
             if seed_entry.get("latest_completed_attempt") == old_attempt_id:
                 seed_entry["latest_completed_attempt"] = new_attempt_id
-            save_json(run_manifest_path, run_manifest)
+
+    _update_existing_json_locked(run_manifest_path, update_run_manifest)
 
     experiment_manifest_path = experiment_dir / "experiment_manifest.json"
-    if experiment_manifest_path.exists():
-        experiment_manifest = load_json(experiment_manifest_path)
+    def update_experiment_manifest(experiment_manifest):
         experiment_manifest["last_updated_at"] = _iso_now()
-        save_json(experiment_manifest_path, experiment_manifest)
+
+    _update_existing_json_locked(experiment_manifest_path, update_experiment_manifest)
 
 
 def _refresh_run_summary_paths(attempt_dir, old_attempt_dir, original_attempt_id):

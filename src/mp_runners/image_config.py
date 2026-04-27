@@ -176,7 +176,7 @@ DATASET_DEFAULTS = {
 
 
 PUBLIC_DATASETS = ("mnist", "celeba", "flowers", "afhq", "ffhq")
-SCALABLE_IMAGE_DATASETS = {"mnist", "flowers", "afhq"}
+SCALABLE_IMAGE_DATASETS = {"mnist", "flowers", "afhq", "ffhq"}
 
 
 DEFAULT_SETTINGS = {
@@ -200,6 +200,7 @@ DEFAULT_SETTINGS = {
 
     # Training schedule.
     "n_training_steps": 30000,
+    "stop_after_step": None,
     "ckpt_every": 2000,
     "ckpt_schedule": "bonnaire-1m",
     "ckpt_steps": "",
@@ -216,9 +217,11 @@ DEFAULT_SETTINGS = {
     # Sampling/monitoring.
     # eval_sample_bank_size: fixed-z bank saved for post-hoc checkpoint eval.
     # generation_monitor_samples: generated fixed-z samples shown in monitors.
+    # monitor_batch_size: no-grad train-monitor sampling batch; None => batch_cap.
     # sampling_steps: numerical solver steps used when turning z_init into images.
     "eval_sample_bank_size": DEFAULT_EVAL_SAMPLE_BANK_SIZE,
     "generation_monitor_samples": 64,
+    "monitor_batch_size": None,
     "sampling_steps": 24,
 
     # Data location.
@@ -265,6 +268,10 @@ DEFAULT_SETTINGS = {
     "random_projected_f_mem_resize": 16,
     "random_projected_f_mem_proj_dim": 256,
     "random_projected_f_mem_proj_seed": None,
+
+    # Resume controls. These are operational, not semantic run-identity fields.
+    "resume_from_attempt": "",
+    "resume_from_checkpoint": "",
 }
 
 
@@ -474,6 +481,7 @@ def _validate_image_counts(config):
     _validate_positive_count("n_training_steps", config.training.n_training_steps)
     _validate_positive_count("ckpt_every", config.training.ckpt_every)
     _validate_positive_count("batch_cap", config.training.batch_cap)
+    _validate_positive_count("monitor_batch_size", config.monitoring.batch_size)
     _validate_positive_count("sampling_steps", config.sampling.n_steps)
     _validate_positive_count(
         "generation_monitor_samples",
@@ -586,6 +594,14 @@ def build_config(settings):
     # Training.
     config.training.seed = int(settings["seed"])
     config.training.n_training_steps = int(settings["n_training_steps"])
+    stop_after_step = settings.get("stop_after_step")
+    config.training.stop_after_step = (
+        None if stop_after_step is None else int(stop_after_step)
+    )
+    config.training.resume_from_attempt = str(settings.get("resume_from_attempt") or "")
+    config.training.resume_from_checkpoint = str(
+        settings.get("resume_from_checkpoint") or ""
+    )
     config.training.ckpt_every = int(settings["ckpt_every"])
     config.training.ckpt_schedule = str(settings["ckpt_schedule"])
     config.training.ckpt_steps = parse_checkpoint_steps(settings["ckpt_steps"])
@@ -620,6 +636,10 @@ def build_config(settings):
     # Evaluation.
     eval_sample_bank_size = int(settings["eval_sample_bank_size"])
     monitor_samples = int(settings["generation_monitor_samples"])
+    raw_monitor_batch_size = settings.get("monitor_batch_size")
+    monitor_batch_size = (
+        batch_cap if raw_monitor_batch_size is None else int(raw_monitor_batch_size)
+    )
     config.evaluation.sample_bank_size = eval_sample_bank_size
     config.evaluation.n_samples = eval_sample_bank_size
     config.evaluation.batch_size = batch_cap
@@ -644,6 +664,9 @@ def build_config(settings):
     # Sampling.
     config.sampling.method = "heun"
     config.sampling.n_steps = int(settings["sampling_steps"])
+
+    # Train-time monitors.
+    config.monitoring.batch_size = int(monitor_batch_size)
 
     # Generation monitor.
     config.generation_monitor.enabled = bool(settings["generation_monitor"])

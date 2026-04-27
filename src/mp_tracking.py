@@ -76,6 +76,51 @@ def _wandb_slug(value, fallback):
     return text or fallback
 
 
+def _default_wandb_run_id(status):
+    """
+    Build a project-unique W&B id for one local attempt.
+
+    Attempt ids are second-resolution timestamps. In Slurm arrays, many
+    different runs can start in the same second, so the attempt id alone is not
+    unique inside a shared W&B project.
+    """
+    raw = "-".join(
+        str(part)
+        for part in (
+            status.get("config_hash"),
+            status.get("seed_id"),
+            status.get("attempt_id"),
+        )
+        if part
+    )
+    run_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("-")
+    return run_id or str(status["attempt_id"])
+
+
+def _parameterization_label(config):
+    """
+    Build the compact W&B parameterization label used for filtering runs.
+    """
+    prediction = _wandb_slug(getattr(config.framework, "prediction_space", ""), "pred")
+    loss = _wandb_slug(getattr(config.framework, "loss_space", ""), "loss")
+    return f"{prediction}{loss}"
+
+
+def _wandb_config_payload(config):
+    """
+    Build the W&B config payload with flat comparison fields.
+    """
+    payload = config_to_dict(config)
+    training = payload.get("training", {})
+    if isinstance(training, dict):
+        training.pop("resolved_ckpt_steps", None)
+        training.pop("resume_from_attempt", None)
+        training.pop("resume_from_checkpoint", None)
+        training.pop("stop_after_step", None)
+    payload["param"] = _parameterization_label(config)
+    return payload
+
+
 _AUTO_WANDB_VALUES = {"", "auto"}
 _AUTO_WANDB_PROJECT_VALUES = {
     "",
@@ -350,6 +395,7 @@ class AttemptTracker:
                 f"dataset:{self.config.data.dataset}",
                 f"arch:{self.config.network.arch}",
                 f"n_train:{self.config.data.n_train}",
+                f"param:{_parameterization_label(self.config)}",
                 f"prediction:{self.config.framework.prediction_space}",
                 f"loss:{self.config.framework.loss_space}",
                 f"seed:{self.status['seed_id']}",
@@ -509,7 +555,14 @@ class AttemptTracker:
 
         try:
             wandb_module = importlib.import_module("wandb")
-            run_id = (self.status.get("wandb") or {}).get("run_id") or self.status["attempt_id"]
+            resume_run_id = str(
+                getattr(self._wandb_config, "resume_run_id", "") or ""
+            ).strip()
+            run_id = (
+                (self.status.get("wandb") or {}).get("run_id")
+                or resume_run_id
+                or _default_wandb_run_id(self.status)
+            )
             run = wandb_module.init(
                 project=project,
                 entity=entity,
@@ -522,7 +575,7 @@ class AttemptTracker:
                 job_type=self.config.study.name,
                 notes=notes,
                 tags=self._wandb_tags(),
-                config=config_to_dict(self.config),
+                config=_wandb_config_payload(self.config),
                 reinit="finish_previous",
             )
             self._wandb_module = wandb_module

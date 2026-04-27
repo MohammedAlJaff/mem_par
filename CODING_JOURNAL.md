@@ -1,5 +1,148 @@
 # Coding Journal
 
+## 2026-04-27T00:13:44Z - Mem-Gen-Boundary Submitted And Sanity Checked
+
+### Context
+After drafting the CelebA32 mem-gen-boundary sweep, we removed the Slurm array
+concurrency cap and launched the full 84-run job array.
+
+### Changed / Observed
+- Submitted `jobs/job_sets/mem_gen_boundary_20260427/submit.sh` as Slurm job
+  `16443304` with array range `0-83`.
+- Kept the job unconstrained by node class so Slurm can allocate any suitable
+  Berzelius GPU node.
+- Confirmed all 84 tasks reached running state and created status files.
+- Confirmed all 84 status files reported `training`, active W&B, and 72
+  resolved Bonnaire checkpoints.
+- Checked stdout/stderr for `Traceback`, runtime errors, CUDA OOM, failed
+  markers, and exception markers; none were present.
+
+### Next
+- Monitor the long-running array in W&B and Slurm.
+- If a task times out or is killed, resume it with `RESUME_FROM_ATTEMPT` and
+  the same array task id.
+
+## 2026-04-26T23:56:12Z - Mem-Gen-Boundary CelebA32 Sweep Draft
+
+### Context
+We defined the first core CelebA32 grayscale boundary sweep for long
+memorization/generalization runs. The goal is to compare training-set size,
+parameterization, and seed while keeping the data recipe and optimizer-step
+horizon fixed.
+
+### Changed / Observed
+- Added `jobs/job_sets/mem_gen_boundary_20260427` with a Slurm array script,
+  README, and 84-row manifest.
+- Fixed the run family to `dataset=celeba`, `image_size=32`, the internal
+  `bonnaire_celeba32` recipe, `n_test=1024`, `batch_cap=256`, and
+  `n_training_steps=1000000`.
+- Swept `N_train` over `256, 512, 1024, 2048, 4096, 8192, 16384`, seeds
+  `0, 1, 2`, and parameterizations `x/x`, `eps/eps`, `v/v`, and `x/v`.
+- Kept `ckpt_schedule=bonnaire-1m` as the active checkpointing policy, with
+  `ckpt_every=5000` available only when switching to interval checkpointing.
+- Left node class unconstrained so Slurm can place jobs on any suitable GPU.
+- Exposed `RESUME_FROM_ATTEMPT`, `RESUME_FROM_CHECKPOINT`, and
+  `STOP_AFTER_STEP` environment overrides for manual continuation after
+  walltime or interruption.
+
+### Next
+- Syntax-check the new submit script and confirm the manifest has 84 tasks.
+- Optionally submit a single offline smoke task before launching the full
+  online array.
+
+## 2026-04-25T05:32:01Z - Parallel Slurm Job Set Fixes
+
+### Context
+We started moving from one-off GPU smoke commands to Slurm job sets that keep
+related runs in one output root and one W&B project. The first fully parallel
+Flowers64 sweep exposed two parallel-launch issues before any result sweep
+should be trusted.
+
+### Issue
+- Slurm copies submitted scripts into its internal job directory. Computing the
+  repository root from `${BASH_SOURCE[0]}` made jobs try to write `outputs/`
+  under `/var/lib/slurm/...`, which failed with permission errors.
+- Running all array tasks in parallel made many attempts start in the same
+  second. The timestamp-only attempt id was reused as the W&B backend run id,
+  so different parameterizations could upload monitor figures into the same W&B
+  run.
+- The same parallel launch also let multiple tasks read/write shared manifest
+  JSON files concurrently, producing corrupted `experiment_manifest.json` reads.
+
+### Changed / Observed
+- Added dedicated job sets under `jobs/job_sets/`:
+  - `image_sanity_20260425`
+  - `synthetic_sanity_20260425`
+  - `flowers64_n_sweep_20260425`
+- The Flowers64 set fixes `dataset=flowers,image_size=64` and sweeps
+  `N_train` across `128, 256, 512, 1024, 2048, 4096` with diagonal
+  `x/x`, `eps/eps`, and `v/v` parameterizations.
+- Submit/debug scripts now use the fixed repository path
+  `/proj/rep-learning-robotics/users/x_moalj/project_mem_par/mem_par` and
+  absolute Slurm log paths, with `MP_REPO_ROOT` as an override.
+- JSON artifact writes are now protected by per-file advisory locks and
+  atomic temp-file replacement.
+- W&B backend run ids now include `config_hash`, `seed_id`, and `attempt_id`
+  instead of only the timestamp attempt id.
+- Existing human-readable W&B run names still include the dataset, image size,
+  model, `N_train`, batch cap, parameterization, steps, and seed.
+- Added ignores for Slurm `.out/.err` files plus JSON lock/temp files.
+
+### Commands / Checks
+- `python -m unittest tests.test_artifact_layout tests.test_tracking`
+- `python -m py_compile src/mp_artifacts/artifacts.py src/mp_tracking.py`
+- `bash -n jobs/job_sets/image_sanity_20260425/submit.sh jobs/job_sets/synthetic_sanity_20260425/submit.sh jobs/job_sets/flowers64_n_sweep_20260425/submit.sh jobs/job_sets/image_sanity_20260425/debug_one.sh jobs/job_sets/synthetic_sanity_20260425/debug_one.sh jobs/job_sets/flowers64_n_sweep_20260425/debug_one.sh`
+- `git diff --check`
+
+### Results
+- Artifact-layout and tracking tests passed: 10 tests.
+- Byte-compile passed for the artifact and tracking modules.
+- Job scripts passed shell syntax checks.
+- `git diff --check` passed.
+
+### Important Note
+The W&B runs and local outputs from the failed Flowers64 array job
+`16434340` are not clean research artifacts. They may contain mixed monitor
+media because several parallel tasks shared timestamp-only W&B ids. The clean
+path is to cancel/ignore that array, move the partial output directory aside,
+and resubmit after this fix.
+
+### Next
+- Re-run the Flowers64 job set and verify that each W&B run id/name pair maps
+  to exactly one parameterization.
+- Submit the image and synthetic sanity job sets after the Flowers64 set is
+  stable for a few minutes.
+
+## 2026-04-25T02:34:33Z - FM-Only Experiment Scope
+
+### Context
+Before launching larger NeurIPS-facing sweeps, clarified whether current
+runner outputs should be treated as FM, VP, or DDPM experiments.
+
+### Intent
+Keep the active paper story clean: current image and synthetic train/eval
+runs are FM runs with deterministic ODE sampling, while VP/DDPM-like code stays
+as dormant lower-level infrastructure unless explicitly promoted later.
+
+### Changed / Observed
+- Documented that image and synthetic train runners hard-code
+  `config.framework.family = "fm"`.
+- Documented that image generation uses deterministic Heun sampling from the
+  saved fixed `z_init` bank, and synthetic generation exposes only Euler/Heun.
+- Marked `vp_sde` / VP reverse-SDE helpers in `gdfm.samplers` as tests/examples
+  infrastructure, not part of normal train/eval runs.
+- Clarified that Bonnaire-close CelebA32/Image32 means model/data recipe
+  compatibility, not Bonnaire's integer-timestep DDPM objective or sampler.
+
+### Commands / Checks
+- `git diff --check`
+
+### Results
+- Docs-only whitespace check passed.
+
+### Next
+- Proceed with FM experiment sweeps.
+
 ## 2026-04-25T01:45:22Z - Pre-Submission Train/Eval Runner Split
 
 ### Context

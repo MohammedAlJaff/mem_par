@@ -81,6 +81,12 @@ class TestAttemptTracker(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmpdir:
                 experiment_dir = Path(tmpdir) / "tracking_demo"
                 attempt_dir = create_run_layout(experiment_dir, config)
+                initial_status = load_json(attempt_dir / "status.json")
+                expected_wandb_id = (
+                    f"{initial_status['config_hash']}-"
+                    f"{initial_status['seed_id']}-"
+                    f"{initial_status['attempt_id']}"
+                )
                 figure_path = attempt_dir / "figures" / "demo.png"
                 figure_path.parent.mkdir(parents=True, exist_ok=True)
                 figure_path.write_bytes(b"fake image")
@@ -100,7 +106,7 @@ class TestAttemptTracker(unittest.TestCase):
                 )
                 tracker.close()
 
-                self.assertEqual(fake.init_calls[0]["id"], attempt_dir.name)
+                self.assertEqual(fake.init_calls[0]["id"], expected_wandb_id)
                 self.assertEqual(fake.init_calls[0]["project"], "memparam-gmm_subspace-mlp")
                 self.assertEqual(
                     fake.init_calls[0]["name"],
@@ -109,6 +115,8 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertEqual(fake.init_calls[0]["group"], "gmm_subspace-mlp-steps200")
                 self.assertEqual(fake.init_calls[0]["mode"], "offline")
                 self.assertTrue(fake.init_calls[0]["dir"].endswith("logs/wandb"))
+                self.assertEqual(fake.init_calls[0]["config"]["param"], "xx")
+                self.assertIn("param:xx", fake.init_calls[0]["tags"])
                 self.assertEqual(
                     fake.runs[0].logs[0],
                     ({"train/loss": 1.25, "train/step": 4}, None),
@@ -145,7 +153,7 @@ class TestAttemptTracker(unittest.TestCase):
                 status = load_json(attempt_dir / "status.json")
                 self.assertTrue(status["wandb"]["enabled"])
                 self.assertFalse(status["wandb"]["active"])
-                self.assertEqual(status["wandb"]["run_id"], attempt_dir.name)
+                self.assertEqual(status["wandb"]["run_id"], expected_wandb_id)
                 self.assertEqual(
                     status["wandb"]["run_name"],
                     "gmm_subspace-mlp-N256-B64-x_x-steps200-s3",
@@ -155,7 +163,7 @@ class TestAttemptTracker(unittest.TestCase):
 
                 replay_tracker = AttemptTracker(config, attempt_dir)
                 replay_tracker.close()
-                self.assertEqual(fake.init_calls[-1]["id"], attempt_dir.name)
+                self.assertEqual(fake.init_calls[-1]["id"], expected_wandb_id)
         finally:
             self.restore_wandb(old_module)
 
@@ -190,6 +198,24 @@ class TestAttemptTracker(unittest.TestCase):
                     "gmm_subspace-mlp-N256-B64-x_x-steps200-s3",
                 )
                 self.assertEqual(fake.init_calls[-1]["group"], "gmm_subspace-mlp-steps200")
+                self.assertEqual(fake.init_calls[-1]["config"]["param"], "xx")
+                self.assertIn("param:xx", fake.init_calls[-1]["tags"])
+
+                eps_config = self.make_config()
+                eps_config.framework.prediction_space = "eps"
+                eps_config.framework.loss_space = "eps"
+                eps_config.tracking.wandb.enabled = True
+                eps_config.tracking.wandb.mode = "offline"
+                with mock.patch.dict("os.environ", {"WANDB_PROJECT": "env_project"}):
+                    attempt_dir = create_run_layout(experiment_dir, eps_config)
+                    tracker = AttemptTracker(eps_config, attempt_dir)
+                    tracker.close()
+                self.assertEqual(
+                    fake.init_calls[-1]["name"],
+                    "gmm_subspace-mlp-N256-B64-eps_eps-steps200-s3",
+                )
+                self.assertEqual(fake.init_calls[-1]["config"]["param"], "epseps")
+                self.assertIn("param:epseps", fake.init_calls[-1]["tags"])
 
                 explicit = self.make_config()
                 explicit.tracking.wandb.enabled = True
@@ -225,6 +251,44 @@ class TestAttemptTracker(unittest.TestCase):
             "gmm_subspace-mlp-N256-B64-eps_eps-steps200-s3",
         )
         self.assertEqual(config.tracking.wandb.name, identity["name"])
+
+    def test_wandb_resume_id_reuses_source_run_and_hides_operational_fields(self):
+        config = self.make_config()
+        config.tracking.wandb.enabled = True
+        config.tracking.wandb.mode = "offline"
+        config.tracking.wandb.resume_run_id = "source-wandb-run"
+        config.training.resume_from_attempt = "/tmp/source"
+        config.training.resume_from_checkpoint = ""
+        config.training.stop_after_step = 10
+        fake = types.SimpleNamespace(init_calls=[], runs=[])
+
+        def init(**kwargs):
+            fake.init_calls.append(kwargs)
+            run = FakeWandbRun(kwargs["id"], kwargs["name"])
+            fake.runs.append(run)
+            return run
+
+        fake.init = init
+        fake.Image = lambda path, caption=None: {
+            "image_path": path,
+            "caption": caption,
+        }
+        old_module = self.install_fake_wandb(fake)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                experiment_dir = Path(tmpdir) / "tracking_demo"
+                attempt_dir = create_run_layout(experiment_dir, config)
+                tracker = AttemptTracker(config, attempt_dir)
+                tracker.close()
+
+                self.assertEqual(fake.init_calls[-1]["id"], "source-wandb-run")
+                training_config = fake.init_calls[-1]["config"]["training"]
+                self.assertNotIn("resume_from_attempt", training_config)
+                self.assertNotIn("resume_from_checkpoint", training_config)
+                self.assertNotIn("stop_after_step", training_config)
+                self.assertNotIn("resolved_ckpt_steps", training_config)
+        finally:
+            self.restore_wandb(old_module)
 
     def test_wandb_explicit_marker_keeps_manual_name(self):
         config = self.make_config()
