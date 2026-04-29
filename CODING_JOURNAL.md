@@ -1,5 +1,67 @@
 # Coding Journal
 
+## 2026-04-29T04:13:50Z - Eval Notebook End-of-Day State
+
+### Context
+The immediate eval-prototyping goal narrowed to the local notebook under
+`tmp/eval_prototype_runs`: compare train-vs-test loss using whole datasets, then
+probe model memorization by comparing generated samples against the full saved
+train set.
+
+### Notebook State
+- Notebook:
+  `tmp/eval_prototype_runs/celeba_adam_N16384_s0_allparams/train_loss_curves.ipynb`.
+- `tmp/` is ignored, so the notebook edits are local-only for now. This journal
+  entry is the pushed record of what exists there.
+- Sections currently present:
+  - `Train Loss Curves`.
+  - `Prototype Metric Loader`.
+  - `Sample Grid`.
+  - `Memorization Probe`.
+
+### Full Train-vs-Test Loss
+- The metric-loader cell now treats CelebA `test` as the real test set for this
+  CelebA-only run family.
+- It loads the full exact saved run train tensor: `16,384` images.
+- It materializes/caches the CelebA test split under the ignored sandbox.
+- It keeps the saved validation reference tensor only as provenance/context.
+- `LOSS_EVAL_BATCH_SIZE=256` is a streaming chunk size, not a subsample size.
+  Every train/test example is included; batching is only for memory.
+- The output payload name is
+  `prototype_single_checkpoint_full_train_vs_test_loss`.
+- The summary includes:
+  - `test_minus_train_random_t_loss`.
+  - `test_over_train_random_t_loss`.
+  - full train/test counts and the streaming batch size.
+
+### Memorization Probe
+- Added a new `Memorization Probe` cell.
+- It generates or reuses `MEM_SAMPLE_COUNT=64` model samples from the saved
+  `z_init` prefix.
+- It compares each generated sample against every saved train image.
+- The primary memorization statistic is nearest-neighbor ratio
+  `r = d1 / d2`, thresholded as `r < rho`.
+- It currently computes two spaces:
+  - `raw_pixels`.
+  - `random_projected_pixels`, using the run's cached projection matrix and
+    cached projected train/reference vectors.
+- It also computes a same-count CelebA test baseline against the train set, so
+  generated `f_mem` can be interpreted relative to real held-out images.
+- Intended outputs:
+  - `metrics/prototype_memorization_probe_step_<step>_n<N>.json`.
+  - `metrics/prototype_memorization_samples_step_<step>_n<N>.pt`.
+  - `figures/prototype_memorization_nn_pairs_step_<step>_n<K>.png`.
+
+### Notes For Next Session
+- The notebook cells were syntax-checked but not executed in this shell because
+  the shell Python did not have `torch` loaded. Run them in the project Jupyter
+  kernel / `mem_param_env`.
+- Next productive move: execute the metric-loader cell for `eps/eps` final
+  checkpoint, then execute the memorization probe. If it behaves, loop over all
+  four parameterizations and selected checkpoints.
+- Decide later whether to promote this local notebook/prototype into tracked
+  code under `scripts/eval/`, a tracked notebook under `notebooks/`, or both.
+
 ## 2026-04-29T03:35:22Z - Focused Eval Prototype Inventory
 
 ### Context
