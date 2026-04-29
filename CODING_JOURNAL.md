@@ -1,5 +1,135 @@
 # Coding Journal
 
+## 2026-04-29T03:18:27Z - Morning Checkup: Crashed Capacity Runs and Eval Prototypes
+
+### Context
+The W&B runs view showed several `mem_gen_boundary_capacity_20260427` rows as
+`Crashed`, so I re-checked the repo, journal, Slurm queue/accounting, local
+status files, and the ignored evaluation-prototyping sandboxes.
+
+### Current Repo State
+- Branch is `main` at `bf8425d` / `origin/main`.
+- The worktree is intentionally broad and dirty. Notable groups:
+  - Modified tracking/config/metric/trainer files and tests.
+  - Deleted legacy top-level job scripts under `jobs/`.
+  - Untracked job-set folders, logs, notebooks, scripts, `.codex`,
+    `scratch.py`, `tea_debug.log`, and `tests/test_visualization.py`.
+- This entry is journal-only; avoid accidentally staging unrelated dirty-tree
+  work when pushing reminders.
+
+### Current Job State
+- Active queue: capacity array `16443588` plus interactive job `16458204`.
+- Capacity array `16443588` is now `40 completed / 61 running / 7 timed out`.
+  Task `16443588_22` completed during this check.
+- The seven W&B `Crashed` rows are Slurm `TIMEOUT`, not fresh application
+  exceptions. They are tasks `15-21`:
+  - `base64_m124`, `N=256`, `x/v`, seed `0`.
+  - `base64_m124`, `N=256`, `x/x`, seed `1`.
+  - `base64_m124`, `N=256`, `eps/eps`, seed `1`.
+  - `base64_m124`, `N=256`, `v/v`, seed `1`.
+  - `base64_m124`, `N=256`, `x/v`, seed `1`.
+  - `base64_m124`, `N=256`, `x/x`, seed `2`.
+  - `base64_m124`, `N=256`, `eps/eps`, seed `2`.
+- Those timed-out attempts ended around `967.5k-975k / 1e6` training steps,
+  roughly `46-60` minutes short. Slurm killed them at the 30h walltime, so
+  local `status.json` files still say `training`; trust Slurm/W&B over those
+  stale status files until they are resumed or reconciled.
+- The remaining running capacity tasks are in ranges `23-35`, `48-71`, and
+  `84-107`. Several are still likely to time out: for example task `107` was
+  near `898k / 1e6` with ETA about `3h06m` while the Slurm elapsed clock was
+  already past `27h`.
+- Other known states remain:
+  - Adam CelebA boundary sweep `16443304` / `mem_gen_boundary_20260427`:
+    `84/84` complete.
+  - SGD+momentum sweep `16443527`: diagonal tasks complete; started `x/v`
+    tasks cancelled after NaNs and local statuses are stale `training`.
+  - Lower-LR SGD+momentum smoke `16443574_3`: complete.
+  - Historical FFHQ/Flowers/sanity failures are still visible in accounting
+    and local statuses; no new active jobs from those sets were found.
+
+### Eval Prototype Sandboxes
+- Repo-local ignored sandbox:
+  `tmp/eval_prototype_runs/celeba_adam_N16384_s0_allparams`.
+  It is a minimal copy of four completed Adam CelebA32 `N=16384`, seed `0`
+  attempts: `x/x`, `eps/eps`, `v/v`, and `x/v`.
+- The sandbox copies are normal files, not hardlinks; W&B is disabled in copied
+  configs. Do not treat metrics written there as original run artifacts.
+- Each copied attempt has `72` checkpoints, plus copied status/artifact files
+  and fresh local metrics/figures/log space.
+- Prototype files currently present:
+  - `SANDBOX_MANIFEST.json` and `PROTOTYPE_COPY.md`.
+  - `prepare_celeba_adam_N16384_s0_allparams.py`.
+  - `train_loss_curves.ipynb`.
+  - `figures/train_loss_curves.svg` and `figures/train_loss_curves.png`.
+- Additional `/tmp` evaluation/prototype leftovers checked:
+  - `/tmp/train_loss_curves.validated.json`: validated notebook JSON for the
+    train-loss-curves workflow.
+  - `/tmp/synthetic_train_runner_ipynb.json` and
+    `/tmp/image_train_runner_ipynb.json`: runner notebook prototypes.
+  - `/tmp/synthetic_runner_help.txt` and `/tmp/image_runner_help.txt`: captured
+    runner CLI help.
+  - `/tmp/eval_e1_per_timestep.py`: older ResNKF E1 per-timestep test-MSE
+    plotting script, outputting `scripts/eval/e1_test_mse_per_timestep`.
+  - `/tmp/attack_generator_smoke`: contains generator/phase checkpoints and
+    `offline_eval/summary.json` with smoke metrics
+    `attack_success_rate=1.0`, `phase_specificity=1.0`, and zero perturbation
+    norms/deviations.
+  - `/tmp/ag_eval_help.txt` and `/tmp/atk_eval_help.txt`: captured
+    `offline_eval.py --help`; the newer `ag` version includes
+    `--attack-surface {image,state}` and
+    `--diffusion-grad-last-n-steps`.
+
+### Reminders
+- After `mem_gen_boundary_capacity_20260427` stops moving, decide whether to
+  resume timed-out tasks `15-21` and any new timeouts using:
+  `RESUME_FROM_ATTEMPT=/path/to/attempt sbatch --array=<task_id> jobs/job_sets/mem_gen_boundary_capacity_20260427/submit.sh`.
+- Do not launch the lower-LR full SGD+momentum array or capacity resumes
+  without an explicit compute decision.
+- Keep surfacing the larger-model fill-in decision until resolved: after the
+  capacity sweep finishes, decide whether to add larger-model `N=512,1024,4096,8192`
+  points or accept the current `256/2048/16384` subset.
+- Later cleanup should reconcile stale local `training` statuses caused by
+  Slurm cancellation/timeouts so the local status summary stops under-reporting
+  crashes.
+
+### Commands / Checks
+- `git status --short --branch`
+- `tail -n 80 CODING_JOURNAL.md`
+- `squeue -u x_moalj`
+- `sacct -S 2026-04-25 -u x_moalj --format=JobID,JobName%30,State,ExitCode,Elapsed,MaxRSS --parsable2`
+- `sacct -j 16443588 --format=JobID,State,Elapsed --parsable2`
+- `find tmp/eval_prototype_runs ...`
+- `find /tmp ...`
+- `jq` status summaries over `outputs/job_sets/*/status.json`
+
+## 2026-04-28T13:46:18Z - Daily Option: Larger-Model CelebA N-Sweep Fill-In
+
+### Context
+During the crash/rerun review, we checked whether the desired CelebA32
+`n_train` sweep with larger UNets already exists locally.
+
+### Observed
+- The original CelebA32 Adam boundary sweep, `mem_gen_boundary_20260427`,
+  already completed the full `N={256,512,1024,2048,4096,8192,16384}` grid for
+  `x/x`, `eps/eps`, `v/v`, and `x/v` with 3 seeds using the baseline
+  `base32_m124` UNet (`3.9M` params).
+- The active capacity-control sweep,
+  `mem_gen_boundary_capacity_20260427`, already covers a sensible subset for
+  larger models: `N={256,2048,16384}`, all four parameterizations, 3 seeds,
+  and model labels `base32_m124`, `base64_m124`, and `base64_m1244`.
+- The two larger models in that sweep are about `15.6M` params
+  (`base64_m124`) and `25.8M` params (`base64_m1244`).
+
+### Daily Option Until Decided
+- Keep bringing up this option in morning checkups until explicitly decided:
+  after `mem_gen_boundary_capacity_20260427` finishes, decide whether the
+  three-point larger-model subset is enough or whether to launch a fill-in
+  sweep for the missing larger-model N points: `512`, `1024`, `4096`, and
+  `8192`.
+- Recommended default: wait for the active capacity sweep to finish first.
+  Only fill in the missing N points if the `256/2048/16384` results show a
+  moving boundary or otherwise leave the larger-model story ambiguous.
+
 ## 2026-04-27T02:47:12Z - Lower-LR SGD+Momentum x/v Smoke Queued
 
 ### Context
