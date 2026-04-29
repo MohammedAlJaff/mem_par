@@ -1,5 +1,104 @@
 # Coding Journal
 
+## 2026-04-29T03:35:22Z - Focused Eval Prototype Inventory
+
+### Context
+The thing to preserve from this morning is the local evaluation-prototyping
+state under `tmp/eval_prototype_runs`, not only the Slurm/W&B job state. This
+entry is the tighter reminder for that workstream.
+
+### Local-Only Sandbox
+- `tmp/` is ignored by `.gitignore`; do not `git add tmp/` unless we first
+  extract small, intentional source files.
+- `tmp/eval_prototype_runs` is about `14G`, mostly copied checkpoints and
+  tensors. Treat it as a local scratch/eval artifact cache, not as a pushable
+  repo payload.
+- Active sandbox:
+  `tmp/eval_prototype_runs/celeba_adam_N16384_s0_allparams`.
+- Purpose from `SANDBOX_MANIFEST.json`: worst-case CelebA Adam `N=16384`,
+  seed `0`, all parameterizations, for local evaluation prototyping.
+- Copy style: minimal normal file copies, not hardlinks: artifacts,
+  checkpoints, status, and train history copied; fresh metrics/figures/log
+  space inside the sandbox.
+- W&B is disabled in copied configs/status summaries. Any metric written inside
+  this sandbox is a prototype metric, not an original run artifact.
+
+### Copied Attempts
+- Four completed `mem_gen_boundary_20260427` Adam CelebA32 attempts are copied:
+  `x/x`, `eps/eps`, `v/v`, and `x/v`.
+- All four local copied statuses are `trained`.
+- Each attempt has `72` checkpoints, including `step_000000.pt` through
+  `step_1000000.pt`, plus copied train/reference tensors and projection
+  artifacts.
+- Each `metrics/train_history.json` has `2001` rows from step `1` to
+  `1000000`.
+- Final copied train-history losses:
+  - `x/x`: `0.06057939678430557`.
+  - `eps/eps`: `0.07373814284801483`.
+  - `v/v`: `0.18088839948177338`.
+  - `x/v`: `0.18286867439746857`.
+
+### Prep Script
+- `tmp/eval_prototype_runs/prepare_celeba_adam_N16384_s0_allparams.py`
+  creates/syncs the sandbox.
+- It copies each source attempt with `rsync -a`, rewrites absolute paths in
+  `status.json` and `artifacts/run_summary.json`, disables W&B in
+  `artifacts/config.json`, syncs `metrics/train_history.json`, validates that
+  paths point inside the sandbox, and writes `SANDBOX_MANIFEST.json` plus
+  `PROTOTYPE_COPY.md`.
+- It also supports `--sync-train-history-only` for refreshing histories without
+  rebuilding the whole 14G sandbox.
+
+### Notebook Prototype
+- `tmp/eval_prototype_runs/celeba_adam_N16384_s0_allparams/train_loss_curves.ipynb`
+  currently has three sections:
+  - `Train Loss Curves`.
+  - `Prototype Metric Loader`.
+  - `Sample Grid`.
+- The train-loss section discovers the four copied attempts and writes:
+  - `figures/train_loss_curves.png` (`1280 x 800`).
+  - `figures/train_loss_curves.svg`.
+- The metric-loader section currently selects `eps/eps` at `step=1000000`,
+  runs on CPU, and loads:
+  - `train_tensor`: `(16384, 1, 32, 32)`.
+  - `reference_tensor`: `(1024, 1, 32, 32)`.
+  - `z_init`: `(16384, 1, 32, 32)`.
+  - Model class `GDFM` with `3,917,409` parameters.
+- The single-checkpoint metric smoke writes
+  `metrics/prototype_single_checkpoint_metric.json` inside the copied
+  `eps/eps` attempt. Preview values:
+  - reference random-t loss: `0.08594270050525665`.
+  - train random-t loss: `0.05378539487719536`.
+  - reference-minus-train random-t loss: `0.032157305628061295`.
+  - fixed `t=0.5`: reference `0.038509249687194824`, train
+    `0.028474632650613785`.
+  - fixed `t=0.75`: reference `0.11610203981399536`, train
+    `0.06398393213748932`.
+- The sample-grid smoke uses `eps/eps`, `step=1000000`, Heun sampling with
+  `50` steps, `SAMPLE_COUNT=40`, `SAMPLE_BATCH_SIZE=10`, and writes:
+  `figures/prototype_samples_eps_eps_step_1000000_n40.png`
+  (`2250 x 1216`). An earlier `n2` grid also exists.
+
+### Next Eval Prototype Steps
+- Keep the 14G sandbox local and ignored; promote only durable code/notes out
+  of it when the workflow stabilizes.
+- Turn the notebook metric smoke into a loop over all four parameterizations
+  and selected checkpoints, then write a compact comparison table/figure.
+- Decide whether the tracked home should be `scripts/eval/`, a notebook under
+  `notebooks/`, or both. The prep script and notebook are the likely source
+  material to extract.
+- Keep W&B disabled for sandbox evaluation until the metric definition is
+  settled; then decide whether to log final eval artifacts back to the real
+  runs or to a separate eval-only group.
+
+### Commands / Checks
+- `find tmp/eval_prototype_runs -maxdepth 5 ...`
+- `du -sh tmp/eval_prototype_runs`
+- `jq` over `SANDBOX_MANIFEST.json`
+- `jq` over `train_loss_curves.ipynb` sections, code cells, and outputs
+- `find tmp/eval_prototype_runs/... -name train_history.json ...`
+- `file` on generated PNG/SVG artifacts
+
 ## 2026-04-29T03:18:27Z - Morning Checkup: Crashed Capacity Runs and Eval Prototypes
 
 ### Context
