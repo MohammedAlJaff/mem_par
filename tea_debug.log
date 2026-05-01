@@ -1,0 +1,17 @@
+2026/04/19 06:05:54 main.go:149: ERROR main: failed to get logger path error="error opening log file: open /home/x_moalj/.cache/wandb/logs/core-debug-20260419_060554.log: read-only file system"
+2026/04/19 06:05:54 unixlistener_unix.go:24: WARN server/listeners: couldn't open Unix socket in os.TempDir() error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-153-2201875250/socket\": listen unix /tmp/wandb-2-153-2201875250/socket: setsockopt: operation not permitted"
+2026/04/19 06:05:54 main.go:198: ERROR main: Serve() returned error error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-153-3289422548/socket\": listen unix /tmp/wandb-2-153-3289422548/socket: setsockopt: operation not permitted\nserver/listeners: failed to listen on localhost: listen tcp 127.0.0.1:0: socket: operation not permitted"
+2026/04/19 06:06:06 main.go:149: ERROR main: failed to get logger path error="error opening log file: open /home/x_moalj/.cache/wandb/logs/core-debug-20260419_060606.log: read-only file system"
+2026/04/19 06:06:06 unixlistener_unix.go:24: WARN server/listeners: couldn't open Unix socket in os.TempDir() error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-270-4193674558/socket\": listen unix /tmp/wandb-2-270-4193674558/socket: setsockopt: operation not permitted"
+2026/04/19 06:06:06 main.go:198: ERROR main: Serve() returned error error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-270-3036615812/socket\": listen unix /tmp/wandb-2-270-3036615812/socket: setsockopt: operation not permitted\nserver/listeners: failed to listen on localhost: listen tcp 127.0.0.1:0: socket: operation not permitted"
+2026/04/20 02:13:16 main.go:149: ERROR main: failed to get logger path error="error opening log file: open /home/x_moalj/.cache/wandb/logs/core-debug-20260420_021316.log: read-only file system"
+2026/04/20 02:13:16 unixlistener_unix.go:24: WARN server/listeners: couldn't open Unix socket in os.TempDir() error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-230-3065484901/socket\": listen unix /tmp/wandb-2-230-3065484901/socket: setsockopt: operation not permitted"
+2026/04/20 02:13:16 main.go:198: ERROR main: Serve() returned error error="server/listeners: failed to open Unix socket on \"/tmp/wandb-2-230-1370113013/socket\": listen unix /tmp/wandb-2-230-1370113013/socket: setsockopt: operation not permitted\nserver/listeners: failed to listen on localhost: listen tcp 127.0.0.1:0: socket: operation not permitted"
+
+2026-05-01 mem-boundary/capacity recovery summary
+- Fixed all-DONE mem-boundary eval runner and FID range handling.
+- Smoke job 16467047 completed successfully with finite metrics.
+- Submitted full eval array 16473994_[0-83%4] and dependent combine 16473995.
+- Diagnosed capacity resume array 16466870 failures: 52/52 failed before training due to shell typo `{AWK:-awk}`.
+- Patched resume wrapper and submitted canary 16473993_[107%1].
+- Do not submit remaining capacity resume tasks until canary gets past setup.

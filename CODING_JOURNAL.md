@@ -1,5 +1,201 @@
 # Coding Journal
 
+## 2026-05-01T02:50:24+02:00 - Capacity Resume Wave Submitted
+
+### Context
+Before touching the unfinished capacity-control outputs, we made a full
+directory-level safety snapshot of the capacity output tree:
+`outputs/job_sets/mem_gen_boundary_capacity_20260427_BACKUP_20260501_023904`.
+The source tree is about `1.3T` while the filesystem had about `887G` free, so
+a physical byte-for-byte copy would not fit. The backup is therefore a
+hardlink snapshot. Small mutable metadata/log files in the backup were
+de-linked after creation so status/manifests/logs preserve the pre-resume
+state; large checkpoint/tensor files remain hardlinked.
+
+### Non-DONE Capacity Diagnosis
+- Reconciled `jobs/job_sets/mem_gen_boundary_capacity_20260427/manifest.tsv`
+  against local attempt `status.json` files and Slurm logs.
+- Found `52` non-`DONE_` capacity-control runs.
+- All `52` classify as Slurm walltime terminations, not Python/app failures:
+  stderr evidence consistently ended with `DUE TO TIME LIMIT`.
+- No CUDA OOM, traceback, data/config error, or missing W&B run id was found
+  among the non-`DONE_` attempts.
+- The stale attempts were generally near completion, around
+  `895k-990.5k / 1,000,000` optimizer steps.
+
+### Resume Submission
+- Generated resume manifest:
+  `jobs/job_sets/mem_gen_boundary_capacity_20260427/resume_undone_20260501.tsv`.
+- Generated capped resume wrapper:
+  `jobs/job_sets/mem_gen_boundary_capacity_20260427/resume_undone_20260501.sbatch`.
+- Submitted Slurm array job `16466870` (`mp_mgb_cap_resume`).
+- Resume array details:
+  - `52` tasks;
+  - task ids:
+    `15,16,17,18,19,20,21,24,25,26,27,28,29,30,31,32,33,34,35,50,52,53,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107`;
+  - concurrency cap `%8`;
+  - walltime `08:00:00`;
+  - initial state `PENDING (Priority)`;
+  - initial priority about `355382`.
+- Task `24` was included intentionally: the scratch no-W&B full resume
+  completed under `tmp/resume_full_20260430`, but the canonical capacity tree
+  and canonical W&B run still needed a proper online resume/finalization.
+
+### W&B Expectation
+- All `52` source attempts have saved W&B run IDs.
+- Resume code should pass each source run id into `wandb.init(...,
+  resume="allow")`.
+- Expected W&B behavior: existing runs in project
+  `memparam-mem_gen_boundary_capacity_20260427`, group
+  `mem_gen_boundary_capacity_20260427`, should receive appended metrics from
+  their source checkpoint through step `1,000,000` and finish.
+- Unexpected behavior to watch for: creation of unrelated duplicate W&B runs,
+  W&B init warnings, or completed local attempts whose W&B run remains marked
+  crashed.
+
+### Monitor
+- Queue:
+  `squeue -j 16466870`.
+- Logs:
+  `jobs/job_sets/mem_gen_boundary_capacity_20260427/slurm_resume_20260501/`.
+
+## 2026-04-30T02:17:06+02:00 - Full No-W&B Resume Test Submitted
+
+### Context
+We verified that the CelebA capacity-control runs that looked crashed in W&B
+were SLURM walltime terminations, not Python/app failures: accounting showed
+`TIMEOUT` at the `30:00:00` limit and stderr ended with `DUE TO TIME LIMIT`.
+We then tested the resume mechanism on a duplicated copy of one timed-out
+attempt.
+
+### Resume Smoke Result
+- Source task: capacity array task `24`, CelebA32, `N=256`, `base64_m1244`,
+  `x/x`, seed `0`, config hash `1237b733a1`.
+- Original attempt used for duplication:
+  `outputs/job_sets/mem_gen_boundary_capacity_20260427/runs/mem_gen_boundary_capacity_20260427_celeba32_N256_B256_base64_m1244_x_x_steps1000000_s0-1237b733a1/seeds/seed_0000/attempts/20260428_012613`.
+- Fresh duplicated smoke source:
+  `tmp/resume_smoke_20260430/source_attempt_task24`.
+- Smoke job `16463599` resumed from `step_945000` to `step_950000` with
+  W&B disabled and completed successfully:
+  - SLURM state `COMPLETED`, exit `0:0`, elapsed `00:11:32`.
+  - Attempt state `trained`.
+  - W&B status in the new attempt: `enabled=false`, `active=false`.
+  - New checkpoint saved: `checkpoints/step_950000.pt`.
+- Completed smoke output:
+  `tmp/resume_smoke_20260430/outputs/runs/mem_gen_boundary_capacity_20260427_celeba32_N256_B256_base64_m1244_x_x_steps1000000_s0-1237b733a1/seeds/seed_0000/attempts/DONE_20260430_013543`.
+
+### Full Resume Submitted
+- Fresh duplicate for the full continuation:
+  `tmp/resume_full_20260430/source_attempt_task24`.
+- Runner:
+  `tmp/resume_full_20260430/run_resume_task24_full.py`.
+- Submit script:
+  `tmp/resume_full_20260430/resume_task24_full_no_wandb.sbatch`.
+- Submitted SLURM job: `16463631` (`mp_resume_full`).
+- At journal time, `squeue`/`sacct` showed:
+  - state `PENDING` / `PD (Priority)`;
+  - timelimit `04:00:00`;
+  - no node assigned yet;
+  - no stdout/stderr logs yet.
+- Expected logs once it starts:
+  - `tmp/resume_full_20260430/slurm/mp_resume_full_16463631.out`;
+  - `tmp/resume_full_20260430/slurm/mp_resume_full_16463631.err`.
+- Expected first useful stdout lines:
+  - `wandb_enabled=False`;
+  - `resuming source_step=945000 target_step=1000000`;
+  - `loaded resume checkpoint step=945000`;
+  - `training started steps=945001..1000000`.
+
+### Runtime Estimate
+- Exact original task `24` reported at `step=945000`:
+  `steps/s=9.18`, ETA `01:39:54`.
+- It reached `step=990500` before the 30h walltime termination, with ETA
+  `00:17:15`.
+- The no-W&B smoke continuation took `660.48s` for `5,000` resumed steps
+  (`0.1321s/step`), implying about `2h01m` for the remaining `55,000` steps.
+- Practical expectation for the full resume: around `2h`, with a rough range
+  of `1h40m` to `2h10m`; the requested `04:00:00` walltime should be safe.
+
+### Notes
+- The full resume should read from the duplicated source and write only under
+  `tmp/resume_full_20260430/outputs`.
+- The copied `source_attempt_task24/status.json` still contains stale absolute
+  metadata paths pointing at the original attempt. The trainer's actual resume
+  paths are derived from `--resume_from_attempt` and the duplicated
+  `source_checkpoint`, so this should not make it write into the original
+  folder. If desired later, scrub the duplicate status metadata for cosmetic
+  cleanliness.
+- Monitor with:
+  `squeue -u x_moalj`
+  and
+  `tail -f tmp/resume_full_20260430/slurm/mp_resume_full_16463631.out`.
+
+## 2026-04-29T04:20:21Z - Reminder: Parameterization as a Memorization Axis
+
+### Context
+As we turn the `tmp/eval_prototype_runs` notebook work into real measurements,
+treat diffusion parameterization as a first-class experimental dimension for
+memorization analysis. In this run family that means comparing `x/x`,
+`eps/eps`, `v/v`, and `x/v` while holding the dataset, seed family, checkpoint
+step, sampler, and memorization metric fixed where possible.
+
+### Working Hypothesis
+- Parameterization is not just a quality/convergence detail. It changes the
+  prediction target and loss geometry, and can change target scale, timestep
+  weighting, gradient flow, and which image details are easiest for the model to
+  fit or reproduce.
+- For our CelebA probes, report memorization by parameterization alongside
+  train-vs-test loss. Do not only aggregate by `N`, architecture, or checkpoint.
+- Keep the caveat explicit: the papers below strongly support other
+  memorization axes, while the parameterization-to-memorization link is our
+  local hypothesis to test rather than a settled claim.
+
+### Axes To Track
+- Parameterization / prediction space: `x`, `eps`, `v`, and mixed settings such
+  as `x/v`.
+- Model capacity: parameter count, U-Net width/depth, and effective
+  over-parameterization.
+- Conditionality: unconditional vs labels/prompts/other conditioning signals.
+- Training time: checkpoint step, number of epochs/passes, and whether
+  memorization appears before obvious overfitting.
+- Dataset size and uniqueness: `N`, long-tail examples, outliers, and rare
+  subpopulations.
+- Duplicates and near-duplicates: exact repeats, near-copy clusters, and
+  train-test overlap.
+- Metric/eval space: raw pixels, random projection `f_mem`, feature space, and
+  threshold choice.
+
+### References
+- Ho, Jain, and Abbeel, "Denoising Diffusion Probabilistic Models" (2020):
+  https://arxiv.org/abs/2006.11239. Anchor for the baseline diffusion
+  training setup and noise-prediction objective.
+- Salimans and Ho, "Progressive Distillation for Fast Sampling of Diffusion
+  Models" (ICLR 2022): https://openreview.net/forum?id=TIdIXIpzhoI. Anchor for
+  diffusion parameterization choices such as velocity-style prediction affecting
+  stability/training behavior.
+- Zhang et al., "Understanding Deep Learning Requires Rethinking
+  Generalization" (ICLR 2017): https://openreview.net/forum?id=Sy8gdB9xx.
+  Anchor for capacity/over-parameterization and fitting/memorization behavior.
+- Feldman, "Does Learning Require Memorization? A Short Tale about a Long Tail"
+  (2020): https://arxiv.org/abs/1906.05271. Anchor for long-tail data,
+  outliers, dataset support, and why memorization can be tied to generalization.
+- Tirumala et al., "Memorization Without Overfitting: Analyzing the Training
+  Dynamics of Large Language Models" (NeurIPS 2022):
+  https://proceedings.neurips.cc/paper_files/paper/2022/hash/fa0509f4dab6807e2cb465715bf2d249-Abstract-Conference.html.
+  Anchor for training time, model size, dataset size, and memorization dynamics.
+- Lee et al., "Deduplicating Training Data Makes Language Models Better" (ACL
+  2022): https://aclanthology.org/2022.acl-long.577/. Anchor for duplicates,
+  train-test overlap, and emitted memorized training content.
+- Carlini et al., "Extracting Training Data from Diffusion Models" (USENIX
+  Security 2023):
+  https://www.usenix.org/conference/usenixsecurity23/presentation/carlini.
+  Anchor for diffusion memorization/extraction and modeling/data decisions.
+- Somepalli et al., "Diffusion Art or Digital Forgery? Investigating Data
+  Replication in Diffusion Models" (CVPR 2023):
+  https://openaccess.thecvf.com/content/CVPR2023/html/Somepalli_Diffusion_Art_or_Digital_Forgery_Investigating_Data_Replication_in_Diffusion_CVPR_2023_paper.html.
+  Anchor for image retrieval style replication checks, CelebA/ImageNet/LAION
+  settings, and training-set-size effects.
+
 ## 2026-04-29T04:13:50Z - Eval Notebook End-of-Day State
 
 ### Context
@@ -2552,3 +2748,198 @@ formatting.
 
 ### Blockers
 - None expected.
+
+## 2026-05-01 - Mem-boundary checkpoint eval runner
+
+Implemented a standalone read-only checkpoint eval path for the main Adam mem-boundary N=16384 seed=0 runs.
+
+Artifacts added:
+- `src/mp_runners/mem_boundary_eval.py`
+- `jobs/evals/mem_boundary_n16384_s0_eval_smoke.sbatch`
+- `jobs/evals/mem_boundary_n16384_s0_eval.sbatch`
+- `jobs/evals/mem_boundary_n16384_s0_eval_combine.sbatch`
+
+Runner behavior:
+- Reads completed source attempts under `outputs/job_sets/mem_gen_boundary_20260427` without writing into them.
+- Defaults to output dir `outputs/evals/mem_boundary_n16384_s0_quality_20260501`.
+- Supports params `x_x,eps_eps,v_v,x_v`, Heun-50 sampling, cached FID reference stats, append-safe per-checkpoint CSV/JSONL, final CSVs, combined CSVs, and requested plots.
+- Skips completed checkpoint rows by `(param, step, sample_count, fid_reference_count, sampler, sampling_steps)` unless `--overwrite` is passed.
+- Full Slurm array tasks write per-param outputs with `--skip_combined`; the separate combine job rebuilds global CSVs/plots after all param tasks finish.
+
+Validation done:
+- Python syntax passed in `mem_param_env`.
+- Shell syntax passed for smoke, full-array, and combine sbatch scripts.
+- CLI imports and parses successfully.
+- Source resolution found exactly one DONE attempt for each of `x_x`, `eps_eps`, `v_v`, `x_v`; each has 72 checkpoints and final step `1000000`.
+- `torch_fidelity` is available in `mem_param_env` as version `0.4.0-beta`.
+
+No smoke or full eval job has been submitted yet.
+
+## 2026-05-01 - Expanded mem-boundary eval to all DONE attempts
+
+Implemented the manifest-driven all-DONE eval plan for `outputs/job_sets/mem_gen_boundary_20260427`.
+
+Key updates:
+- `src/mp_runners/mem_boundary_eval.py` now supports `--all_done` manifest discovery over every completed attempt in the job set.
+- The all-DONE manifest resolves 84 attempts: 7 train sizes x 3 seeds x 4 parameterizations.
+- Each manifest row records N, seed, param, run id, attempt id/path, checkpoint count, final step, sampler, and sampling steps.
+- Eval source artifacts are read from `attempt/artifacts/` and source attempts remain read-only.
+- Eval samples now use exactly 10,000 deterministic z initializations generated from `config.training.seed + 2003`, rather than being capped by saved `z_init.pt`.
+- Held-out eval tensors are rebuilt as 10,000 CelebA valid images using the same 32x32 grayscale preprocessing and `seeded_indices(..., seed + 1)` selection policy as training.
+- Held-out tensors are cached globally by seed/split/preprocessing under the eval output cache.
+- FID reference stats are cached globally by seed/split/reference count/feature extractor under the eval output cache.
+- Cache writes use lock files with stale-lock cleanup to avoid array-task races.
+- Skip/resume keys now include N, seed, param, step, sample count, FID reference count, heldout split, sampler, and sampling steps.
+- Per-attempt and combined outputs include N/seed/run/attempt/heldout/z-source metadata.
+- Combined plots are grouped by N/seed/param and final-by-N aggregate comparison plots are produced.
+
+Slurm updates:
+- Existing eval scripts now target all-DONE mode and the new output root `outputs/evals/mem_boundary_20260427_all_done_quality_20260501`.
+- Added clearer aliases: `jobs/evals/mem_boundary_all_done_eval_smoke.sbatch`, `jobs/evals/mem_boundary_all_done_eval.sbatch`, and `jobs/evals/mem_boundary_all_done_eval_combine.sbatch`.
+- Smoke runs manifest indices `0,72` over checkpoints `0,945000,1000000`.
+- Full eval runs `--array=0-83%4`, one single-node 1-GPU task per attempt, with `--skip_combined`.
+- Combine is CPU-only and rebuilds manifest, combined CSVs, final CSVs, and plots.
+
+Validation done:
+- Python syntax passed in `mem_param_env`.
+- Shell syntax passed for legacy and all-DONE smoke/full/combine sbatch scripts.
+- `--all_done --manifest_only` successfully wrote an 84-row manifest to `/tmp/mem_boundary_manifest_check` and validated checkpoint/final-step/sampler invariants.
+
+No smoke or full eval job has been submitted yet.
+
+## 2026-05-01 - Smoke eval job status check
+
+Checked all-DONE mem-boundary smoke eval job `16466887`.
+
+Current scheduler state:
+- Job `16466887` / `mp_mgb_all_smoke` is `PENDING` with reason `Priority`.
+- `sacct` reports `PENDING`, `ExitCode=0:0`, no start/end time yet, requested `cpu=8`, `gres/gpu=1`, `mem=63600M`, `node=1`.
+- Existing capacity resume array `16466870` is also pending on priority.
+
+Operational note:
+- Created `jobs/evals/logs/` because the Slurm stdout/stderr paths point there and the directory was not present yet.
+- No smoke log files exist yet because the job has not started.
+
+## 2026-05-01 - Replaced heavy smoke with light smoke
+
+Implemented the fast-smoke recovery plan.
+
+Actions taken:
+- Cancelled pending heavy smoke job `16466887` only.
+- Left capacity resume array `16466870` untouched.
+- Updated `jobs/evals/mem_boundary_all_done_eval_smoke.sbatch` and the legacy alias `jobs/evals/mem_boundary_n16384_s0_eval_smoke.sbatch` to use lighter resources:
+  - `--cpus-per-task=4`
+  - `--mem=32G`
+  - `--gpus=1`
+  - `--time=02:00:00`
+  - manifest rows `0,72`
+  - checkpoint steps `0,1000000`
+  - `--sample_count 10000`
+  - `--fid_reference_count 10000`
+  - `--heldout_split valid`
+- Shell syntax checks passed for both smoke scripts.
+- Submitted replacement light smoke job `16466891`.
+
+Scheduler state after resubmission:
+- `16466887` / `mp_mgb_all_smoke`: `CANCELLED by 13657`, requested `cpu=8`, `gres/gpu=1`, `mem=63600M`, `node=1`, never started.
+- `16466891` / `mp_mgb_all_smoke`: `PENDING`, reason `Priority`, requested `cpu=4`, `gres/gpu=1`, `mem=32G`, `node=1`.
+- Capacity resume array `16466870` remains `PENDING` on `Priority`.
+- No smoke log files exist yet because `16466891` has not started.
+
+## 2026-05-01 - Smoke FID range failure fixed
+
+Checked smoke job `16466891` after it started and failed.
+
+Observed state:
+- `16466891` started at `2026-05-01T04:34:58`, failed at `2026-05-01T04:38:51`, elapsed `00:03:53`, exit `1:0`.
+- It successfully evaluated manifest row `0` checkpoint `step_000000.pt` and wrote one row with finite metrics: `f_mem=0`, `fid_10k=423.481`, `test_loss=0.272654`.
+- It failed on `step_1000000.pt` during generated-sample FID encoding because `image_range='auto'` could not infer range for samples with min/max around `-1.132/1.138`.
+
+Fix applied:
+- Set runner FID encoding to explicit `FID_IMAGE_RANGE = "-1_1"` in `src/mp_runners/mem_boundary_eval.py` for both reference FID stats and generated sample FID features.
+- This maps normalized CelebA/model tensors from `[-1, 1]` to `[0, 1]` and clamps slight out-of-range model samples instead of failing auto inference.
+
+FID implementation notes:
+- The runner uses `torch_fidelity:inception-v3-compat` through `_TorchFidelityFeatureEncoder` in `src/mp_metrics/metrics_images.py`.
+- The wrapper converts grayscale tensors to RGB uint8; installed torch-fidelity internally resizes inputs to Inception's `299x299` using TensorFlow-compatible bilinear interpolation.
+- No manual upscaling is needed in the runner.
+
+Validation:
+- `python -m py_compile src/mp_runners/mem_boundary_eval.py` passed in `mem_param_env` after the fix.
+
+Smoke has not been resubmitted yet after this fix.
+
+## 2026-05-01 - Resubmitted fixed light smoke eval
+
+Checked scheduler state and submitted the fixed all-DONE eval smoke after the FID image range patch.
+
+Pre-submit observations:
+- No eval smoke job was queued or running.
+- Capacity resume array `16466870` remained pending on `Priority`.
+- Earlier capacity resume tasks `16466870_15` through `16466870_21` had failed quickly with exit `127:0`; this is separate from the eval smoke path and still needs follow-up before relying on capacity resumes.
+- Previous eval smoke states: `16466887` cancelled, `16466891` failed due to FID `image_range='auto'` inference.
+
+Submitted:
+- Fixed light smoke job `16467047` using `jobs/evals/mem_boundary_all_done_eval_smoke.sbatch`.
+
+Post-submit scheduler state:
+- `16467047` / `mp_mgb_all_smoke`: `PENDING`, reason `Priority`, requested `billing=4,cpu=4,gres/gpu=1,mem=32G,node=1`.
+- Capacity resume array `16466870` still pending on `Priority`.
+
+## 2026-05-01 - Submitted canary capacity resume and full eval array
+
+Performed the post-smoke recovery actions.
+
+Capacity resume wrapper:
+- Patched `jobs/job_sets/mem_gen_boundary_capacity_20260427/resume_undone_20260501.sbatch` line 22 from broken `{AWK:-awk}` syntax to plain `awk` command substitution.
+- `bash -n` passed for the patched resume wrapper.
+- Submitted one canary resume task: job `16473993`, array index `107%1`.
+
+Eval jobs:
+- `bash -n` passed for `jobs/evals/mem_boundary_all_done_eval.sbatch`.
+- Submitted full all-DONE eval array: job `16473994`, array `0-83%4`.
+- Initial combine submission failed because Berzelius rejected a no-GPU job with invalid TRES / no GPU allocation.
+- Patched `jobs/evals/mem_boundary_all_done_eval_combine.sbatch` and legacy alias to request `--gpus=1`.
+- `bash -n` passed for both combine scripts after the patch.
+- Submitted dependent combine job: `16473995`, dependency `afterok:16473994`.
+
+Current scheduler state immediately after submissions:
+- `16473993_[107%1]` / `mp_mgb_cap_resume`: `PENDING`, reason `Priority`, requested `billing=1,cpu=1,gres/gpu=1,mem=7950M,node=1`.
+- `16473994_[0-83%4]` / `mp_mgb_all_eval`: `PENDING`, reason `Priority`, requested `billing=8,cpu=8,gres/gpu=1,mem=63600M,node=1`.
+- `16473995` / `mp_mgb_all_combine`: `PENDING`, reason `Dependency`, requested `billing=2,cpu=2,gres/gpu=1,mem=15900M,node=1`.
+- There is also a pending interactive job `16473992` on priority.
+
+Important guardrail:
+- Did not submit the remaining full capacity resume array yet. Wait for canary `16473993_107` to start and pass the wrapper/training setup before resubmitting all 52 capacity resume rows.
+
+## 2026-05-01 - End-of-day operational summary: eval smoke, full eval, and capacity recovery
+
+Summary of the last operational cycle:
+- Built and validated a manifest-driven mem-boundary checkpoint eval path for all 84 DONE attempts in `outputs/job_sets/mem_gen_boundary_20260427`.
+- Smoke eval initially exposed an FID image-range bug: generated samples at the final checkpoint could exceed `[-1, 1]` slightly, causing `image_range='auto'` to fail.
+- Fixed FID encoding to use explicit `FID_IMAGE_RANGE = "-1_1"`, which maps normalized CelebA/model tensors to `[0, 1]` and clips slight overshoot.
+- Confirmed no manual upscaling is required for FID: the repo wrapper repeats grayscale to RGB uint8 and torch-fidelity internally resizes to Inception `299x299`.
+- Re-ran light smoke job `16467047`; it completed successfully in `00:04:59` with finite `f_mem`, `fid_10k`, and 10K held-out test-loss metrics.
+- Smoke output root: `outputs/evals/mem_boundary_20260427_all_done_quality_20260501_smoke`.
+- Smoke combined metrics: `all_checkpoint_metrics.csv` has 4 rows; `all_final_metrics.csv` has 2 rows; manifest has 84 rows.
+- Submitted full all-DONE eval array `16473994_[0-83%4]`; it is pending on scheduler priority.
+- Submitted dependent combine job `16473995` with `afterok:16473994`; it is pending on dependency.
+- Combine job had to request `--gpus=1` because Berzelius rejected a no-GPU Slurm submission for this account/partition.
+
+Capacity resume recovery:
+- Previous capacity resume array `16466870` failed before training with exit `127:0`.
+- Inspected 52/52 resume stderr logs; every failure was the same shell-wrapper typo: `{AWK:-awk}: command not found`.
+- Patched `jobs/job_sets/mem_gen_boundary_capacity_20260427/resume_undone_20260501.sbatch` to use plain `awk` command substitution.
+- Submitted one capacity resume canary: `16473993_[107%1]`; it is pending on scheduler priority.
+- Did not submit the remaining 52 capacity resume tasks yet; wait for canary `16473993_107` to start and prove the wrapper/training setup works.
+
+Current known scheduler state when this entry was written:
+- `16473993_[107%1]` / `mp_mgb_cap_resume`: pending on `Priority`.
+- `16473994_[0-83%4]` / `mp_mgb_all_eval`: pending on `Priority`.
+- `16473995` / `mp_mgb_all_combine`: pending on `Dependency`.
+
+Push scope for this recovery branch:
+- Eval runner and Slurm scripts.
+- Capacity resume wrapper fix and its manifest.
+- Coding journal/log updates.
+- Exclude generated Slurm logs, eval outputs, checkpoint outputs, and unrelated pre-existing worktree changes.
