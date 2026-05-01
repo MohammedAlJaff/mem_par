@@ -15,3 +15,8 @@
 - Diagnosed capacity resume array 16466870 failures: 52/52 failed before training due to shell typo `{AWK:-awk}`.
 - Patched resume wrapper and submitted canary 16473993_[107%1].
 - Do not submit remaining capacity resume tasks until canary gets past setup.
+
+2026-05-01 paper objective note
+- Added PAPER_OBJECTIVE.md as the internal north-star for the paper.
+- Thesis: target parameterization changes generation-to-memorization dynamics at matched quality, not merely that epsilon/epsilon memorizes less.
+- Prioritize F_mem/FID checkpoint trajectories, F_mem@FID_best, tau_gen, tau_mem, matched-FID comparisons, train/test gaps, and capacity/data phase boundaries.

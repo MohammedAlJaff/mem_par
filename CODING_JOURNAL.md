@@ -2943,3 +2943,21 @@ Push scope for this recovery branch:
 - Capacity resume wrapper fix and its manifest.
 - Coding journal/log updates.
 - Exclude generated Slurm logs, eval outputs, checkpoint outputs, and unrelated pre-existing worktree changes.
+
+## 2026-05-01 - Paper objective locked for internal experiment planning
+
+Created `PAPER_OBJECTIVE.md` as the internal north-star document for the paper.
+
+Core thesis to preserve across evals, plots, and writing:
+- Do not frame the paper as `epsilon/epsilon memorizes less`.
+- Frame it as: target parameterization changes the learning dynamics by which diffusion/flow models move from generation to memorization.
+- Strong claim: at matched architecture, dataset size, optimizer, and sample quality, different target parameterizations enter different memorization regimes.
+- Contribution is the intersection of Bonnaire-style generation-to-memorization dynamics, Li-He target-geometry/finite-capacity parameterization effects, and George-style train/test learning curves.
+
+Operational implications:
+- Prioritize quality-controlled memorization: `F_mem(tau)` plus `FID(tau)` for every checkpoint.
+- Main derived quantities: `F_mem@FID_best`, matched-FID memorization, `tau_gen`, `tau_mem`, and `tau_mem - tau_gen`.
+- Avoid centering raw native training loss comparisons, final `F_mem` alone, or generic Pareto fronts without showing parameterization shifts.
+- Every metrics table should group by parameterization, dataset size, capacity, optimizer, seed, and checkpoint.
+
+The detailed paper skeleton, figure plan, reviewer-objection framing, and implementation target table now live in `PAPER_OBJECTIVE.md`.
