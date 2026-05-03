@@ -2961,3 +2961,150 @@ Operational implications:
 - Every metrics table should group by parameterization, dataset size, capacity, optimizer, seed, and checkpoint.
 
 The detailed paper skeleton, figure plan, reviewer-objection framing, and implementation target table now live in `PAPER_OBJECTIVE.md`.
+
+## 2026-05-02 - Pivoted paper objective after 2601.21419
+
+Updated the internal paper objective after noting that Jin and Wang, "Revisiting Diffusion Model Predictions Through Dimensionality" (arXiv:2601.21419), substantially covers the intrinsic/ambient-dimension target-selection story.
+
+New objective:
+- Do not frame novelty as target parameterization depending on intrinsic versus ambient dimension.
+- Frame novelty as target parameterization changing memorization dynamics in flow matching.
+- Main question: whether the quality-optimal target `k_FID_star` equals the memorization-optimal target `k_mem_star` under `F_mem@FID_best` or matched-quality criteria.
+- Central line: the target that is optimal for sample quality may not be optimal for memorization.
+
+Implementation implications recorded in `PAPER_OBJECTIVE.md`:
+- Use the continuous target family `y_k = k*x - (1-k)*eps` for new experiments.
+- Treat `k=0` as `-eps`, not legacy `+eps`; do not silently mix signs when mapping old `eps/eps` runs.
+- Add fixed-`k` sweeps over at least `k in {0, 0.5, 1}` and preferably `{0, 0.25, 0.5, 0.75, 1}`.
+- Track checkpoint-level FID, `F_mem`, `F_mem@FID_best`, `tau_gen`, `tau_mem`, and `tau_mem - tau_gen`.
+- Keep dataset-size and capacity sweeps, but use them to test whether target choice shifts the generation-memorization frontier, not as standalone novelty.
+
+README framing was adjusted to describe the repository as a flow-matching memorization project and to mark dimensionality sweeps as stress tests rather than the core novelty claim.
+
+## 2026-05-02 - Interactive one-GPU eval queue helper
+
+Added a CSV-backed interactive eval queue helper for rare one-GPU interactive allocations.
+
+Files and output root:
+- Queue helper: `outputs/evals/mem_boundary_20260427_interactive_queue_20260502/mem_eval_queue.py`
+- Queue spreadsheet/ledger: `outputs/evals/mem_boundary_20260427_interactive_queue_20260502/eval_queue.csv`
+- Per-item logs: `outputs/evals/mem_boundary_20260427_interactive_queue_20260502/queue_logs/`
+- Per-attempt metrics: `outputs/evals/mem_boundary_20260427_interactive_queue_20260502/attempts/*/checkpoint_metrics.csv` and `.jsonl`
+
+Design:
+- One queue row is exactly one `(manifest_index, checkpoint_step, sample_count, fid_reference_count, heldout_split, sampler, sampling_steps)` eval unit.
+- The helper delegates metric computation to `python -m mp_runners.mem_boundary_eval` rather than creating a second eval implementation.
+- Re-running is safe: the helper checks existing `checkpoint_metrics.csv` rows and marks matching queue rows `done`.
+- Interrupted rows become `interrupted`; stale `running` rows are reset to `pending` on status/run.
+- `--n_items` controls how many checkpoint eval units to consume in the interactive session.
+
+Interactive setup:
+
+```bash
+cd /proj/rep-learning-robotics/users/x_moalj/project_mem_par/mem_par
+module load Mambaforge
+mamba activate mem_param_env
+export PYTHONPATH=src:.
+export OUT_DIR="outputs/evals/mem_boundary_20260427_interactive_queue_20260502"
+```
+
+Single final-checkpoint test for `N=16384, seed=0, x_x`:
+
+```bash
+python "$OUT_DIR/mem_eval_queue.py" init \
+  --out_dir "$OUT_DIR" \
+  --manifest_indices 72 \
+  --checkpoint_steps 1000000
+
+python "$OUT_DIR/mem_eval_queue.py" status --out_dir "$OUT_DIR"
+
+python "$OUT_DIR/mem_eval_queue.py" run \
+  --out_dir "$OUT_DIR" \
+  --n_items 1 \
+  --device cuda
+```
+
+Seed-0 N-sweep queue for `N=256`, `N=2048`, and `N=16384`, all 4 params, 5 checkpoints:
+
+```bash
+python "$OUT_DIR/mem_eval_queue.py" init \
+  --out_dir "$OUT_DIR" \
+  --manifest_indices "0-3,36-39,72-75" \
+  --checkpoint_steps "0,100000,300000,595000,1000000"
+
+python "$OUT_DIR/mem_eval_queue.py" run \
+  --out_dir "$OUT_DIR" \
+  --n_items 4 \
+  --device cuda
+```
+
+Combined output refresh:
+
+```bash
+python "$OUT_DIR/mem_eval_queue.py" combine --out_dir "$OUT_DIR"
+```
+
+Scope note:
+- This helper does not add common-space `x/eps/v` losses or `k`-target support. It only makes the existing all-DONE eval runner easy to consume one checkpoint or N checkpoints at a time on a single interactive GPU.
+
+## 2026-05-02T06:22:35+02:00 - End-of-night job handoff for tomorrow
+
+Final scheduler/accounting snapshot before stopping for the night.
+
+Eval array status:
+- Full all-DONE mem-boundary eval array `16473994_[0-83%4]` is actively progressing.
+- Completed cleanly so far: array tasks `0` through `11`, all exit `0:0`.
+- Currently running: `16473994_12`, `16473994_13`, `16473994_14`, and `16473994_15`.
+- Remaining tasks `16-83` are pending with reason `JobArrayTaskLimit`, which is expected because the array was submitted with concurrency cap `%4`.
+- Dependent combine job `16473995` is pending on `Dependency`; it should start only after the full eval array completes successfully.
+
+Capacity resume status:
+- Capacity resume canary `16473993_107` completed cleanly with exit `0:0` after `02:01:12`.
+- This confirms the patched resume wrapper got past the previous `{AWK:-awk}` shell error and the canary path is viable.
+- Tomorrow action: inspect canary output/status, then submit the remaining capacity resume array if the attempt state is sane.
+
+Interactive status:
+- Interactive job `16474429` timed out normally after `03:00:25`.
+- Interactive queue helper remains available at `outputs/evals/mem_boundary_20260427_interactive_queue_20260502/mem_eval_queue.py` if another interactive allocation is obtained.
+
+Tomorrow checklist:
+1. Check `sacct -X -j 16473994,16473995` and confirm whether the full eval array and combine job finished.
+2. If combine completed, inspect `outputs/evals/mem_boundary_20260427_all_done_quality_20260501/all_checkpoint_metrics.csv` and `all_final_metrics.csv` row counts.
+3. Confirm full eval acceptance target: `6048` checkpoint rows and `84` final rows.
+4. Inspect capacity canary `16473993_107` output and status files under `outputs/job_sets/mem_gen_boundary_capacity_20260427`.
+5. If canary state is good, submit the remaining capacity resume tasks from `jobs/job_sets/mem_gen_boundary_capacity_20260427/resume_undone_20260501.tsv` using the patched sbatch wrapper.
+6. Keep source attempts read-only; all eval artifacts should stay under `outputs/evals/`.
+
+## 2026-05-03 - Plotting prototype notes for F_mem eval figures
+
+Added and iterated on the prototype plotting script for the all-DONE mem-boundary eval:
+
+- `prototyping/plot_mem_boundary_20260427_quality_memorization.py`
+- Output root: `prototyping/figures/mem_boundary_20260427_all_done_quality_20260501_figures/`
+
+Important interpretation notes:
+
+- The CSV metric column is still named `f_mem`, but plot labels should use paper notation `F_mem`.
+- The plotted `F_mem` is nearest-neighbor ratio memorization against the full saved training tensor for that run, not against held-out data.
+- The default `F_mem` column corresponds to `rho=0.5`; the eval CSVs also include `f_mem_rho0.3`, `f_mem_rho0.5`, and `f_mem_rho0.7`.
+- The `F_mem` curves can appear only after they become non-zero on log-scaled plots. Early zero-valued points are intentionally absent from log-y panels because log scale cannot display zero.
+- Current eval outputs use non-projected image/tensor nearest-neighbor metrics for the post-hoc `F_mem`; the older train-time random-projected monitor is separate.
+- Parameterization comparisons are paired at fixed `(n_train, seed)`: current visible outputs reuse the same held-out/FID cache and the same saved train tensor across `eps_eps`, `v_v`, `x_v`, and `x_x` for a fixed seed and dataset size.
+
+## 2026-05-03 - Plotting prototype and capacity-resume sanity checkpoint
+
+Prepared the plotting prototype for commit/push:
+
+- Script: `prototyping/plot_mem_boundary_20260427_quality_memorization.py`.
+- Scope: all-DONE mem-boundary eval plotting for `mem_boundary_20260427_all_done_quality_20260501`.
+- Main figures now include quality/memorization trajectories, `F_mem@FID_best`, parameterization comparisons, threshold-specific `F_mem` panels for `rho in {0.3, 0.5, 0.7}`, exact `n_train` log ticks, and `tau` axis labels.
+- Plot labels use paper notation `F_mem`; raw CSV fields remain lowercase `f_mem`.
+
+Capacity-resume sanity jobs submitted for W&B/local resume verification:
+
+- Job `16478119`, array tasks `24` and `26`.
+- Task `24`: `base64_m1244`, `N=256`, seed `0`, `x/x`.
+- Task `26`: `base64_m1244`, `N=256`, seed `0`, `v/v`.
+- Both were healthy when last checked: running, writing to new local attempt directories, and W&B reported `Resuming run ...` against the original run IDs rather than creating unrelated runs.
+
+Commit scope for this checkpoint should remain limited to the plotting prototype and journal updates; generated figures, Slurm logs, notebooks, and unrelated dirty worktree files should stay out of the commit.
