@@ -7,6 +7,7 @@ try:
         create_run_layout,
         find_latest_attempt_dir,
         find_latest_completed_attempt_dir,
+        list_checkpoint_paths,
         load_json,
         mark_attempt_done,
         make_run_id,
@@ -18,6 +19,7 @@ except ModuleNotFoundError:
     create_run_layout = None
     find_latest_attempt_dir = None
     find_latest_completed_attempt_dir = None
+    list_checkpoint_paths = None
     load_json = None
     mark_attempt_done = None
     make_run_id = None
@@ -235,6 +237,32 @@ class TestArtifactLayout(unittest.TestCase):
         resumed.training.resolved_ckpt_steps = (0, 500)
 
         self.assertEqual(make_run_id(config), make_run_id(resumed))
+
+    def test_checkpoint_paths_are_sorted_by_numeric_step(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checkpoint_dir = Path(tmpdir) / "checkpoints"
+            checkpoint_dir.mkdir()
+            for name in (
+                "step_000000.pt",
+                "step_945000.pt",
+                "step_1000000.pt",
+                "step_000250.pt",
+            ):
+                (checkpoint_dir / name).touch()
+
+            checkpoint_names = [
+                path.name for path in list_checkpoint_paths(Path(tmpdir))
+            ]
+
+        self.assertEqual(
+            checkpoint_names,
+            [
+                "step_000000.pt",
+                "step_000250.pt",
+                "step_945000.pt",
+                "step_1000000.pt",
+            ],
+        )
 
 
 if __name__ == "__main__":

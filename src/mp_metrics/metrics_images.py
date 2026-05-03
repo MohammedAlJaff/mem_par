@@ -692,10 +692,96 @@ def _resolve_projection_matrix(input_dim, projection_dim, projection_seed, proje
     return projection_matrix.to(_device_from_arg(device))
 
 
+def compute_projected_image_features(
+    images,
+    *,
+    resize_size=16,
+    projection_dim=256,
+    projection_seed=None,
+    projection_matrix=None,
+    image_range="auto",
+    device="cpu",
+    batch_size=None,
+):
+    """
+    Resize images, flatten pixels, and apply the fixed random projection.
+
+    This helper exposes the feature bank used by projected image f_mem so
+    callers can cache fixed reference/train features outside repeated metric
+    calls.
+    """
+    image_batch = _as_image_batch(images)
+    if int(image_batch.shape[0]) < 1:
+        raise ValueError("Projected image features require at least one image.")
+
+    batch_size = _resolve_batch_size(batch_size, "batch_size")
+    if batch_size is None:
+        pixels = _resize_flatten_images_for_projection(
+            image_batch,
+            resize_size=resize_size,
+            image_range=image_range,
+            device=device,
+        )
+        projection = _resolve_projection_matrix(
+            int(pixels.shape[1]),
+            projection_dim,
+            projection_seed,
+            projection_matrix,
+            device,
+        )
+        return pixels @ projection
+
+    features = []
+    projection = None
+    input_dim = None
+    for start in range(0, int(image_batch.shape[0]), batch_size):
+        pixels = _resize_flatten_images_for_projection(
+            image_batch[start : start + batch_size],
+            resize_size=resize_size,
+            image_range=image_range,
+            device=device,
+        )
+        if projection is None:
+            input_dim = int(pixels.shape[1])
+            projection = _resolve_projection_matrix(
+                input_dim,
+                projection_dim,
+                projection_seed,
+                projection_matrix,
+                device,
+            )
+        elif int(pixels.shape[1]) != input_dim:
+            raise ValueError(
+                "Projected image feature chunks produced inconsistent dimensions: "
+                f"{int(pixels.shape[1])} != {input_dim}"
+            )
+        features.append(pixels @ projection)
+    return torch.cat(features, dim=0)
+
+
+def _resolve_projected_reference_vectors(vectors, feature_dim, device):
+    """Validate and place cached projected reference vectors on the metric device."""
+    if not torch.is_tensor(vectors):
+        vectors = torch.as_tensor(vectors, dtype=torch.float32)
+    vectors = vectors.detach().float()
+    if vectors.dim() != 2:
+        raise ValueError(
+            "projected_reference_vectors must have shape [N, feature_dim], "
+            f"got {tuple(vectors.shape)}"
+        )
+    if int(vectors.shape[1]) != int(feature_dim):
+        raise ValueError(
+            "projected_reference_vectors feature dimension does not match samples: "
+            f"{int(vectors.shape[1])} != {int(feature_dim)}"
+        )
+    return vectors.to(_device_from_arg(device))
+
+
 def compute_projected_image_memorization_metrics(
     samples,
-    reference,
+    reference=None,
     *,
+    projected_reference_vectors=None,
     resize_size=16,
     projection_dim=256,
     projection_seed=None,
@@ -716,33 +802,37 @@ def compute_projected_image_memorization_metrics(
     query_batch_size = int(query_batch_size)
     if query_batch_size < 1:
         raise ValueError(f"query_batch_size must be at least 1, got {query_batch_size}")
-    sample_pixels = _resize_flatten_images_for_projection(
+    sample_vectors = compute_projected_image_features(
         samples,
         resize_size=resize_size,
+        projection_dim=projection_dim,
+        projection_seed=projection_seed,
+        projection_matrix=projection_matrix,
         image_range=image_range,
         device=device,
     )
-    reference_pixels = _resize_flatten_images_for_projection(
-        reference,
-        resize_size=resize_size,
-        image_range=image_range,
-        device=device,
-    )
-    if int(sample_pixels.shape[1]) != int(reference_pixels.shape[1]):
-        raise ValueError(
-            "Sample and reference resized pixels must have matching dimensions, "
-            f"got {int(sample_pixels.shape[1])} and {int(reference_pixels.shape[1])}."
+    if projected_reference_vectors is None:
+        if reference is None:
+            raise ValueError(
+                "reference is required when projected_reference_vectors is not provided."
+            )
+        reference_vectors = compute_projected_image_features(
+            reference,
+            resize_size=resize_size,
+            projection_dim=projection_dim,
+            projection_seed=projection_seed,
+            projection_matrix=projection_matrix,
+            image_range=image_range,
+            device=device,
         )
-    input_dim = int(sample_pixels.shape[1])
-    projection = _resolve_projection_matrix(
-        input_dim,
-        projection_dim,
-        projection_seed,
-        projection_matrix,
-        device,
-    )
-    sample_vectors = sample_pixels @ projection
-    reference_vectors = reference_pixels @ projection
+        projected_reference_cached = False
+    else:
+        reference_vectors = _resolve_projected_reference_vectors(
+            projected_reference_vectors,
+            int(sample_vectors.shape[1]),
+            device,
+        )
+        projected_reference_cached = True
     metrics = compute_memorization_metrics(
         sample_vectors,
         reference_vectors,
@@ -754,15 +844,20 @@ def compute_projected_image_memorization_metrics(
         {
             "space": "random_projected_pixels",
             "resize_size": int(resize_size),
-            "projection_dim": int(projection.shape[1]),
+            "projection_dim": int(sample_vectors.shape[1]),
             "projection_seed": None if projection_seed is None else int(projection_seed),
             "image_range": str(image_range),
             "query_batch_size": query_batch_size,
             "reference_batch_size": (
                 None if reference_batch_size is None else int(reference_batch_size)
             ),
-            "feature_dim": int(projection.shape[1]),
-            "input_dim": input_dim,
+            "feature_dim": int(sample_vectors.shape[1]),
+            "input_dim": (
+                int(_as_image_batch(samples).shape[1])
+                * int(resize_size)
+                * int(resize_size)
+            ),
+            "projected_reference_cached": bool(projected_reference_cached),
         }
     )
     return metrics
@@ -914,6 +1009,7 @@ __all__ = [
     "compute_f_mem",
     "compute_image_fid",
     "compute_image_memorization_metrics",
+    "compute_projected_image_features",
     "compute_projected_image_memorization_metrics",
     "compute_memorization_metrics",
     "compute_nn_stats",

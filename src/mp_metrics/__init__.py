@@ -13,6 +13,7 @@ from mp_metrics.metrics_images import (
     compute_f_mem_by_rho,
     compute_image_fid,
     compute_image_memorization_metrics,
+    compute_projected_image_features,
     compute_projected_image_memorization_metrics,
     make_random_projection_matrix,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "compute_f_mem_by_rho",
     "compute_image_fid",
     "compute_image_memorization_metrics",
+    "compute_projected_image_features",
     "compute_projected_image_memorization_metrics",
     "compute_memorization_metrics",
     "compute_nn_stats",

@@ -12,6 +12,7 @@ try:
         compute_f_mem,
         compute_image_fid,
         compute_image_memorization_metrics,
+        compute_projected_image_features,
         compute_projected_image_memorization_metrics,
         compute_memorization_metrics,
         compute_nn_stats,
@@ -30,6 +31,7 @@ except ModuleNotFoundError:
     compute_image_fid = None
     compute_image_folder_memorization_metrics = None
     compute_image_memorization_metrics = None
+    compute_projected_image_features = None
     compute_projected_image_memorization_metrics = None
     compute_memorization_metrics = None
     compute_nn_stats = None
@@ -389,6 +391,93 @@ class TestMPMetrics(unittest.TestCase):
         self.assertAlmostEqual(seeded["f_mem"], explicit["f_mem"], places=6)
         self.assertAlmostEqual(seeded["median_r"], explicit["median_r"], places=6)
         self.assertAlmostEqual(seeded["std_r"], explicit["std_r"], places=6)
+
+    def test_projected_image_metrics_accept_cached_reference_vectors(self):
+        reference = torch.rand(7, 1, 4, 4)
+        samples = reference[:3].clone()
+        cached_reference = compute_projected_image_features(
+            reference,
+            resize_size=2,
+            projection_dim=5,
+            projection_seed=19,
+            image_range="0_1",
+            batch_size=2,
+        )
+
+        uncached = compute_projected_image_memorization_metrics(
+            samples,
+            reference,
+            resize_size=2,
+            projection_dim=5,
+            projection_seed=19,
+            rho=0.5,
+            image_range="0_1",
+        )
+        cached = compute_projected_image_memorization_metrics(
+            samples,
+            reference=None,
+            projected_reference_vectors=cached_reference,
+            resize_size=2,
+            projection_dim=5,
+            projection_seed=19,
+            rho=0.5,
+            image_range="0_1",
+        )
+
+        self.assertFalse(uncached["projected_reference_cached"])
+        self.assertTrue(cached["projected_reference_cached"])
+        for key in (
+            "f_mem",
+            "mean_r",
+            "std_r",
+            "median_r",
+            "mean_d1",
+            "mean_d2",
+            "median_d1",
+            "median_d2",
+        ):
+            self.assertAlmostEqual(uncached[key], cached[key], places=6)
+
+    def test_projected_image_metrics_require_reference_source(self):
+        samples = torch.rand(2, 1, 4, 4)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "reference is required",
+        ):
+            compute_projected_image_memorization_metrics(
+                samples,
+                reference=None,
+                resize_size=2,
+                projection_dim=4,
+                projection_seed=17,
+                image_range="0_1",
+            )
+
+    def test_projected_image_metrics_validate_cached_reference_vectors(self):
+        samples = torch.rand(2, 1, 4, 4)
+
+        with self.assertRaisesRegex(ValueError, "must have shape"):
+            compute_projected_image_memorization_metrics(
+                samples,
+                reference=None,
+                projected_reference_vectors=torch.rand(2, 3, 4),
+                resize_size=2,
+                projection_dim=4,
+                projection_seed=17,
+                image_range="0_1",
+            )
+
+        with self.assertRaisesRegex(ValueError, "feature dimension"):
+            compute_projected_image_memorization_metrics(
+                samples,
+                reference=None,
+                projected_reference_vectors=torch.rand(3, 5),
+                resize_size=2,
+                projection_dim=4,
+                projection_seed=17,
+                image_range="0_1",
+            )
 
     def test_projected_image_metric_detects_exact_copies(self):
         reference = torch.zeros(4, 1, 4, 4)

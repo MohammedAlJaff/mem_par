@@ -1,10 +1,13 @@
-# Equivalent in Principle, Unequal in Practice
+# Target Parameterization Shifts the Generation-Memorization Frontier
 
-**How target parameterization shapes memorization and generalization in diffusion and flow-based models**
+**Quality-optimal flow-matching targets may not be memorization-optimal**
 
-This repository is the paper repo for the NeurIPS submission on how `x`, `eps`,
-and `v` parameterizations behave differently in practice even when the
-underlying diffusion or flow-matching setup is held fixed.
+This repository is the paper repo for the NeurIPS submission on how target
+parameterization changes memorization dynamics in flow matching. The current
+objective is not to claim that target choice is determined by intrinsic versus
+ambient dimension; concurrent work already makes that geometry/quality argument.
+Our question is whether the target that gives the best sample quality is also
+the target that minimizes memorization at matched quality.
 
 The repo now has five clear surfaces:
 
@@ -42,7 +45,8 @@ jupyter lab experiments/synthetic/gmm_data_sanity.ipynb
 
 That notebook checks the canonical GMM/subspace generator in three data-only
 settings: a true 2D GMM, a projected high-dimensional GMM, and a fixed `d/D`
-sweep where intrinsic dimension increases with ambient dimension.
+sweep. These are dimensionality stress tests and sanity checks, not the central
+novelty claim.
 
 ## Official Saved-Run Path
 
@@ -96,6 +100,9 @@ group is dataset+model+training steps, so `x`, `eps`, `v`, batch-size, seed, and
 `N` sweeps stay together inside one dataset/model project. Image runners use
 the clean public dataset key and selected size, so
 `flowers --image_size 128` logs under `memparam-flowers-128-unet`.
+Runs also log a flat W&B config field and tag named `param` / `param:<value>`,
+with values like `xx`, `epseps`, `vv`, and `vx`, for one-column
+parameterization filtering.
 Pass `--wandb_project`, `--wandb_name`, or `--wandb_group` to override these
 values explicitly. Local offline files are stored under the attempt's
 `logs/wandb/` directory for later `wandb sync`.

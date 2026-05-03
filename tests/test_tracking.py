@@ -117,6 +117,10 @@ class TestAttemptTracker(unittest.TestCase):
                 self.assertTrue(fake.init_calls[0]["dir"].endswith("logs/wandb"))
                 self.assertEqual(fake.init_calls[0]["config"]["param"], "xx")
                 self.assertIn("param:xx", fake.init_calls[0]["tags"])
+                self.assertIn("optimizer:adam", fake.init_calls[0]["tags"])
+                self.assertIn("lr:0.001", fake.init_calls[0]["tags"])
+                self.assertIn("weight_decay:0.0", fake.init_calls[0]["tags"])
+                self.assertIn("momentum:0.9", fake.init_calls[0]["tags"])
                 self.assertEqual(
                     fake.runs[0].logs[0],
                     ({"train/loss": 1.25, "train/step": 4}, None),

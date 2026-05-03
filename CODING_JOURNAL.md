@@ -3108,3 +3108,23 @@ Capacity-resume sanity jobs submitted for W&B/local resume verification:
 - Both were healthy when last checked: running, writing to new local attempt directories, and W&B reported `Resuming run ...` against the original run IDs rather than creating unrelated runs.
 
 Commit scope for this checkpoint should remain limited to the plotting prototype and journal updates; generated figures, Slurm logs, notebooks, and unrelated dirty worktree files should stay out of the commit.
+
+## 2026-05-03 - FFHQ output cleanup and repo-main consolidation plan
+
+Deleted only the FFHQ output result directories after confirming they were disposable preflight/speed-grid artifacts to redo later:
+
+- `outputs/job_sets/ffhq64_param_sweep_20260426`
+- `outputs/job_sets/ffhq_speed_grid_20260426_fat`
+- `outputs/job_sets/ffhq_speed_grid_20260426_thin`
+
+Storage after deletion:
+
+- Free filesystem space improved from about `865G` to about `1.8T`.
+- Remaining `outputs/job_sets` size is about `1.7T`.
+
+Cleanup policy for bringing the repo back to `main`:
+
+- Keep source, docs, tests, job specifications/manifests/scripts, real notebooks, and useful helper scripts.
+- Exclude generated logs, scratch files, notebook checkpoints, local Codex state, pyc caches, and output/data/tmp result artifacts.
+- Restore deleted legacy job launcher scripts rather than committing their deletion.
+- Restore `tea_debug.log` rather than committing transient debug output.

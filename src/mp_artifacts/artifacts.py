@@ -815,6 +815,10 @@ def create_run_layout(experiment_dir, config):
         "config_hash": _config_hash(config),
         "seed": seed,
         "seed_id": seed_id,
+        "optimizer": str(config.training.optimizer),
+        "lr": float(config.training.lr),
+        "weight_decay": float(config.training.weight_decay),
+        "momentum": float(config.training.momentum),
         "attempt_id": attempt_id,
         "created_at": now,
         "updated_at": now,
@@ -941,11 +945,29 @@ def save_checkpoint(run_dir, step, model, optimizer):
     return path
 
 
+def _checkpoint_path_step(path):
+    """
+    Extract the integer training step from a checkpoint filename.
+
+    Checkpoints are normally zero-padded, but long runs can exceed the original
+    width, e.g. `step_1000000.pt`. Numeric sorting keeps the final checkpoint
+    last even when filename lengths differ.
+    """
+    path = Path(path)
+    match = re.fullmatch(r"step_(\d+)\.pt", path.name)
+    if match is None:
+        raise ValueError(f"Unexpected checkpoint filename: {path}")
+    return int(match.group(1))
+
+
 def list_checkpoint_paths(run_dir):
     """
     Return the saved checkpoint files in chronological order.
     """
-    return sorted((Path(run_dir) / "checkpoints").glob("step_*.pt"))
+    return sorted(
+        (Path(run_dir) / "checkpoints").glob("step_*.pt"),
+        key=_checkpoint_path_step,
+    )
 
 
 def find_latest_attempt_dir(experiment_dir, run_id, seed):

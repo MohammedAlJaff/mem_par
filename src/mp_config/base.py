@@ -130,6 +130,9 @@ def get_base_config():
     outputs = config.outputs = ConfigDict()
     outputs.run_name = "run"
 
+    monitoring = config.monitoring = ConfigDict()
+    monitoring.batch_size = 64
+
     generation_monitor = config.generation_monitor = ConfigDict()
     generation_monitor.enabled = False
     generation_monitor.n_samples = 64

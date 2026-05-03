@@ -1,349 +1,283 @@
-# Paper Objective: Parameterization-Dependent Memorization Dynamics
+# Paper Objective: Target Parameterization and Memorization Dynamics
 
 ## Executive summary
 
-The paper should not be framed as "epsilon/epsilon memorizes less." That is too easy to dismiss unless quality is controlled. The stronger and more respectable framing is:
-
-> Target parameterization changes the learning dynamics by which diffusion/flow models move from generation to memorization.
-
-The key sentence to aim for is:
-
-> At matched architecture, dataset size, optimizer, and sample quality, different target parameterizations enter different memorization regimes.
-
-The literature split is clean. Bonnaire et al. already study training dynamics, dataset size, capacity, FID, train/test loss, and memorization time. Li and He already study prediction/loss parameterization and finite-capacity high-dimensional denoising. George et al. already study precise train/test learning curves for DSM under random features, with axes `(n,d,p,m)`. The contribution should be their intersection: parameterization-dependent memorization learning curves. Bonnaire gives the time/data/capacity frame; Li-He gives the target-geometry frame; George gives the learning-curve frame.
-
-The paper should show that target parameterization shifts:
-
-- the quality-memorization frontier;
-- the generation-to-memorization window;
-- the capacity/data phase boundary.
-
-The must-do analyses are:
-
-- add FID/KID or another quality metric at every checkpoint;
-- add train/test losses;
-- compute common-space losses if possible;
-- validate projected `F_mem`;
-- plot checkpoint trajectories in the `(F_mem, FID)` plane.
-
-The high-value derived quantities are:
-
-- `F_mem@FID_best`;
-- `tau_gen`;
-- `tau_mem`;
-- `tau_mem - tau_gen`.
-
-The best result would be:
-
-> One parameterization gives a longer good-quality-before-memorization window, or parameterizations memorize differently even at matched FID.
-
-The main thing to avoid is accidentally writing "Bonnaire, but with target labels." Dataset-size sweeps and capacity sweeps alone are not enough. FID-memorization Pareto plots alone are also not novel, since prior work already studies quality-memorization tradeoffs. The novelty is that target parameterization is the axis that shifts the curve/frontier/window, not merely another hyperparameter. MemControl, for example, explicitly optimizes a quality-memorization tradeoff during fine-tuning, so the Pareto framing is useful but cannot be the contribution by itself.
-
-## What we want from internal analysis/Codex
-
-The role of internal analysis is coauthor-level idea generation and filtering, not just "more plots." It should:
-
-1. identify the strongest paper claim;
-2. sanity-check against nearby literature;
-3. separate publishable ideas from obvious ablations;
-4. design analyses that reviewers cannot easily dismiss;
-5. translate messy W&B observations into paper sections and figures;
-6. help implement the right evaluations without exploding scope.
-
-The job is not to maximize experiment count. The job is to make every experiment answer a reviewer objection.
-
-## Actual paper thesis
-
-Strongest thesis:
-
-> Algebraically related target parameterizations are not equivalent learning problems under finite data, finite capacity, and finite optimization. They induce different learning curves, different overfitting dynamics, and different memorization behavior.
-
-Sharper mechanistic version:
-
-> Target parameterization controls how model capacity is allocated between intrinsic data structure, ambient noise directions, and sample-specific identity.
-
-Li-He matters because clean data lies near a low-dimensional manifold, while noise and velocity/noised quantities live in the ambient space. Their paper separates prediction space from loss space, enumerates the `(x, epsilon, v)` combinations, and shows that direct network output and loss-space choices can matter even when quantities are transformable. They also include a toy experiment where low-dimensional data are buried in a higher-dimensional observed space by a fixed random column-orthogonal projection; as observed dimension increases, only `x` prediction remains reasonable in that setup.
-
-The twist here is not merely "x prediction works better." The twist is:
-
-> Which parameterization learns the distribution before it starts copying the dataset?
-
-That is the Bonnaire connection. Bonnaire et al. identify an early generation time `tau_gen` and a later memorization time `tau_mem`, with `tau_mem` increasing linearly with training set size `N` while `tau_gen` remains roughly constant. Their result creates a good-generation-before-memorization window. The natural extension is whether this window is parameterization-dependent.
-
-George et al. make the train/test learning-curve angle more principled. Their random-features DSM analysis studies train and test errors in a high-dimensional limit where `d,n,p -> infinity` with `psi_n=n/d` and `psi_p=p/d` fixed, and they emphasize that the number of noise samples per data sample, `m`, has a nontrivial role in generalization and memorization. This motivates tracking not only `F_mem`, but also train/test gaps, noise-resampling effects, and learning curves as functions of `N`, capacity, and parameterization.
-
-## What is already done, and what is not
-
-Bonnaire already covers the broad claim that diffusion models can generate well before they memorize, and that memorization time scales with dataset size. They also include standard U-Net experiments and a theoretical random-features component. Therefore, the fixed-capacity dataset-size sweep is valuable only as a baseline if used to show parameterization-dependent shifts in the Bonnaire dynamics.
-
-Li and He already cover the claim that `x` prediction can be better under finite capacity in high-dimensional spaces, and they explicitly discuss prediction space versus loss space. Therefore, the `x/x`, `epsilon/epsilon`, `v/v`, and `x/v` grid is valuable only if connected to memorization and generalization dynamics, not merely sample quality.
-
-Gu et al. already argue that the DSM optimum can be training-data-replicating and study memorization across factors such as data distribution, model configuration, and training procedure. So the broad "diffusion models can memorize small datasets" point is not novel. The added value is that target parameterization changes the route into memorization, not that memorization exists.
-
-Gagneux et al. are especially close on the parameterization side. They study flow-matching objectives with loss weighting and output parameterization, including noise-, clean-image-, and velocity-based formulations, and analyze how these choices interact with intrinsic dimensionality, architecture, and dataset size using denoising accuracy and FID. The gap is that their focus is training objective/quality diagnostics, not memorization dynamics.
-
-The quality-memorization tradeoff itself is also not new. MemControl uses memorization and generation quality metrics as rewards in a bi-level PEFT selection framework and explicitly targets better quality-memorization tradeoffs. So a Pareto plot is not enough. What can be new is showing that target parameterization shifts the quality-memorization frontier even without changing data, architecture, or optimizer.
-
-## Current experiments recast as a paper skeleton
-
-There are two main experimental families.
-
-First, a fixed-capacity training-size sweep. The same U-Net is trained on CelebA 32x32 grayscale subsets, roughly `N=256` to `N~16,000`, across multiple seeds and parameterizations such as `x/x`, `epsilon/epsilon`, `v/v`, and `x/v`. Runs train to about `1e6` steps and track a projected proxy for `F_mem`. Current observations: all models reduce training loss, but raw losses are not comparable across target spaces. `x/x` and `v/v` tend to memorize more than `epsilon/epsilon`, and final memorization decreases as `N` increases. The same qualitative trend appears under Adam and SGD.
-
-Second, a capacity sweep at selected dataset sizes, roughly small/intermediate/large `N`, such as `N~200`, `2,000`, and `8,000`. U-Net capacity varies through base channels or block count. The important part is not that larger U-Nets memorize more; it is whether parameterizations occupy different positions on the capacity-memorization curve.
-
-Current weakness: `F_mem` is a projected monitoring proxy and not yet a final defensible metric. It is usable for exploratory plots, but the paper needs either validation against full nearest-neighbor/perceptual memorization on selected runs or a clear statement that projected `F_mem` is a proxy.
-
-## Core analyses to run
-
-### 1. Quality-controlled memorization
-
-Highest priority.
-
-For each checkpoint, compute:
+The paper should no longer be framed as target parameterization being determined by intrinsic versus ambient dimension. Concurrent work by Qing Jin and Chaoyang Wang, "Revisiting Diffusion Model Predictions Through Dimensionality" (arXiv:2601.21419), is close enough to own that geometry/target-choice story. They introduce the continuous target
 
 ```text
-F_mem(tau)
+y_k = k*x - (1-k)*eps,  k in [0, 1]
+```
+
+where `k=0` is noise prediction up to sign, `k=0.5` is velocity prediction up to scale, and `k=1` is clean-data prediction. They derive
+
+```text
+k* = D / (D + d)
+```
+
+so `k* ~= 0.5` when ambient dimension `D` is close to intrinsic dimension `d`, and `k* -> 1` when `D >> d`. They also propose `k`-Diff, where `k` is learned by backpropagation.
+
+Therefore, our novelty should be:
+
+> Target parameterization changes the memorization dynamics of flow matching.
+
+Sharper objective:
+
+> The target that is optimal for sample quality may not be optimal for memorization. We study how target parameterization shifts the generation-memorization frontier in flow matching.
+
+The central question is:
+
+```text
+Does k_FID_star equal k_mem_star?
+```
+
+where
+
+```text
+k_FID_star = argmin_k FID
+k_mem_star = argmin_k F_mem@FID_best
+```
+
+The strongest possible result is:
+
+```text
+k_FID_star != k_mem_star
+```
+
+Paper sentence:
+
+> The prediction target that is optimal for sample quality is not necessarily optimal for memorization.
+
+## Updated internal objective
+
+This project studies how target parameterization affects memorization dynamics in flow matching. We focus on the linear flow path
+
+```text
+z_t = t*x + (1-t)*eps
+u_fm = x - eps
+eps ~ N(0, I)
+t in [t_min, t_max]
+```
+
+and compare targets along the continuous family
+
+```text
+y_k = k*x - (1-k)*eps.
+```
+
+Prior work has shown that the optimal target for sample quality depends on data geometry, especially the relation between ambient and intrinsic dimension. We instead ask whether the quality-optimal target is also safe from memorization.
+
+Our central hypothesis is that target parameterization changes not only final sample quality, but the training-time transition from generation to memorization. We therefore evaluate each target using checkpoint-level FID, nearest-neighbor memorization `F_mem`, train/test losses, memorization at best FID, and the timescales `tau_gen` and `tau_mem`. The core result we seek is whether the target minimizing FID differs from the target minimizing memorization at matched quality.
+
+One-liner:
+
+> Target parameterization shifts the generation-memorization frontier in flow matching.
+
+Stronger version if supported:
+
+> Quality-optimal flow-matching targets can be memorization-prone.
+
+## What remains ours after 2601.21419
+
+The 2601.21419 paper does not appear to compute nearest-neighbor memorization, `F_mem`, train/reference memorization ratios, Bonnaire-style memorization time `tau_mem`, or quality-controlled memorization such as `F_mem@FID_best`. Their experiments are centered on FID/IS and ImageNet latent/pixel-space generation quality.
+
+Our contribution should be:
+
+```text
+Target parameterization is not only a sample-quality choice.
+It also changes when and how flow-matching models memorize.
+```
+
+This shifts the framing from quality-optimal target selection to memorization dynamics under controlled quality measurement.
+
+## Claims to test
+
+1. Target parameterization changes memorization dynamics at fixed dataset size, architecture, optimizer, and training budget.
+2. Lower memorization is meaningful only after controlling for sample quality.
+3. The quality-optimal target and memorization-optimal target need not coincide.
+4. Target parameterization changes the Bonnaire-style generation-to-memorization window.
+
+Bonnaire et al. identify an early generation time `tau_gen` and a later memorization time `tau_mem`, with `tau_mem` increasing roughly linearly with dataset size while `tau_gen` remains approximately constant. Our extension indexes those timescales by target parameterization:
+
+```text
+tau_gen^(k)
+tau_mem^(k)
+tau_mem^(k) - tau_gen^(k)
+```
+
+## Claims not to make
+
+Do not claim we introduce the continuous `k` target.
+
+Do not claim we are first to connect target parameterization to intrinsic/ambient dimension.
+
+Do not claim `x` prediction being favored when `D >> d` is our explanation.
+
+Do not center MNIST resolution as a clean intrinsic/ambient experiment.
+
+Do not make FID differences across targets the main contribution.
+
+Do not say `epsilon/epsilon` generalizes better unless it has competitive quality or lower memorization at matched FID.
+
+## Experiments to keep
+
+Keep the fixed-capacity CelebA 32x32 grayscale dataset-size sweep:
+
+```text
+N in {256, ..., 16000}
+```
+
+Keep multiple seeds.
+
+Keep optimizer replication with Adam and SGD.
+
+Keep the capacity sweep at representative dataset sizes.
+
+Keep checkpoint-level `F_mem`, but add FID and train/test losses wherever possible.
+
+## Experiments to add
+
+Add a small fixed-`k` sweep:
+
+```text
+k in {0.0, 0.25, 0.5, 0.75, 1.0}
+```
+
+At minimum include:
+
+```text
+k in {0.0, 0.5, 1.0}
+```
+
+These recover noise, velocity, and `x` prediction up to sign/scale.
+
+For each `k`, compute:
+
+```text
 FID(tau)
-```
-
-Plot trajectories in:
-
-```text
-x = F_mem
-y = FID
-```
-
-Lower-left is better: low memorization and good sample quality.
-
-Key statistic:
-
-```text
-F_mem@FID_best = F_mem(argmin_tau FID(tau))
-```
-
-Also compute matched-quality memorization:
-
-```text
-F_mem@FID <= q
-```
-
-where `q` is either an absolute FID threshold or within 10% of best FID.
-
-This directly answers the reviewer objection:
-
-> Maybe epsilon/epsilon memorizes less only because it generates worse samples.
-
-The desired result is not "epsilon/epsilon has lower final memorization." The desired result is:
-
-> At comparable FID, parameterizations still differ in memorization.
-
-If this fails, that is informative: lower memorization of `epsilon/epsilon` is mostly explained by lower sample quality.
-
-### 2. Parameterization-specific Bonnaire timescales
-
-For each parameterization `y in {x/x, epsilon/epsilon, v/v}`, define:
-
-```text
-tau_gen^(y) = min{tau : FID^(y)(tau) <= (1 + delta) FID_best^(y)}
-```
-
-and:
-
-```text
-tau_mem^(y) = min{tau : F_mem^(y)(tau) > alpha}
-```
-
-Then define:
-
-```text
-Delta_tau^(y) = tau_mem^(y) - tau_gen^(y)
-```
-
-This may be the cleanest main result. Bonnaire says there is a window between generation and memorization. We ask whether this window changes with target parameterization.
-
-Then fit:
-
-```text
-tau_mem^(y)(N) ~= a_y N + b_y
-```
-
-If slopes `a_y` differ, the strong claim is:
-
-> The linear memorization-time scaling is parameterization-dependent.
-
-### 3. Train/test loss gaps in native and common spaces
-
-Native losses:
-
-```text
-Delta L_native^(y)(tau) = L_test,native^(y)(tau) - L_train,native^(y)(tau)
-```
-
-This tells whether each model overfits its own objective.
-
-Native losses across `x`, `epsilon`, and `v` are not directly comparable because target scales and time weighting differ. Therefore, common-space losses are needed. Convert each model prediction into a shared target space and evaluate:
-
-```text
-Delta L_x^(y)(tau)
-Delta L_epsilon^(y)(tau)
-Delta L_v^(y)(tau)
-```
-
-Clean question:
-
-> Does the train/test gap open earlier for the parameterizations that memorize earlier?
-
-This is the George connection: memorization should appear as a change in learning curves, not only as a nearest-neighbor statistic.
-
-### 4. Noise-time-resolved overfitting
-
-Evaluate losses as a function of noise level:
-
-```text
-L_train(t, tau)
-L_test(t, tau)
-Delta L(t, tau)
-```
-
-Memorization should be most visible at low noise, where the model is close to reconstructing clean data. Gagneux et al. also emphasize denoising accuracy across noise levels as a diagnostic for objective choices.
-
-Result to look for:
-
-> x/x and v/v develop low-noise train/test gaps earlier than epsilon/epsilon.
-
-If it goes the other way, the mechanism is not low-noise overfitting.
-
-### 5. Capacity/data phase boundary by parameterization
-
-Capacity sweeps should become a phase-boundary plot, not just "larger U-Nets memorize more."
-
-For each parameterization `y`, define a memorization boundary:
-
-```text
-n_y^*(p) = smallest dataset size for which F_mem^(y) < alpha at a fixed stopping rule
-```
-
-The stopping rule can be final training step, best-FID checkpoint, or `tau_gen`. Best-FID or matched-FID is strongest because it avoids comparing bad models to good models.
-
-Claim:
-
-> Target parameterization shifts the capacity/data boundary between generalization and memorization.
-
-### 6. George's m-axis: noise resampling as optional mechanism experiment
-
-George et al. emphasize the number of noise samples per data sample, `m`, as a nontrivial DSM generalization/memorization factor. In normal diffusion training, repeated epochs with fresh noise effectively increase the variety of noised versions per image.
-
-Focused experiment:
-
-```text
-Fix N, architecture, optimizer, and total steps.
-Compare:
-1. fixed noise/timestep bank per image,
-2. small finite bank per image,
-3. fresh noise every iteration.
-Run x/x, epsilon/epsilon, v/v.
-Measure FID, F_mem, train/test gap.
-```
-
-Question:
-
-> Is parameterization-dependent memorization partly mediated by the effective number of noise views per training example?
-
-Not necessary for the first paper result, but potentially strong as a mechanism section if main results are clean.
-
-### 7. Intrinsic/ambient decomposition
-
-Most conceptually ambitious.
-
-Hypothesis:
-
-> Parameterization changes whether the model spends capacity on intrinsic data directions, ambient noise directions, or sample identity.
-
-On synthetic data, test directly with a known subspace or manifold. Decompose generated samples or prediction errors into tangent/intrinsic and normal/ambient components:
-
-```text
-||e||^2 = ||P_M e||^2 + ||(I - P_M)e||^2
-```
-
-Question:
-
-> Does the parameterization that memorizes more also fit normal/off-manifold components differently?
-
-This connects synthetic experiments to the Li-He manifold argument.
-
-## MNIST ambient-dimension idea
-
-Use it, but do not oversell it.
-
-Resolution sweep:
-
-```text
-D = H x W, H,W in {8,16,32,64,128}
-```
-
-while the semantic dataset remains MNIST. The intuition is that intrinsic digit structure should not change much across resolutions.
-
-Critique: changing resolution is not a clean ambient-dimension intervention. Upsampling adds deterministic smoothness and redundancy; downsampling removes information; convolutional U-Nets exploit locality differently at different resolutions. This is not equivalent to Li-He's random projection experiment, where low-dimensional data are buried in a high-dimensional observed space by a fixed random column-orthogonal projection unknown to the model.
-
-Defensible version:
-
-```text
-Clean control:
-Take MNIST PCA or an autoencoder latent u in R^d.
-Embed with x = A u, where A in R^{D x d}, A^T A = I.
-Sweep D at fixed d.
-
-Image-space proxy:
-Resize MNIST to different resolutions.
-Interpret this as a resolution-induced ambient expansion stress test, not a true fixed-intrinsic-dimension experiment.
-```
-
-Keep this auxiliary unless CelebA results are weak.
-
-## Figure plan
-
-Main figure: four-panel result.
-
-Panel A: `F_mem` vs training step. Split by parameterization at fixed `N`, or one row per `N`. Shows raw memorization dynamics.
-
-Panel B: FID vs training step. Same runs. Shows whether lower memorization corresponds to worse generation.
-
-Panel C: FID vs `F_mem` trajectories. Each checkpoint is a point; connect points over time. Color by parameterization. This is the quality-memorization curve.
-
-Panel D: `F_mem@FID_best` vs `N`. Compact controlled comparison across dataset sizes.
-
-Second figure: timescale result.
-
-```text
-tau_gen(N)
-tau_mem(N)
-tau_mem(N) - tau_gen(N)
-```
-
-with separate curves for `x/x`, `epsilon/epsilon`, and `v/v`.
-
-Third figure: capacity phase boundary.
-
-```text
+F_mem(tau)
 F_mem@FID_best
-or
-n_y^*(p)
+tau_gen
+tau_mem
+tau_mem - tau_gen
 ```
 
-as a function of U-Net capacity, split by parameterization.
+Optional learned-`k` experiment:
 
-Appendix:
+```text
+k = sigmoid(w_k)
+y_k = k*x - (1-k)*eps
+u_hat = velocity_from_yk(z_t, y_hat_k, t, k)
+```
 
-- optimizer replication;
-- projected-vs-full `F_mem` validation;
-- native train/test losses;
-- common-space losses;
-- noise-time-resolved loss heatmaps.
+Initialize `k` at `0.5`, log it at every checkpoint, and save the trajectory. This is optional and should not block the first result.
 
-## Codex implementation target
+## Flow-matching target setup
 
-For every run/checkpoint, create one row:
+Use flow matching only where possible. Remove diffusion/VP-specific assumptions from new code paths unless needed for backward compatibility.
+
+Core path:
+
+```text
+z_t = t*x + (1-t)*eps
+u_fm = x - eps
+```
+
+Continuous target:
+
+```text
+y_k = k*x - (1-k)*eps
+```
+
+Velocity induced by a `k`-target prediction:
+
+```text
+denom = k*(1-t) + (1-k)*t
+u_hat = ((1 - 2*k)*z_t + y_hat_k) / denom
+```
+
+For numerical stability:
+
+```text
+denom = denom.clamp_min(denom_min)
+```
+
+`denom_min` should be configurable. Use `1e-4` if `t_min/t_max` already avoid endpoints, or `0.05` if following the `k`-Diff implementation exactly.
+
+Important sign convention:
+
+```text
+k=0 gives y_k = -eps, not +eps.
+```
+
+Legacy `eps/eps` predicts `+eps`; it corresponds to the new `k=0` target only after multiplying output/target by `-1`. For new `k`-sweeps, implement `y_k` directly and report results consistently.
+
+## Implementation target for Codex
+
+Add config support:
+
+```text
+target_mode: {legacy, fixed_k, learned_k}
+k_value: float in [0, 1] for fixed_k
+learn_k_init: float, default 0.5
+denom_min: float
+loss_space: {target, velocity} if feasible
+```
+
+Add helpers:
+
+```text
+make_fm_batch(x, t, eps):
+    z = t*x + (1-t)*eps
+    u = x - eps
+    return z, u
+
+target_yk(x, eps, k):
+    return k*x - (1-k)*eps
+
+velocity_from_yk(z, yk, t, k, denom_min):
+    denom = k*(1-t) + (1-k)*t
+    denom = denom.clamp_min(denom_min)
+    return ((1 - 2*k)*z + yk) / denom
+```
+
+Training objective options:
+
+```text
+Target-space loss:
+    pred_yk = model(z, t)
+    loss = mse(pred_yk, yk)
+
+Velocity-space loss:
+    pred_yk = model(z, t)
+    pred_u = velocity_from_yk(z, pred_yk, t, k, denom_min)
+    loss = mse(pred_u, u)
+```
+
+Use target-space loss for controlled comparison with existing `x/eps/u` target regressions unless otherwise specified. Add velocity-space loss as optional because `k`-Diff uses it.
+
+Sampling:
+
+```text
+pred_yk = model(z, t)
+pred_u = velocity_from_yk(z, pred_yk, t, k, denom_min)
+z_next = z + dt * pred_u
+```
+
+Support Euler and the existing solver if already present.
+
+Backward compatibility mapping:
+
+```text
+x/x -> k=1
+velocity/u/u or v/v -> k=0.5 up to scale
+eps/eps -> k=0 up to sign
+```
+
+Do not silently mix legacy `+eps` with new `-eps` in velocity conversion.
+
+## Metrics table target
+
+For every run/checkpoint, save one row with:
 
 ```text
 run_id
@@ -352,22 +286,15 @@ dataset
 N_train
 capacity_config
 num_params
-base_channels
-num_blocks
 optimizer
-parameterization
-prediction_space
-loss_space
+target_mode
+k_value
+learned_k_current
 step
-epoch_or_seen_samples
 train_loss_native
 test_loss_native
-train_loss_x_eval
-test_loss_x_eval
-train_loss_eps_eval
-test_loss_eps_eval
-train_loss_v_eval
-test_loss_v_eval
+train_loss_velocity
+test_loss_velocity
 F_mem_projected
 F_mem_full_optional
 FID
@@ -376,73 +303,164 @@ num_generated_samples
 num_reference_samples
 ```
 
-Derived quantities:
+Derived metrics:
 
 ```text
-FID_best
-step_best_FID
-F_mem_at_best_FID
-tau_gen_delta_5pct
-tau_gen_delta_10pct
-tau_mem_alpha_001
-tau_mem_alpha_005
-tau_mem_minus_tau_gen
-native_train_test_gap
-x_space_train_test_gap
-eps_space_train_test_gap
-v_space_train_test_gap
-pareto_nondominated_indicator
+FID_best = min_tau FID(tau)
+step_best_FID = argmin_tau FID(tau)
+F_mem_at_best_FID = F_mem(step_best_FID)
+tau_gen = first step where FID <= (1+delta)*FID_best
+tau_mem = first step where F_mem > alpha
+gen_mem_window = tau_mem - tau_gen
+k_FID_star = k with lowest best FID
+k_mem_star = k with lowest F_mem_at_best_FID
+pareto_front in (FID, F_mem), lower is better
 ```
 
-Plots:
+Every summary must support grouping by parameterization, `k`, dataset size, capacity, optimizer, seed, and checkpoint.
+
+## Plot targets
+
+1. `F_mem` vs step, colored by `k`.
+2. FID vs step, colored by `k`.
+3. FID vs `F_mem` checkpoint trajectories, colored by `k`.
+4. `F_mem_at_best_FID` vs `k`.
+5. Best FID vs `k`.
+6. `tau_gen` and `tau_mem` vs `k`.
+7. `tau_mem - tau_gen` vs `k`.
+8. For `N` sweep: `F_mem_at_best_FID` vs `N`, split by `k`.
+9. For capacity sweep: `F_mem_at_best_FID` vs capacity, split by `k`.
+
+## Revised contribution bullets
+
+1. We study target-parameterization-dependent memorization in flow matching, focusing on the continuous target family `y_k = k*x - (1-k)*eps`.
+2. We evaluate memorization jointly with sample quality, using checkpoint-level FID, nearest-neighbor `F_mem`, and `F_mem` at the best-FID checkpoint.
+3. We show that target parameterization changes the training-time transition from generation to memorization, quantified by `tau_gen`, `tau_mem`, and `tau_mem - tau_gen`.
+4. We test whether the target that minimizes FID is also the target that minimizes memorization at matched quality.
+5. We perform dataset-size and capacity sweeps to determine whether target parameterization shifts the effective boundary between generalization and memorization.
+
+If the `k`-sweep works:
 
 ```text
-1. F_mem vs step, grouped by parameterization and N.
-2. FID vs step, grouped by parameterization and N.
-3. FID vs F_mem trajectories.
-4. F_mem_at_best_FID vs N.
-5. tau_gen and tau_mem vs N.
-6. tau_mem ~= a_y N + b_y fits.
-7. capacity vs F_mem_at_best_FID.
-8. proxy F_mem vs full F_mem validation scatter.
-9. noise-level train/test loss heatmaps.
+We find that the quality-optimal target and memorization-optimal target can differ, revealing a target-dependent quality-memorization tradeoff in flow matching.
 ```
 
-Key implementation requirement: every summary must support grouping by parameterization, dataset size, capacity, optimizer, seed, and checkpoint.
+If it does not:
 
-## What not to center
+```text
+We find that target parameterization jointly affects quality and memorization, and lower memorization must be interpreted only after controlling for sample quality.
+```
 
-Do not center raw training loss comparisons across parameterizations. They are useful diagnostics, but scales are not comparable without normalization or common-space evaluation.
+## Related/concurrent work: 2601.21419
 
-Do not center final `F_mem` alone. It confounds memorization, sample quality, and training duration.
+Jin and Wang, "Revisiting Diffusion Model Predictions Through Dimensionality," studies prediction-target selection through dimensionality. It introduces the target family
 
-Do not center the Pareto front as a generic quality-memorization plot. The front matters only if target parameterization changes it.
+```text
+y_k = k*x - (1-k)*eps,  k in [0, 1]
+```
 
-Do not center MNIST resolution as proof of fixed intrinsic dimension. Use it as a proxy/stress test, and use random projection if a clean Li-He-style ambient-dimension control is needed.
+which recovers noise, velocity, and clean-data prediction as special cases up to sign and scale. Their theory analyzes a linear model trained on data supported in a `d`-dimensional subspace of an ambient `D`-dimensional space. The learning dynamics decompose into components parallel to the data manifold and perpendicular to it. The parallel component is associated with data recovery, while the perpendicular component is associated with noise elimination in the ambient space.
 
-Do not overclaim "epsilon/epsilon generalizes better" unless `epsilon/epsilon` has competitive FID or lower memorization at matched FID.
+Under simplifying assumptions for the flow-matching path, they derive:
 
-## Clean paper story
+```text
+k* = D / (D + d)
+```
 
-Main claim:
+This predicts velocity-like targets when `D ~= d` and clean-data prediction when `D >> d`. Since intrinsic dimension is hard to estimate in real data, they propose `k`-Diff, which learns scalar `k` by backpropagation. Their ImageNet experiments show `k`-Diff matching or improving fixed-target baselines in latent and pixel space.
 
-> Target parameterization changes when diffusion models memorize.
+For our paper, this is concurrent work on quality-optimal target selection, not memorization work. It motivates the `k`-target family and strengthens the case that target parameterization matters, but it does not answer whether the target that optimizes FID also minimizes memorization. Our work studies that missing axis by measuring `F_mem`, `F_mem@FID_best`, `tau_gen`, and `tau_mem` across target parameterizations.
 
-Results:
+Paper-ready paragraph:
 
-1. At fixed capacity and dataset size, `x/x`, `epsilon/epsilon`, and `v/v` exhibit different memorization trajectories.
-2. These differences are not explained solely by optimizer choice, since the qualitative trend persists under Adam and SGD.
-3. Lower memorization is meaningful only after controlling for sample quality; therefore compare `F_mem` at best FID and at matched FID.
-4. Parameterization changes the Bonnaire window `tau_mem - tau_gen`.
-5. Parameterization shifts the capacity/data boundary for memorization.
-6. Noise-level-resolved train/test gaps suggest a mechanism: parameterizations differ in how they allocate finite capacity across clean data structure, ambient noise directions, and sample identity.
+```latex
+Concurrent work by Jin and Wang studies prediction-target selection through the lens of dimensionality. They introduce a continuous target family
+\[
+    \vy_k = k\vx-(1-k)\veps,
+    \qquad k\in[0,1],
+\]
+which recovers noise, velocity, and clean-data prediction as special cases up to sign and scale. In a linear model with data supported on a $d$-dimensional subspace of an ambient $D$-dimensional space, they show that the learning dynamics decompose into manifold-parallel and ambient-perpendicular components, and derive the optimal target parameter
+\[
+    k^\star = \frac{D}{D+d}.
+\]
+This predicts velocity-like targets when $D\approx d$ and clean-data prediction when $D\gg d$. They further propose $k$-Diff, which learns $k$ by backpropagation and improves or matches fixed-target baselines in latent- and pixel-space ImageNet generation. Our work is complementary: rather than optimizing the target for sample quality alone, we ask whether target parameterization also changes the transition from generation to memorization. In particular, we evaluate whether the quality-optimal target is also optimal under nearest-neighbor memorization metrics and quality-controlled memorization summaries such as $F_{\mathrm{mem}}@\mathrm{FID}_{\mathrm{best}}$.
+```
 
-One-line abstract version:
+Defensive version:
 
-> Although common diffusion targets are algebraically related, they induce different finite-capacity learning curves: target parameterization shifts the transition from generation to memorization, changes the quality-memorization frontier, and alters the capacity/data phase boundary.
+```latex
+This concurrent work makes it important to distinguish target-quality optimality from memorization behavior. Its analysis explains why certain targets are preferable for efficient prediction under intrinsic/ambient dimensionality, but it does not study training-set replication or memorization timescales. We therefore use the same target family as a controlled axis for evaluating how target choice affects the quality--memorization frontier.
+```
+
+## Minimal LaTeX target setup
+
+```latex
+\subsection{Flow matching target parameterization}
+\label{sec:fm_target_parameterization}
+
+We consider the linear flow-matching path
+\begin{equation}
+    \vz_t = t\vx + (1-t)\veps,
+    \qquad
+    \veps\sim\mathcal{N}(\vzero,\mI),
+    \qquad
+    t\in[t_{\min},t_{\max}]\subset(0,1).
+\end{equation}
+The corresponding flow velocity is
+\begin{equation}
+    \vu = \vx-\veps.
+\end{equation}
+
+Following the continuous target parameterization of concurrent work, we write
+\begin{equation}
+    \vy_k = k\vx-(1-k)\veps,
+    \qquad
+    k\in[0,1].
+    \label{eq:k_target}
+\end{equation}
+The special cases $k=0$, $k=1/2$, and $k=1$ recover noise, velocity, and clean-data prediction up to sign and scale. For sampling, a prediction $\hat{\vy}_k$ is converted into a velocity estimate by
+\begin{equation}
+    \hat{\vu}_k(\vz_t,t)
+    =
+    \frac{(1-2k)\vz_t+\hat{\vy}_k(\vz_t,t)}
+    {k(1-t)+(1-k)t}.
+    \label{eq:k_to_velocity}
+\end{equation}
+Thus all targets define a velocity field along the same probability path, but they induce different finite-capacity regression problems.
+```
+
+Training objective:
+
+```latex
+For fixed $k$, we train a model $f_\theta^k$ using
+\begin{equation}
+    \mathcal{L}_{\mathrm{target}}^k(\theta)
+    =
+    \mathbb{E}_{\vx,\veps,t}
+    \left[
+        \left\|
+        f_\theta^k(\vz_t,t)-\vy_k
+        \right\|_2^2
+    \right].
+    \label{eq:k_target_loss}
+\end{equation}
+Where stated, we also evaluate the induced common velocity loss
+\begin{equation}
+    \mathcal{L}_{\mathrm{vel}}^k(\theta)
+    =
+    \mathbb{E}_{\vx,\veps,t}
+    \left[
+        \left\|
+        \hat{\vu}_k(\vz_t,t)-\vu
+        \right\|_2^2
+    \right].
+    \label{eq:k_velocity_loss}
+\end{equation}
+```
 
 ## References to track
 
+- Jin and Wang, "Revisiting Diffusion Model Predictions Through Dimensionality". https://arxiv.org/html/2601.21419v2
 - Bonnaire et al., "Why Diffusion Models Don't Memorize: The Role of Implicit Dynamical Regularization in Training". https://arxiv.org/abs/2505.17638
 - MemControl, "Mitigating Memorization in Diffusion Models via Automated Parameter Selection". https://arxiv.org/abs/2405.19458
 - Li and He, "Back to Basics: Let Denoising Generative Models Denoise". https://arxiv.org/abs/2511.13720

@@ -1,0 +1,10 @@
+task_id	dataset	image_size	prediction_space	loss_space	n_train	n_test	seed
+0	flowers	64	x	x	128	128	0
+1	flowers	64	eps	eps	128	128	0
+2	flowers	64	v	v	128	128	0
+3	celeba	32	x	x	128	128	0
+4	celeba	32	eps	eps	128	128	0
+5	celeba	32	v	v	128	128	0
+6	mnist	32	x	x	128	128	0
+7	mnist	32	eps	eps	128	128	0
+8	mnist	32	v	v	128	128	0

@@ -1,0 +1,7 @@
+task_id	dataset	ambient_dim	intrinsic_data_dim	prediction_space	loss_space	n_train	n_test	seed
+0	gmm_subspace	2	2	x	x	128	1024	0
+1	gmm_subspace	2	2	eps	eps	128	1024	0
+2	gmm_subspace	2	2	v	v	128	1024	0
+3	torus3d	3	NA	x	x	128	1024	0
+4	torus3d	3	NA	eps	eps	128	1024	0
+5	torus3d	3	NA	v	v	128	1024	0

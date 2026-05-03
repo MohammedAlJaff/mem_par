@@ -1,0 +1,4 @@
+task_id	dataset	image_size	prediction_space	loss_space	n_train	n_test	eval_sample_bank_size	seed
+0	ffhq	64	x	x	4000	1024	4000	0
+1	ffhq	64	eps	eps	4000	1024	4000	0
+2	ffhq	64	v	v	4000	1024	4000	0

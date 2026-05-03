@@ -103,6 +103,7 @@ The core image-runner size knobs mean exactly this:
 | `--n_train` | `config.data.n_train` | Number of real images used for optimization. |
 | `--n_test` | `config.data.n_test` | Number of real held-out/reference images materialized for later tests. |
 | `--generation_monitor_samples` | `config.generation_monitor.n_samples` | Number of fixed-noise samples available to train-time image monitors. |
+| `--monitor_batch_size` | `config.monitoring.batch_size` | No-grad batch size for train-time image monitors; defaults to `--batch_cap`. |
 | `--sampling_steps` | `config.sampling.n_steps` | Number of solver steps used to generate images from `z_init`. |
 | `--precision` | `config.runtime.precision` | Numerical mode: `fp32`, CUDA `tf32`, or CUDA `bf16` autocast. |
 
@@ -166,13 +167,31 @@ rejected because there is no configurable global linear intrinsic space.
 Held-out true-data checks use the `holdout_*` prefix. Old `latent_*`,
 `baseline_*`, and component-coverage metric aliases are removed.
 
+## Experiment Family And Sampler Scope
+
+The active paper runners should be read as FM experiments with deterministic
+ODE sampling. Both train runners set `config.framework.family = "fm"`: image
+runs do this in the image config builder, and synthetic runs do this in the
+synthetic train runner. Image generation uses deterministic Heun sampling from
+the saved fixed `z_init` bank. Synthetic generation exposes only deterministic
+Euler or Heun sampling through `--sampling_method`.
+
+Lower-level VP helpers still exist in `gdfm.samplers` for tests and examples,
+including `vp_sde` / VP reverse-SDE sampling. They are not part of normal
+image or synthetic train/eval runs, and current runner outputs should not be
+described as DDPM results. If a future study needs VP or DDPM behavior, it
+should get an explicit runner/API surface rather than being implied by the
+current FM runs.
+
 ## Bonnaire-Close Image32 Defaults
 
 The default 32px/Image32 profile is kept close to Bonnaire's UNet setup:
 `base_channels=32`, `channel_mult=(1, 2, 4)`, `num_res_blocks=2`,
 `dropout=0.1`, `time_emb_dim=None` (resolved by the model to
-`base_channels * 4`), and `attn_resolutions=(16, 8)`. Training keeps Adam with
-`lr=1e-4` and the framework family remains continuous-flow matching.
+`base_channels * 4`), and `attn_resolutions=(16, 8)`. This is a
+Bonnaire-close model/data recipe, not a DDPM reproduction. Training keeps Adam
+with `lr=1e-4`, the framework family remains continuous-flow matching, and
+generation uses deterministic ODE sampling.
 
 Bonnaire does use time embeddings: their vendor UNet defines
 `SinusoidalPositionEmbeddings` in

@@ -11,6 +11,20 @@ output/
 outputs/
 tmp/
 data/
+logs/
+.codex
+.codex/
+scratch.py
+prototyping/eval_temp.ipynb
+**/.ipynb_checkpoints/
+**/__pycache__/
+jobs/**/*.out
+jobs/**/*.err
+jobs/**/results_*/
+jobs/job_sets/*/slurm/*.out
+jobs/job_sets/*/slurm/*.err
+.*.json.lock
+.*.json.*.tmp
 
 # Note: vendored third-party code (baselines/*/vendor/, third_party/*/)
 # is tracked and included in the repo for reproducibility

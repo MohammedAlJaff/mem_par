@@ -26,7 +26,9 @@ DEFAULT_STUDY_DIR = "outputs/runners/image_train_runner"
 MODEL_CHOICES = ("unet",)
 DEFAULT_IMAGE_LR = 1.0e-4
 DEFAULT_IMAGE_WEIGHT_DECAY = 0.0
+DEFAULT_IMAGE_MOMENTUM = 0.9
 DEFAULT_IMAGE_OPTIMIZER = "adam"
+IMAGE_OPTIMIZER_CHOICES = ("adam", "sgd")
 DEFAULT_CONSOLE_SUMMARY_SECONDS = 60.0
 DEFAULT_EVAL_SAMPLE_BANK_SIZE = 1024
 
@@ -206,8 +208,10 @@ DEFAULT_SETTINGS = {
     "ckpt_steps": "",
     "log_every": None,
     "batch_cap": 64,
+    "optimizer": DEFAULT_IMAGE_OPTIMIZER,
     "lr": DEFAULT_IMAGE_LR,
     "weight_decay": DEFAULT_IMAGE_WEIGHT_DECAY,
+    "momentum": DEFAULT_IMAGE_MOMENTUM,
 
     # Runtime numerics.
     # precision: fp32 preserves current behavior; tf32/bf16 are CUDA speed paths.
@@ -322,6 +326,11 @@ def list_datasets():
 def list_models():
     """Return supported image model names."""
     return MODEL_CHOICES
+
+
+def list_optimizers():
+    """Return supported optimizer names for image train runs."""
+    return IMAGE_OPTIMIZER_CHOICES
 
 
 def list_image_sizes():
@@ -614,7 +623,13 @@ def build_config(settings):
     batch_cap = resolve_batch_cap(settings)
     config.training.batch_cap = batch_cap
     config.training.batch_size = batch_cap
-    config.training.optimizer = DEFAULT_IMAGE_OPTIMIZER
+    optimizer = str(settings.get("optimizer", DEFAULT_IMAGE_OPTIMIZER)).lower()
+    if optimizer not in IMAGE_OPTIMIZER_CHOICES:
+        raise ValueError(
+            f"Unknown image optimizer: {optimizer}. "
+            f"Expected one of {IMAGE_OPTIMIZER_CHOICES}."
+        )
+    config.training.optimizer = optimizer
     lr = raw_settings["lr"] if _raw_overrides_default(raw_settings, "lr") else None
     config.training.lr = float(_coalesce(lr, DEFAULT_IMAGE_LR))
     weight_decay = (
@@ -625,6 +640,12 @@ def build_config(settings):
     config.training.weight_decay = float(
         _coalesce(weight_decay, DEFAULT_IMAGE_WEIGHT_DECAY)
     )
+    momentum = (
+        raw_settings["momentum"]
+        if _raw_overrides_default(raw_settings, "momentum")
+        else None
+    )
+    config.training.momentum = float(_coalesce(momentum, DEFAULT_IMAGE_MOMENTUM))
 
     # Runtime.
     config.runtime.precision = str(settings["precision"])
