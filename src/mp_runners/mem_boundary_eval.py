@@ -51,7 +51,8 @@ PARAM_SPACES: dict[str, tuple[str, str]] = {
 }
 PARAM_ORDER = {param: index for index, param in enumerate(PARAM_SPACES)}
 RUN_RE = re.compile(
-    r"celeba32_N(?P<n_train>\d+)_B(?P<batch>\d+)_(?P<param>x_x|eps_eps|v_v|x_v)_"
+    r"celeba32_N(?P<n_train>\d+)_B(?P<batch>\d+)_(?:(?P<model_label>[A-Za-z0-9]+_m\d+)_)?"
+    r"(?P<param>x_x|eps_eps|v_v|x_v)_"
     r"steps(?P<train_steps>\d+)_s(?P<seed>\d+)-"
 )
 
@@ -183,6 +184,31 @@ def discover_done_manifest(source_root: Path) -> list[ManifestRow]:
     return [ManifestRow(**{**asdict(row), "manifest_index": index}) for index, row in enumerate(rows)]
 
 
+def load_manifest_csv(path: Path) -> list[ManifestRow]:
+    rows: list[ManifestRow] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for raw in csv.DictReader(handle):
+            rows.append(
+                ManifestRow(
+                    manifest_index=int(raw["manifest_index"]),
+                    n_train=int(raw["n_train"]),
+                    seed=int(raw["seed"]),
+                    param=str(raw["param"]),
+                    batch_size=int(raw["batch_size"]),
+                    train_steps=int(raw["train_steps"]),
+                    run_id=str(raw["run_id"]),
+                    attempt_id=str(raw["attempt_id"]),
+                    attempt_dir=str(raw["attempt_dir"]),
+                    checkpoint_count=int(raw["checkpoint_count"]),
+                    final_step=int(raw["final_step"]),
+                    sampler=str(raw["sampler"]),
+                    sampling_steps=int(raw["sampling_steps"]),
+                )
+            )
+    rows.sort(key=lambda row: int(row.manifest_index))
+    return rows
+
+
 def resolve_source_attempt(source_root: Path, n_train: int, seed: int, param: str) -> Path:
     seed_dir = f"seed_{seed:04d}"
     pattern = (
@@ -274,6 +300,9 @@ def write_manifest(out_dir: Path, manifest: list[ManifestRow]) -> None:
 
 def attempt_output_dir(out_dir: Path, row: ManifestRow) -> Path:
     safe_attempt = sanitize_cache_part(row.attempt_id)
+    if "mem_gen_boundary_capacity_" in row.run_id:
+        safe_run = sanitize_cache_part(row.run_id)
+        return out_dir / "attempts" / f"m{row.manifest_index:04d}_{safe_run}_{safe_attempt}"
     return out_dir / "attempts" / f"N{row.n_train}_s{row.seed}_{row.param}_{safe_attempt}"
 
 
@@ -1276,6 +1305,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source_root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--out_dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--manifest_csv", type=Path, default=None)
     parser.add_argument("--all_done", action="store_true")
     parser.add_argument("--expected_manifest_count", type=int, default=84)
     parser.add_argument("--n_train", type=int, default=16384)
@@ -1310,7 +1340,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     source_root = Path(args.source_root)
-    if args.all_done:
+    if args.manifest_csv is not None:
+        manifest = load_manifest_csv(Path(args.manifest_csv))
+        validate_manifest(manifest, args.expected_manifest_count, args.allow_checkpoint_count_mismatch)
+    elif args.all_done:
         manifest = discover_done_manifest(source_root)
         validate_manifest(manifest, args.expected_manifest_count, args.allow_checkpoint_count_mismatch)
     else:

@@ -3128,3 +3128,33 @@ Cleanup policy for bringing the repo back to `main`:
 - Exclude generated logs, scratch files, notebook checkpoints, local Codex state, pyc caches, and output/data/tmp result artifacts.
 - Restore deleted legacy job launcher scripts rather than committing their deletion.
 - Restore `tea_debug.log` rather than committing transient debug output.
+
+## 2026-05-03 - Capacity final-checkpoint eval launch
+
+Implemented and smoke-tested the capacity final-checkpoint eval path.
+
+Safety and consistency checks:
+
+- Kept capacity eval outputs isolated from the older all-DONE `n_train` sweep outputs.
+- Confirmed the existing `n_train` sweep used `train_tensor.pt` from `torchvision_celeba:train` for `F_mem`, and `torchvision_celeba:valid` as the held-out/FID reference.
+- Kept the capacity full eval consistent with the existing sweep by using `--heldout_split valid`.
+- Confirmed `F_mem` is computed against each run's full saved training tensor, not the held-out/FID reference set.
+- Confirmed the eval records threshold-specific memorization columns for `rho in {0.3, 0.5, 0.7}` in addition to the default `f_mem`.
+- Added capacity-safe output naming because the capacity jobset has multiple model labels for the same `(n_train, seed, param)`.
+
+Smoke jobs:
+
+- Tiny final-checkpoint smoke, `sample_count=64`, `fid_reference_count=64`.
+- Short final-checkpoint smoke, `sample_count=1024`, `fid_reference_count=1024`.
+- Both a full 72-checkpoint source attempt and a resumed 2-checkpoint tail attempt completed cleanly.
+
+Full eval launch:
+
+- Job: `16479222`.
+- Script: `jobs/evals/mem_boundary_capacity_final_eval.sbatch`.
+- Array: `0-96` with no throttle, per deadline pressure.
+- Frozen manifest: `outputs/evals/mem_boundary_capacity_20260427_final_quality_20260503/manifest.csv`.
+- Output root: `outputs/evals/mem_boundary_capacity_20260427_final_quality_20260503`.
+- Settings: final checkpoint only, `step_1000000`, `sample_count=10000`, `fid_reference_count=10000`, `heldout_split=valid`, `device=cuda`.
+- The frozen manifest had `97` completed capacity attempts at launch time.
+- The large resume array still had `11` tasks running at launch time; those should be picked up by a later small eval launch after their DONE attempts appear.
