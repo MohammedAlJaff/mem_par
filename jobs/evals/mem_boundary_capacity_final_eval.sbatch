@@ -31,6 +31,11 @@ export PYTHONPATH=src:.
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-${SLURM_JOB_ID:-mem-boundary-capacity-final}"
 mkdir -p "$MPLCONFIGDIR"
 
+if [[ ! -s "$MANIFEST_CSV" ]]; then
+  echo "Frozen manifest is missing or empty: $MANIFEST_CSV" >&2
+  exit 2
+fi
+
 python -m mp_runners.mem_boundary_eval \
   --manifest_csv "$MANIFEST_CSV" \
   --source_root outputs/job_sets/mem_gen_boundary_capacity_20260427 \
@@ -43,6 +48,5 @@ python -m mp_runners.mem_boundary_eval \
   --heldout_split valid \
   --checkpoint_steps 1000000 \
   --device cuda \
-  --write_manifest \
   --skip_combined \
   "$@"

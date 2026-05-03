@@ -55,6 +55,7 @@ RUN_RE = re.compile(
     r"(?P<param>x_x|eps_eps|v_v|x_v)_"
     r"steps(?P<train_steps>\d+)_s(?P<seed>\d+)-"
 )
+CHECKPOINT_DIR_SEP = "::"
 
 DEFAULT_SOURCE_ROOT = Path("outputs/job_sets/mem_gen_boundary_20260427")
 DEFAULT_OUT_DIR = Path("outputs/evals/mem_boundary_20260427_all_done_quality_20260501")
@@ -80,6 +81,7 @@ class ManifestRow:
     final_step: int
     sampler: str
     sampling_steps: int
+    checkpoint_source_dirs: str = ""
 
 
 @dataclass(frozen=True)
@@ -145,12 +147,47 @@ def checkpoint_step(path: Path) -> int:
     return int(stem.removeprefix("step_"))
 
 
+def encode_checkpoint_source_dirs(paths: list[Path]) -> str:
+    return CHECKPOINT_DIR_SEP.join(str(path) for path in paths)
+
+
+def checkpoint_source_dirs(row: ManifestRow) -> list[Path]:
+    raw = str(getattr(row, "checkpoint_source_dirs", "") or "")
+    if not raw:
+        return [Path(row.attempt_dir)]
+    return [Path(part) for part in raw.split(CHECKPOINT_DIR_SEP) if part]
+
+
+def merged_checkpoint_paths(paths: list[Path]) -> list[Path]:
+    by_step: dict[int, Path] = {}
+    for source_dir in paths:
+        for path in sorted(list_checkpoint_paths(source_dir), key=checkpoint_step):
+            by_step[checkpoint_step(path)] = path
+    return [by_step[step] for step in sorted(by_step)]
+
+
 def manifest_sort_key(row: ManifestRow) -> tuple[int, int, int, str]:
     return (int(row.n_train), int(row.seed), PARAM_ORDER[row.param], row.run_id)
 
 
-def discover_done_manifest(source_root: Path) -> list[ManifestRow]:
+def load_resume_source_attempts(path: Path | None) -> dict[str, Path]:
+    if path is None:
+        return {}
+    result: dict[str, Path] = {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        for raw in csv.DictReader(handle, delimiter="\t"):
+            source_attempt = Path(raw["source_attempt"])
+            run_id = source_attempt.parents[3].name
+            previous = result.get(run_id)
+            if previous is not None and previous != source_attempt:
+                raise RuntimeError(f"Conflicting resume source attempts for {run_id}: {previous} vs {source_attempt}")
+            result[run_id] = source_attempt
+    return result
+
+
+def discover_done_manifest(source_root: Path, resume_source_attempts: dict[str, Path] | None = None) -> list[ManifestRow]:
     rows: list[ManifestRow] = []
+    resume_source_attempts = resume_source_attempts or {}
     attempts = sorted(path for path in source_root.glob("runs/*/seeds/seed_*/attempts/DONE_*") if path.is_dir())
     for attempt in attempts:
         run_id = attempt.parents[3].name
@@ -158,7 +195,11 @@ def discover_done_manifest(source_root: Path) -> list[ManifestRow]:
         if match is None:
             continue
         config = load_config_snapshot(attempt)
-        checkpoints = sorted(list_checkpoint_paths(attempt), key=checkpoint_step)
+        source_dirs = [attempt]
+        resume_source = resume_source_attempts.get(run_id)
+        if resume_source is not None and resume_source != attempt:
+            source_dirs = [resume_source, attempt]
+        checkpoints = merged_checkpoint_paths(source_dirs)
         if not checkpoints:
             final_step = -1
         else:
@@ -178,6 +219,7 @@ def discover_done_manifest(source_root: Path) -> list[ManifestRow]:
                 final_step=final_step,
                 sampler=str(getattr(config.sampling, "method", DEFAULT_SAMPLER)),
                 sampling_steps=int(getattr(config.sampling, "n_steps", DEFAULT_SAMPLING_STEPS)),
+                checkpoint_source_dirs=encode_checkpoint_source_dirs(source_dirs),
             )
         )
     rows.sort(key=manifest_sort_key)
@@ -203,9 +245,12 @@ def load_manifest_csv(path: Path) -> list[ManifestRow]:
                     final_step=int(raw["final_step"]),
                     sampler=str(raw["sampler"]),
                     sampling_steps=int(raw["sampling_steps"]),
+                    checkpoint_source_dirs=str(raw.get("checkpoint_source_dirs", "")),
                 )
             )
     rows.sort(key=lambda row: int(row.manifest_index))
+    if not rows:
+        raise RuntimeError(f"Manifest CSV is empty or unreadable: {path}")
     return rows
 
 
@@ -250,6 +295,7 @@ def targeted_manifest(source_root: Path, n_train: int, seed: int, params: list[s
                 final_step=checkpoint_step(checkpoints[-1]),
                 sampler=str(getattr(config.sampling, "method", DEFAULT_SAMPLER)),
                 sampling_steps=int(getattr(config.sampling, "n_steps", DEFAULT_SAMPLING_STEPS)),
+                checkpoint_source_dirs=encode_checkpoint_source_dirs([attempt]),
             )
         )
     return rows
@@ -288,14 +334,19 @@ def write_manifest(out_dir: Path, manifest: list[ManifestRow]) -> None:
     fieldnames = list(asdict(manifest[0]).keys()) if manifest else list(ManifestRow.__dataclass_fields__)
     csv_path = out_dir / "manifest.csv"
     jsonl_path = out_dir / "manifest.jsonl"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+    tmp_tag = f"{os.getpid()}_{time.time_ns()}"
+    csv_tmp = csv_path.with_name(f".{csv_path.name}.{tmp_tag}.tmp")
+    jsonl_tmp = jsonl_path.with_name(f".{jsonl_path.name}.{tmp_tag}.tmp")
+    with csv_tmp.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in manifest:
             writer.writerow(asdict(row))
-    with jsonl_path.open("w", encoding="utf-8") as handle:
+    os.replace(csv_tmp, csv_path)
+    with jsonl_tmp.open("w", encoding="utf-8") as handle:
         for row in manifest:
             handle.write(json.dumps(asdict(row), sort_keys=True) + "\n")
+    os.replace(jsonl_tmp, jsonl_path)
 
 
 def attempt_output_dir(out_dir: Path, row: ManifestRow) -> Path:
@@ -1117,7 +1168,7 @@ def evaluate_manifest_row(args: argparse.Namespace, manifest_row: ManifestRow, f
     device = torch.device(args.device)
     configure_torch_runtime(config, device)
 
-    checkpoint_paths = sorted(list_checkpoint_paths(source_attempt), key=checkpoint_step)
+    checkpoint_paths = merged_checkpoint_paths(checkpoint_source_dirs(manifest_row))
     selected_checkpoints = select_checkpoints(
         checkpoint_paths,
         requested_steps=parse_int_list(args.checkpoint_steps),
@@ -1306,6 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source_root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--out_dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--manifest_csv", type=Path, default=None)
+    parser.add_argument("--resume_manifest_tsv", type=Path, default=None)
     parser.add_argument("--all_done", action="store_true")
     parser.add_argument("--expected_manifest_count", type=int, default=84)
     parser.add_argument("--n_train", type=int, default=16384)
@@ -1344,7 +1396,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest = load_manifest_csv(Path(args.manifest_csv))
         validate_manifest(manifest, args.expected_manifest_count, args.allow_checkpoint_count_mismatch)
     elif args.all_done:
-        manifest = discover_done_manifest(source_root)
+        manifest = discover_done_manifest(source_root, load_resume_source_attempts(args.resume_manifest_tsv))
         validate_manifest(manifest, args.expected_manifest_count, args.allow_checkpoint_count_mismatch)
     else:
         manifest = targeted_manifest(source_root, args.n_train, args.seed, parse_params(args.params))

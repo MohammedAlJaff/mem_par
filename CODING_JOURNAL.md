@@ -3158,3 +3158,45 @@ Full eval launch:
 - Settings: final checkpoint only, `step_1000000`, `sample_count=10000`, `fid_reference_count=10000`, `heldout_split=valid`, `device=cuda`.
 - The frozen manifest had `97` completed capacity attempts at launch time.
 - The large resume array still had `11` tasks running at launch time; those should be picked up by a later small eval launch after their DONE attempts appear.
+
+## 2026-05-03 - Capacity full-trajectory merged eval launch
+
+Corrected course from final-checkpoint-only eval to the required full-trajectory capacity eval:
+
+- Goal: all currently completed capacity runs, all seeds, all 72 checkpoints per run.
+- Key issue: resumed capacity attempts often contain only tail checkpoints, so full trajectories must merge the original source attempt checkpoints with the resumed DONE attempt checkpoints.
+- Implemented frozen-manifest support for merged checkpoint source directories.
+- Added atomic manifest writes and an empty-manifest guard so Slurm array tasks cannot race on manifest creation.
+- Kept scientific settings aligned with the existing `n_train` sweep:
+  - `sample_count=10000`
+  - `fid_reference_count=10000`
+  - `heldout_split=valid`
+  - `F_mem` against each run's saved `train_tensor.pt`
+  - threshold columns for `rho in {0.3, 0.5, 0.7}`
+
+Merged trajectory smoke:
+
+- Job: `16479322_1`.
+- Run: `N=256`, seed `0`, `x/x`, `base64_m1244`.
+- Output: `outputs/evals/tmp_capacity_full_trajectory_merged_smoke_20260503`.
+- Settings: `sample_count=64`, `fid_reference_count=64`.
+- Result: completed cleanly in `00:09:44`.
+- Verified `72` checkpoint metric rows, first step `0`, final step `1000000`.
+- Verified early/mid checkpoints came from the original source attempt and the final checkpoint came from the resumed DONE attempt.
+
+Real full-trajectory launch:
+
+- Job: `16479328`.
+- Script: `jobs/evals/mem_boundary_capacity_full_trajectory_eval.sbatch`.
+- Frozen manifest: `outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/manifest.csv`.
+- Output root: `outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503`.
+- Manifest had `97` rows, all with `checkpoint_count=72` and `final_step=1000000`.
+- Manifest composition: `41` merged resumed trajectories and `56` single-source full trajectories.
+- Slurm array: `0-96`, no throttle, per deadline pressure.
+- Time limit: `05:00:00` per task based on old full-trajectory eval evidence.
+- Health after launch: all `97` tasks running, no failures seen, no metric files yet at the first early check.
+
+Related running jobs at launch checkpoint:
+
+- Capacity resume array `16479052`: `39` completed, `10` still running, no failures seen.
+- Old all-DONE `n_train` sweep eval `16473994`: `76` completed, `4` running, `2` pending, no failures seen; combine job `16473995` still dependency-pending.
