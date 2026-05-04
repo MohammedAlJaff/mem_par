@@ -9,6 +9,29 @@
 !**/runs/.gitkeep
 output/
 outputs/
+
+# Paper figure metric snapshots. Keep only compact top-level CSV/JSONL files
+# needed to regenerate paper figures; leave PNGs, caches, checkpoints, and
+# per-attempt eval outputs ignored.
+!outputs/
+outputs/*
+!outputs/evals/
+outputs/evals/*
+!outputs/evals/mem_boundary_20260427_all_done_quality_20260501/
+outputs/evals/mem_boundary_20260427_all_done_quality_20260501/*
+!outputs/evals/mem_boundary_20260427_all_done_quality_20260501/*.csv
+!outputs/evals/mem_boundary_20260427_all_done_quality_20260501/*.json
+!outputs/evals/mem_boundary_20260427_all_done_quality_20260501/*.jsonl
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/
+outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/*
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/*.csv
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/*.json
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503/*.jsonl
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/
+outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/*
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/*.csv
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/*.json
+!outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/*.jsonl
 tmp/
 data/
 logs/

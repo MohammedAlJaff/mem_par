@@ -16,6 +16,7 @@ Paper objective this script targets:
 Main quantities:
     - FID(tau)
     - F_mem(tau)
+    - focused n_train sweep trajectories for F_mem, test loss, and FID
     - best FID per run
     - F_mem at the best-FID checkpoint
     - parameterization trajectories at fixed seed and n_train
@@ -30,6 +31,7 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -47,6 +49,8 @@ DEFAULT_JOB_SET_ROOT = Path("outputs/job_sets") / EXPERIMENT_NAME
 DEFAULT_OUT_DIR = Path("prototyping/figures") / f"{EVAL_NAME}_figures"
 
 DEFAULT_REQUESTED_STEPS = [0, 100_000, 300_000, 595_000, 1_000_000]
+DEFAULT_N_TRAIN_SWEEP_VALUES = [512, 2_048, 8_192]
+DEFAULT_N_TRAIN_SWEEP_PARAM = "x_x"
 
 FID_COL = "fid_10k"
 FMEM_COL = "f_mem"
@@ -57,6 +61,10 @@ DISPLAY_LABELS = {
     FMEM_COL: r"$F_{\mathrm{mem}}$",
     "fid_mean": "FID mean",
     "fmem_mean": r"$F_{\mathrm{mem}}$ mean",
+    "test_random_t_loss_10k": "test loss mean",
+    "test_fixed_t_loss_mean_10k": "test loss mean",
+    "test_loss_0_5_10k": r"test loss ($t=0.5$)",
+    "test_loss_0_75_10k": r"test loss ($t=0.75$)",
     "f_mem_rho0.3": r"$F_{\mathrm{mem}}$ ($\rho=0.3$)",
     "f_mem_rho0.5": r"$F_{\mathrm{mem}}$ ($\rho=0.5$)",
     "f_mem_rho0.7": r"$F_{\mathrm{mem}}$ ($\rho=0.7$)",
@@ -135,6 +143,13 @@ def choose_step_col(df: pd.DataFrame) -> str:
     raise RuntimeError("No step or checkpoint_step column found.")
 
 
+def choose_tau_plot_col(df: pd.DataFrame, step_col: str) -> str:
+    """Use normalized tau for trajectory plots when eval outputs provide it."""
+    if "tau" in df.columns:
+        return "tau"
+    return step_col
+
+
 def choose_seed_col(df: pd.DataFrame) -> str | None:
     """Pick the seed column, if present."""
     return first_existing(df.columns, ["seed", "run_seed", "data_seed"])
@@ -167,6 +182,103 @@ def apply_n_train_log_ticks(ax: plt.Axes, ticks: list[int]) -> None:
     ax.set_xticklabels([str(tick) for tick in ticks])
 
 
+def nearest_n_train_values(df: pd.DataFrame, requested: list[int]) -> list[int]:
+    """Map requested dataset sizes to the nearest visible n_train values."""
+    if "n_train" not in df.columns:
+        return []
+
+    available = []
+    for value in sorted(df["n_train"].dropna().unique()):
+        try:
+            available.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    picked: list[int] = []
+    for target in requested:
+        if not available:
+            break
+        nearest = min(available, key=lambda value: (abs(value - int(target)), value))
+        if nearest not in picked:
+            picked.append(nearest)
+
+    return picked
+
+
+def normalize_param_token(value: object) -> str:
+    """Normalize raw and plot-ready parameterization labels for filtering."""
+    text = str(value).lower().strip()
+    for old, new in [
+        ("\\", ""),
+        ("$", ""),
+        ("{", ""),
+        ("}", ""),
+        ("mathrm", ""),
+        ("epsilon", "eps"),
+        ("/", "_"),
+        ("-", "_"),
+        (" ", "_"),
+    ]:
+        text = text.replace(old, new)
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text.strip("_")
+
+
+def filter_by_param(metrics: pd.DataFrame, param_filter: str | None) -> tuple[pd.DataFrame, str]:
+    """Filter by parameterization while accepting raw or pretty labels."""
+    if param_filter is None or str(param_filter).strip().lower() in {"", "all", "*"}:
+        return metrics, "all parameterizations"
+
+    normalized_filter = normalize_param_token(param_filter)
+    mask = pd.Series(False, index=metrics.index)
+    for column in ["param", "param_label_raw", "param_label"]:
+        if column not in metrics.columns:
+            continue
+        mask = mask | metrics[column].map(normalize_param_token).eq(normalized_filter)
+
+    if not mask.any():
+        print(f"[warn] no rows matched --n-train-sweep-param={param_filter!r}; using all parameterizations")
+        return metrics, "all parameterizations"
+
+    return metrics[mask].copy(), str(param_filter)
+
+
+def format_tau_tick(value: float) -> str:
+    """Compact tick labels for normalized tau."""
+    if np.isclose(value, 0.0):
+        return "0"
+    if value < 0.001:
+        return f"{value:.2g}"
+    if value < 0.1:
+        return f"{value:g}"
+    return f"{value:g}"
+
+
+def apply_tau_axis_for_triptych(ax: plt.Axes, tau_values: pd.Series) -> None:
+    """Use a log tau axis for positive normalized tau checkpoints."""
+    positive = pd.to_numeric(tau_values, errors="coerce")
+    positive = positive[np.isfinite(positive) & (positive > 0)]
+    if positive.empty:
+        return
+
+    min_positive = float(positive.min())
+    tick_candidates = [min_positive, 0.001, 0.01, 0.1, 1.0]
+    max_tau = float(positive.max())
+    ticks = []
+    for tick in tick_candidates:
+        if tick < 0.0 or tick > max_tau:
+            continue
+        if any(np.isclose(tick, existing, rtol=0.0, atol=min_positive * 0.05) for existing in ticks):
+            continue
+        ticks.append(tick)
+
+    ax.set_xscale("log", base=10)
+    ax.set_xlim(left=min_positive, right=max(1.0, max_tau))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([format_tau_tick(tick) for tick in ticks])
+
+
 # ============================================================
 # 02. Loading eval metrics and manifest metadata
 # ============================================================
@@ -178,6 +290,14 @@ def load_checkpoint_metrics(repo: Path, eval_root: Path) -> pd.DataFrame:
     snapshot: if the Slurm array is still running, rerun the script later to
     pick up newly finished attempts.
     """
+    combined_metrics = eval_root / "all_checkpoint_metrics.csv"
+    if combined_metrics.exists():
+        metrics = pd.read_csv(combined_metrics)
+        metrics["metrics_file"] = str(combined_metrics.relative_to(repo))
+        print(f"loaded combined checkpoint metrics: {combined_metrics}")
+        print(f"loaded checkpoint rows: {len(metrics)}")
+        return metrics
+
     metric_files = sorted(eval_root.rglob("checkpoint_metrics.csv"))
 
     # Fallback for notebook/prototype confusion: search all evals if the
@@ -281,6 +401,7 @@ def add_param_label(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 
     # Common single-column target/parameterization labels.
     single_candidates = [
+        "param",
         "param_pair",
         "target_pair",
         "parameterization",
@@ -343,6 +464,9 @@ def pretty_param_label(value: object) -> str:
 
     if norm in {"x", "x_x", "clean", "clean_clean", "data", "data_data"} or "x_x" in norm:
         return r"$x/x$"
+
+    if norm in {"x_v", "clean_v", "data_v"} or "x_v" in norm:
+        return r"$x/v$"
 
     if norm in {"v", "v_v", "u", "u_u", "vel", "vel_vel"} or "v_v" in norm or "u_u" in norm:
         return r"$v/v$"
@@ -617,6 +741,824 @@ def fig_02_metrics_by_n_train(
     axes[-1].set_xlabel(TAU_LABEL)
     fig.suptitle("02 metrics along training by n_train | seed/run averaged", y=1.01)
     save_figure(fig, out_dir, "02_metrics_along_training_by_n_train", show=show)
+
+
+# ============================================================
+# 07a. Figure: focused n_train sweep triptych
+# ============================================================
+
+def fig_02b_n_train_sweep_tau_triptych(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    requested_n_trains: list[int],
+    param_filter: str | None,
+    show: bool,
+) -> None:
+    """Focused n_train sweep: F_mem, test loss mean, and FID vs tau.
+
+    Curves are one selected dataset size each. By default this filters to a
+    single parameterization before averaging, so the mean is over seeds rather
+    than over heterogeneous targets.
+    """
+    if "n_train" not in metrics.columns:
+        return
+
+    loss_col = first_existing(
+        metrics.columns,
+        [
+            "test_fixed_t_loss_mean_10k",
+            "test_random_t_loss_10k",
+            "test_loss_0_5_10k",
+            "test_loss_0_75_10k",
+        ],
+    )
+    plot_specs = [
+        (FMEM_COL, display_label(FMEM_COL), False),
+        (loss_col, "test loss mean", True),
+        (FID_COL, display_label(FID_COL), True),
+    ]
+    plot_specs = [(metric, ylabel, log_y) for metric, ylabel, log_y in plot_specs if metric is not None]
+    missing = [metric for metric, _, _ in plot_specs if metric not in metrics.columns]
+    if missing or len(plot_specs) < 3:
+        print(f"[warn] focused n_train sweep skipped; missing columns: {missing}")
+        return
+
+    filtered, param_label = filter_by_param(metrics, param_filter)
+    n_trains = nearest_n_train_values(filtered, requested_n_trains)
+    if not n_trains:
+        print("[warn] focused n_train sweep skipped; no visible n_train values")
+        return
+
+    requested_text = ",".join(str(v) for v in requested_n_trains)
+    picked_text = ",".join(str(v) for v in n_trains)
+    if [int(v) for v in requested_n_trains] != n_trains:
+        print(f"[info] focused n_train sweep requested [{requested_text}], using nearest visible [{picked_text}]")
+
+    x_col = choose_tau_plot_col(filtered, step_col)
+    seed_col = choose_seed_col(filtered)
+    run_col = first_existing(filtered.columns, ["manifest_index", "run_id", "metrics_file"])
+
+    sub = filtered.copy()
+    sub["_n_train_plot"] = pd.to_numeric(sub["n_train"], errors="coerce")
+    sub = sub[sub["_n_train_plot"].isin(n_trains)].copy()
+    sub["_n_train_plot"] = sub["_n_train_plot"].astype(int)
+
+    numeric_cols = [x_col] + [metric for metric, _, _ in plot_specs]
+    for column in numeric_cols:
+        sub[column] = pd.to_numeric(sub[column], errors="coerce")
+    sub = sub.dropna(subset=["_n_train_plot", x_col])
+    if sub.empty:
+        print("[warn] focused n_train sweep skipped; selected data has no finite x values")
+        return
+
+    agg_spec = {
+        f"{metric}_mean": (metric, "mean")
+        for metric, _, _ in plot_specs
+    }
+    agg_spec.update({
+        f"{metric}_std": (metric, "std")
+        for metric, _, _ in plot_specs
+    })
+    if run_col is not None:
+        agg_spec["n_runs"] = (run_col, "nunique")
+    else:
+        agg_spec["n_rows"] = (x_col, "size")
+    if seed_col is not None:
+        agg_spec["n_seeds"] = (seed_col, "nunique")
+
+    summary = (
+        sub
+        .groupby(["_n_train_plot", x_col], dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+        .rename(columns={"_n_train_plot": "n_train"})
+        .sort_values(["n_train", x_col])
+    )
+    summary["param_filter"] = param_label
+    save_table(summary, out_dir, "09_n_train_sweep_tau_triptych_seed_average")
+
+    colors = {
+        n_train: plt.rcParams["axes.prop_cycle"].by_key()["color"][idx % len(plt.rcParams["axes.prop_cycle"].by_key()["color"])]
+        for idx, n_train in enumerate(n_trains)
+    }
+
+    def metric_group(metric: str, log_y: bool, n_train: int) -> pd.DataFrame:
+        mean_col = f"{metric}_mean"
+        std_col = f"{metric}_std"
+        group = summary[summary["n_train"] == n_train].sort_values(x_col).copy()
+        group = group[group[x_col] > 0]
+        if log_y:
+            group = group[group[mean_col] > 0]
+        return group.dropna(subset=[x_col, mean_col])
+
+    def plot_metric_curve(
+        ax: plt.Axes,
+        group: pd.DataFrame,
+        metric: str,
+        n_train: int,
+        label: str,
+        linestyle: str = "-",
+        marker: str = "o",
+        band: bool = True,
+    ) -> None:
+        mean_col = f"{metric}_mean"
+        std_col = f"{metric}_std"
+        x = group[x_col].to_numpy(dtype=float)
+        y = group[mean_col].to_numpy(dtype=float)
+
+        ax.plot(
+            x,
+            y,
+            color=colors[n_train],
+            marker=marker,
+            linestyle=linestyle,
+            linewidth=2.0,
+            markersize=4.0,
+            label=label,
+        )
+
+        if not band:
+            return
+
+        y_std = group[std_col].fillna(0.0).to_numpy(dtype=float)
+        if not np.any(y_std > 0):
+            return
+
+        lower = y - y_std
+        upper = y + y_std
+        if ax.get_yscale() == "log":
+            lower = np.clip(lower, np.finfo(float).tiny, None)
+            upper = np.clip(upper, np.finfo(float).tiny, None)
+        ax.fill_between(x, lower, upper, color=colors[n_train], alpha=0.14)
+
+    def style_x_axis(ax: plt.Axes) -> None:
+        ax.set_xlabel(TAU_LABEL if x_col == "tau" else "training step")
+        if x_col == "tau":
+            apply_tau_axis_for_triptych(ax, summary[x_col])
+        else:
+            ax.set_xscale("log")
+
+    def style_y_axis(ax: plt.Axes, ylabel: str, log_y: bool) -> None:
+        ax.set_ylabel(ylabel)
+        if log_y:
+            ax.set_yscale("log")
+
+    fig, axes = plt.subplots(2, 3, figsize=(18.8, 9.6), sharex=False)
+    top_axes = axes[0]
+    pair_axes = axes[1]
+
+    for ax, (metric, ylabel, log_y) in zip(top_axes, plot_specs):
+        style_y_axis(ax, ylabel, log_y)
+        for n_train in n_trains:
+            group = metric_group(metric, log_y, n_train)
+            if group.empty:
+                continue
+
+            seed_text = ""
+            if "n_seeds" in group.columns:
+                seed_text = f", seeds={int(group['n_seeds'].max())}"
+            plot_metric_curve(ax, group, metric, n_train, f"N={int(n_train)}{seed_text}")
+
+        style_x_axis(ax)
+        ax.grid(True, alpha=0.3)
+        ax.legend(title="n_train", fontsize=7, loc="best")
+
+    top_axes[0].set_title(r"$F_{\mathrm{mem}}(\tau)$")
+    top_axes[1].set_title("test loss mean")
+    top_axes[2].set_title("FID")
+
+    metric_pairs = [
+        (plot_specs[0], plot_specs[1]),
+        (plot_specs[0], plot_specs[2]),
+        (plot_specs[1], plot_specs[2]),
+    ]
+    for ax_left, (left_spec, right_spec) in zip(pair_axes, metric_pairs):
+        left_metric, left_ylabel, left_log_y = left_spec
+        right_metric, right_ylabel, right_log_y = right_spec
+        if left_metric == FID_COL:
+            left_log_y = False
+        if right_metric == FID_COL:
+            right_log_y = False
+        ax_right = ax_left.twinx()
+
+        style_y_axis(ax_left, left_ylabel, left_log_y)
+        style_y_axis(ax_right, right_ylabel, right_log_y)
+        ax_left.yaxis.labelpad = 8
+        ax_right.yaxis.labelpad = 12
+        ax_left.tick_params(axis="y", which="both", left=True, labelleft=True)
+        ax_right.tick_params(axis="y", which="both", right=True, labelright=True)
+
+        for n_train in n_trains:
+            left_group = metric_group(left_metric, left_log_y, n_train)
+            if not left_group.empty:
+                plot_metric_curve(
+                    ax_left,
+                    left_group,
+                    left_metric,
+                    n_train,
+                    "_nolegend_",
+                    linestyle="-",
+                    marker="o",
+                    band=False,
+                )
+
+            right_group = metric_group(right_metric, right_log_y, n_train)
+            if not right_group.empty:
+                plot_metric_curve(
+                    ax_right,
+                    right_group,
+                    right_metric,
+                    n_train,
+                    "_nolegend_",
+                    linestyle="--",
+                    marker="s",
+                    band=False,
+                )
+
+        style_x_axis(ax_left)
+        ax_left.grid(True, alpha=0.3)
+        ax_left.set_title(f"{left_ylabel} + {right_ylabel}")
+
+        n_train_handles = [
+            Line2D([0], [0], color=colors[n_train], marker="o", linewidth=2.0, label=f"N={int(n_train)}")
+            for n_train in n_trains
+        ]
+        metric_handles = [
+            Line2D([0], [0], color="black", marker="o", linewidth=2.0, linestyle="-", label=f"{left_ylabel} (left)"),
+            Line2D([0], [0], color="black", marker="s", linewidth=2.0, linestyle="--", label=f"{right_ylabel} (right)"),
+        ]
+
+        n_train_legend = ax_left.legend(
+            handles=n_train_handles,
+            title="n_train",
+            fontsize=6,
+            title_fontsize=7,
+            loc="upper left",
+        )
+        ax_left.add_artist(n_train_legend)
+        ax_left.legend(
+            handles=metric_handles,
+            fontsize=6,
+            loc="upper right",
+        )
+
+    fig.suptitle(f"09 focused n_train sweep | param={param_label} | seed averaged", y=1.01)
+    fig.subplots_adjust(hspace=0.42, wspace=0.52)
+    save_figure(fig, out_dir, "09_n_train_sweep_tau_triptych_fmem_testloss_fid", show=show)
+
+
+def fig_02c_n_train_sweep_all_parameterizations(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    requested_n_trains: list[int],
+    show: bool,
+) -> None:
+    """Plot-09 duplicate with parameterization emphasized.
+
+    Color encodes parameterization. Marker and line style encode n_train.
+    Curves are seed-averaged for each parameterization/n_train/tau cell.
+    """
+    if "n_train" not in metrics.columns or "param_label" not in metrics.columns:
+        return
+
+    loss_col = first_existing(
+        metrics.columns,
+        [
+            "test_fixed_t_loss_mean_10k",
+            "test_random_t_loss_10k",
+            "test_loss_0_5_10k",
+            "test_loss_0_75_10k",
+        ],
+    )
+    plot_specs = [
+        (FMEM_COL, display_label(FMEM_COL), False),
+        (loss_col, "test loss mean", True),
+        (FID_COL, display_label(FID_COL), True),
+    ]
+    plot_specs = [(metric, ylabel, log_y) for metric, ylabel, log_y in plot_specs if metric is not None]
+    missing = [metric for metric, _, _ in plot_specs if metric not in metrics.columns]
+    if missing or len(plot_specs) < 3:
+        print(f"[warn] all-parameterization n_train sweep skipped; missing columns: {missing}")
+        return
+
+    n_trains = nearest_n_train_values(metrics, requested_n_trains)
+    if not n_trains:
+        print("[warn] all-parameterization n_train sweep skipped; no visible n_train values")
+        return
+
+    x_col = choose_tau_plot_col(metrics, step_col)
+    seed_col = choose_seed_col(metrics)
+    run_col = first_existing(metrics.columns, ["manifest_index", "run_id", "metrics_file"])
+
+    sub = metrics.copy()
+    sub["_n_train_plot"] = pd.to_numeric(sub["n_train"], errors="coerce")
+    sub = sub[sub["_n_train_plot"].isin(n_trains)].copy()
+    sub["_n_train_plot"] = sub["_n_train_plot"].astype(int)
+
+    numeric_cols = [x_col] + [metric for metric, _, _ in plot_specs]
+    for column in numeric_cols:
+        sub[column] = pd.to_numeric(sub[column], errors="coerce")
+    sub = sub.dropna(subset=["_n_train_plot", "param_label", x_col])
+    if sub.empty:
+        print("[warn] all-parameterization n_train sweep skipped; selected data has no finite x values")
+        return
+
+    agg_spec = {
+        f"{metric}_mean": (metric, "mean")
+        for metric, _, _ in plot_specs
+    }
+    agg_spec.update({
+        f"{metric}_std": (metric, "std")
+        for metric, _, _ in plot_specs
+    })
+    if run_col is not None:
+        agg_spec["n_runs"] = (run_col, "nunique")
+    else:
+        agg_spec["n_rows"] = (x_col, "size")
+    if seed_col is not None:
+        agg_spec["n_seeds"] = (seed_col, "nunique")
+
+    summary = (
+        sub
+        .groupby(["param_label", "_n_train_plot", x_col], dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+        .rename(columns={"_n_train_plot": "n_train"})
+        .sort_values(["param_label", "n_train", x_col])
+    )
+    save_table(summary, out_dir, "10_n_train_sweep_all_parameterizations_seed_average")
+
+    params = sorted(summary["param_label"].dropna().unique(), key=str)
+    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    param_colors = {
+        param: base_colors[idx % len(base_colors)]
+        for idx, param in enumerate(params)
+    }
+
+    def metric_shade(param: object, side: str) -> tuple[float, float, float]:
+        base = np.asarray(to_rgb(param_colors[param]))
+        if side == "left":
+            return tuple(0.72 * base)
+        if side == "right":
+            return tuple(base + (1.0 - base) * 0.42)
+        return tuple(base)
+
+    markers = ["o", "s", "^", "D", "P", "X"]
+    n_markers = {
+        n_train: markers[idx % len(markers)]
+        for idx, n_train in enumerate(n_trains)
+    }
+    linestyles = ["-", "--", ":", "-."]
+    n_linestyles = {
+        n_train: linestyles[idx % len(linestyles)]
+        for idx, n_train in enumerate(n_trains)
+    }
+
+    def metric_group(metric: str, log_y: bool, param: object, n_train: int) -> pd.DataFrame:
+        mean_col = f"{metric}_mean"
+        group = summary[
+            (summary["param_label"] == param)
+            & (summary["n_train"] == n_train)
+        ].sort_values(x_col).copy()
+        group = group[group[x_col] > 0]
+        if log_y:
+            group = group[group[mean_col] > 0]
+        return group.dropna(subset=[x_col, mean_col])
+
+    def plot_curve(
+        ax: plt.Axes,
+        group: pd.DataFrame,
+        metric: str,
+        param: object,
+        n_train: int,
+        marker_fill: str = "filled",
+    ) -> None:
+        mean_col = f"{metric}_mean"
+        markerfacecolor = param_colors[param] if marker_fill == "filled" else "none"
+        ax.plot(
+            group[x_col].to_numpy(dtype=float),
+            group[mean_col].to_numpy(dtype=float),
+            color=param_colors[param],
+            marker=n_markers[n_train],
+            linestyle=n_linestyles[n_train],
+            linewidth=1.8,
+            markersize=4.0,
+            markerfacecolor=markerfacecolor,
+            markeredgecolor=param_colors[param],
+            markeredgewidth=1.1,
+            alpha=0.95,
+            label="_nolegend_",
+        )
+
+    def style_x_axis(ax: plt.Axes) -> None:
+        ax.set_xlabel(TAU_LABEL if x_col == "tau" else "training step")
+        if x_col == "tau":
+            apply_tau_axis_for_triptych(ax, summary[x_col])
+        else:
+            ax.set_xscale("log")
+
+    def style_y_axis(ax: plt.Axes, ylabel: str, log_y: bool) -> None:
+        ax.set_ylabel(ylabel)
+        if log_y:
+            ax.set_yscale("log")
+
+    def add_factor_legends(
+        ax: plt.Axes,
+        include_metric_styles: tuple[str, str] | None = None,
+    ) -> None:
+        param_handles = [
+            Line2D([0], [0], color=param_colors[param], marker="o", linewidth=2.0, label=str(param))
+            for param in params
+        ]
+        n_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                marker=n_markers[n_train],
+                linestyle=n_linestyles[n_train],
+                linewidth=1.8,
+                label=f"N={int(n_train)}",
+            )
+            for n_train in n_trains
+        ]
+
+        param_legend = ax.legend(
+            handles=param_handles,
+            title="param",
+            fontsize=6,
+            title_fontsize=7,
+            loc="upper left",
+        )
+        ax.add_artist(param_legend)
+
+        n_legend = ax.legend(
+            handles=n_handles,
+            title="n_train",
+            fontsize=6,
+            title_fontsize=7,
+            loc="lower left",
+        )
+        ax.add_artist(n_legend)
+
+        if include_metric_styles is not None:
+            left_ylabel, right_ylabel = include_metric_styles
+            metric_handles = [
+                Line2D(
+                    [0],
+                    [0],
+                    color="black",
+                    marker="o",
+                    markerfacecolor="black",
+                    linewidth=1.8,
+                    linestyle="-",
+                    label=f"{left_ylabel} (left)",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="black",
+                    marker="o",
+                    markerfacecolor="none",
+                    markeredgecolor="black",
+                    markeredgewidth=1.1,
+                    linewidth=1.8,
+                    linestyle="-",
+                    label=f"{right_ylabel} (right)",
+                ),
+            ]
+            ax.legend(handles=metric_handles, fontsize=6, loc="upper right")
+
+    fig, axes = plt.subplots(2, 3, figsize=(19.2, 9.8), sharex=False)
+    top_axes = axes[0]
+    pair_axes = axes[1]
+
+    for ax, (metric, ylabel, log_y) in zip(top_axes, plot_specs):
+        style_y_axis(ax, ylabel, log_y)
+        for param in params:
+            for n_train in n_trains:
+                group = metric_group(metric, log_y, param, n_train)
+                if group.empty:
+                    continue
+                plot_curve(ax, group, metric, param, n_train)
+
+        style_x_axis(ax)
+        ax.grid(True, alpha=0.3)
+        add_factor_legends(ax)
+
+    top_axes[0].set_title(r"$F_{\mathrm{mem}}(\tau)$")
+    top_axes[1].set_title("test loss mean")
+    top_axes[2].set_title("FID")
+
+    metric_pairs = [
+        (plot_specs[0], plot_specs[1]),
+        (plot_specs[0], plot_specs[2]),
+        (plot_specs[1], plot_specs[2]),
+    ]
+    for ax_left, (left_spec, right_spec) in zip(pair_axes, metric_pairs):
+        left_metric, left_ylabel, left_log_y = left_spec
+        right_metric, right_ylabel, right_log_y = right_spec
+        if left_metric == FID_COL:
+            left_log_y = False
+        if right_metric == FID_COL:
+            right_log_y = False
+
+        ax_right = ax_left.twinx()
+        style_y_axis(ax_left, left_ylabel, left_log_y)
+        style_y_axis(ax_right, right_ylabel, right_log_y)
+        ax_left.yaxis.labelpad = 8
+        ax_right.yaxis.labelpad = 12
+
+        for param in params:
+            for n_train in n_trains:
+                left_group = metric_group(left_metric, left_log_y, param, n_train)
+                if not left_group.empty:
+                    plot_curve(
+                        ax_left,
+                        left_group,
+                        left_metric,
+                        param,
+                        n_train,
+                        marker_fill="filled",
+                    )
+
+                right_group = metric_group(right_metric, right_log_y, param, n_train)
+                if not right_group.empty:
+                    plot_curve(
+                        ax_right,
+                        right_group,
+                        right_metric,
+                        param,
+                        n_train,
+                        marker_fill="hollow",
+                    )
+
+        style_x_axis(ax_left)
+        ax_left.grid(True, alpha=0.3)
+        ax_left.set_title(f"{left_ylabel} + {right_ylabel}")
+        add_factor_legends(ax_left, include_metric_styles=(left_ylabel, right_ylabel))
+
+    fig.suptitle("10 focused n_train sweep | all parameterizations | seed averaged", y=1.01)
+    fig.subplots_adjust(hspace=0.42, wspace=0.52)
+    save_figure(fig, out_dir, "10_n_train_sweep_all_parameterizations_fmem_testloss_fid", show=show)
+
+
+def fig_02d_parameterization_pair_grid_by_n_train(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    requested_n_trains: list[int],
+    show: bool,
+) -> None:
+    """Pairwise metric overlays, faceted by n_train rows.
+
+    This is a less cluttered parameterization-focused duplicate of plot 10:
+    rows are all visible n_train values, columns are the three metric pairs
+    from plot 09's bottom row, and curves inside each panel are
+    parameterizations. When FID appears in a pair it is always placed on the
+    left y-axis, matching the Bonnaire-style convention.
+    """
+    if "n_train" not in metrics.columns or "param_label" not in metrics.columns:
+        return
+
+    loss_col = first_existing(
+        metrics.columns,
+        [
+            "test_fixed_t_loss_mean_10k",
+            "test_random_t_loss_10k",
+            "test_loss_0_5_10k",
+            "test_loss_0_75_10k",
+        ],
+    )
+    plot_specs = [
+        (FMEM_COL, display_label(FMEM_COL), False),
+        (loss_col, "test loss mean", True),
+        (FID_COL, display_label(FID_COL), True),
+    ]
+    plot_specs = [(metric, ylabel, log_y) for metric, ylabel, log_y in plot_specs if metric is not None]
+    missing = [metric for metric, _, _ in plot_specs if metric not in metrics.columns]
+    if missing or len(plot_specs) < 3:
+        print(f"[warn] n_train-row pair grid skipped; missing columns: {missing}")
+        return
+
+    _ = requested_n_trains
+    n_trains = n_train_ticks_from(metrics)
+    if not n_trains:
+        print("[warn] n_train-row pair grid skipped; no visible n_train values")
+        return
+
+    x_col = choose_tau_plot_col(metrics, step_col)
+    seed_col = choose_seed_col(metrics)
+    run_col = first_existing(metrics.columns, ["manifest_index", "run_id", "metrics_file"])
+
+    sub = metrics.copy()
+    sub["_n_train_plot"] = pd.to_numeric(sub["n_train"], errors="coerce")
+    sub = sub[sub["_n_train_plot"].isin(n_trains)].copy()
+    sub["_n_train_plot"] = sub["_n_train_plot"].astype(int)
+
+    numeric_cols = [x_col] + [metric for metric, _, _ in plot_specs]
+    for column in numeric_cols:
+        sub[column] = pd.to_numeric(sub[column], errors="coerce")
+    sub = sub.dropna(subset=["_n_train_plot", "param_label", x_col])
+    if sub.empty:
+        print("[warn] n_train-row pair grid skipped; selected data has no finite x values")
+        return
+
+    agg_spec = {
+        f"{metric}_mean": (metric, "mean")
+        for metric, _, _ in plot_specs
+    }
+    agg_spec.update({
+        f"{metric}_std": (metric, "std")
+        for metric, _, _ in plot_specs
+    })
+    if run_col is not None:
+        agg_spec["n_runs"] = (run_col, "nunique")
+    else:
+        agg_spec["n_rows"] = (x_col, "size")
+    if seed_col is not None:
+        agg_spec["n_seeds"] = (seed_col, "nunique")
+
+    summary = (
+        sub
+        .groupby(["param_label", "_n_train_plot", x_col], dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+        .rename(columns={"_n_train_plot": "n_train"})
+        .sort_values(["n_train", "param_label", x_col])
+    )
+    save_table(summary, out_dir, "11_parameterization_pair_grid_by_n_train_seed_average")
+
+    params = sorted(summary["param_label"].dropna().unique(), key=str)
+    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    param_colors = {
+        param: base_colors[idx % len(base_colors)]
+        for idx, param in enumerate(params)
+    }
+
+    def metric_shade(param: object, side: str) -> tuple[float, float, float]:
+        base = np.asarray(to_rgb(param_colors[param]))
+        if side == "left":
+            return tuple(0.72 * base)
+        if side == "right":
+            return tuple(base + (1.0 - base) * 0.42)
+        return tuple(base)
+
+    def fid_on_left(left_spec: tuple[str, str, bool], right_spec: tuple[str, str, bool]) -> tuple[
+        tuple[str, str, bool],
+        tuple[str, str, bool],
+    ]:
+        if right_spec[0] == FID_COL and left_spec[0] != FID_COL:
+            return right_spec, left_spec
+        return left_spec, right_spec
+
+    metric_pairs = [
+        fid_on_left(plot_specs[0], plot_specs[1]),
+        fid_on_left(plot_specs[0], plot_specs[2]),
+        fid_on_left(plot_specs[1], plot_specs[2]),
+    ]
+
+    def metric_group(metric: str, log_y: bool, param: object, n_train: int) -> pd.DataFrame:
+        mean_col = f"{metric}_mean"
+        group = summary[
+            (summary["param_label"] == param)
+            & (summary["n_train"] == n_train)
+        ].sort_values(x_col).copy()
+        group = group[group[x_col] > 0]
+        if log_y:
+            group = group[group[mean_col] > 0]
+        return group.dropna(subset=[x_col, mean_col])
+
+    def plot_curve(
+        ax: plt.Axes,
+        group: pd.DataFrame,
+        metric: str,
+        param: object,
+        linestyle: str,
+        marker_fill: str,
+        side: str,
+    ) -> None:
+        mean_col = f"{metric}_mean"
+        line_color = metric_shade(param, side)
+        markerfacecolor = line_color if marker_fill == "filled" else "none"
+        ax.plot(
+            group[x_col].to_numpy(dtype=float),
+            group[mean_col].to_numpy(dtype=float),
+            color=line_color,
+            marker="o",
+            linestyle=linestyle,
+            linewidth=1.9,
+            markersize=4.2,
+            markerfacecolor=markerfacecolor,
+            markeredgecolor=line_color,
+            markeredgewidth=1.1,
+            alpha=0.95,
+            label="_nolegend_",
+        )
+
+    def style_x_axis(ax: plt.Axes) -> None:
+        ax.set_xlabel(TAU_LABEL if x_col == "tau" else "training step")
+        if x_col == "tau":
+            apply_tau_axis_for_triptych(ax, summary[x_col])
+        else:
+            ax.set_xscale("log")
+
+    def style_y_axis(ax: plt.Axes, ylabel: str, log_y: bool) -> None:
+        ax.set_ylabel(ylabel)
+        if log_y:
+            ax.set_yscale("log")
+
+    param_handles = [
+        Line2D([0], [0], color=param_colors[param], marker="o", linewidth=2.0, label=str(param))
+        for param in params
+    ]
+
+    nrows = len(n_trains)
+    ncols = len(metric_pairs)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(6.5 * ncols, 3.9 * nrows),
+        sharex=False,
+    )
+    axes = np.asarray(axes).reshape(nrows, ncols)
+
+    for row_idx, n_train in enumerate(n_trains):
+        for col_idx, (left_spec, right_spec) in enumerate(metric_pairs):
+            ax_left = axes[row_idx, col_idx]
+            left_metric, left_ylabel, left_log_y = left_spec
+            right_metric, right_ylabel, right_log_y = right_spec
+            if left_metric == FID_COL:
+                left_log_y = False
+            if right_metric == FID_COL:
+                right_log_y = False
+
+            ax_right = ax_left.twinx()
+            ax_left.spines["right"].set_visible(False)
+            ax_right.spines["left"].set_visible(False)
+            style_y_axis(ax_left, left_ylabel, left_log_y)
+            style_y_axis(ax_right, right_ylabel, right_log_y)
+            ax_left.yaxis.labelpad = 8
+            ax_right.yaxis.labelpad = 12
+
+            for param in params:
+                left_group = metric_group(left_metric, left_log_y, param, n_train)
+                if not left_group.empty:
+                    plot_curve(
+                        ax_left,
+                        left_group,
+                        left_metric,
+                        param,
+                        linestyle=":",
+                        marker_fill="filled",
+                        side="left",
+                    )
+
+                right_group = metric_group(right_metric, right_log_y, param, n_train)
+                if not right_group.empty:
+                    plot_curve(
+                        ax_right,
+                        right_group,
+                        right_metric,
+                        param,
+                        linestyle="-",
+                        marker_fill="hollow",
+                        side="right",
+                    )
+
+            style_x_axis(ax_left)
+            ax_left.grid(True, alpha=0.3)
+
+            if row_idx == 0:
+                ax_left.set_title(f"left: {left_ylabel} | right: {right_ylabel}")
+            if col_idx == 0:
+                ax_left.text(
+                    -0.24,
+                    0.5,
+                    f"N={int(n_train)}",
+                    transform=ax_left.transAxes,
+                    rotation=90,
+                    va="center",
+                    ha="center",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+
+    fig.legend(
+        handles=param_handles,
+        title="param color",
+        fontsize=8,
+        title_fontsize=9,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.982),
+        ncol=max(1, len(param_handles)),
+        frameon=False,
+    )
+    fig.suptitle("11 parameterization metric-pair overlays by n_train | seed averaged", y=0.997)
+    fig.subplots_adjust(top=0.955, hspace=0.42, wspace=0.52)
+    save_figure(fig, out_dir, "11_parameterization_pair_grid_by_n_train", show=show)
 
 
 # ============================================================
@@ -1028,7 +1970,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
             ax.set_yscale("log")
 
     def plot_directed_phase(ax: plt.Axes, group: pd.DataFrame, label: object, log_axes: bool) -> None:
-        """Plot FID-vs-F_mem trajectory and add arrows for training direction."""
+        """Plot F_mem-vs-FID trajectory and add arrows for training direction."""
         phase = group[["fid_mean", "fmem_mean", step_col]].copy()
 
         if log_axes:
@@ -1040,8 +1982,8 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
         # Draw a faint connecting line first. The returned color anchors the
         # per-parameterization light-to-dark time gradient.
         line = ax.plot(
-            phase["fid_mean"],
             phase["fmem_mean"],
+            phase["fid_mean"],
             linewidth=1.5,
             alpha=0.35,
             label=str(label),
@@ -1057,8 +1999,8 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
 
         # Dots encode passage of training time: light early, dark late.
         ax.scatter(
-            phase["fid_mean"],
             phase["fmem_mean"],
+            phase["fid_mean"],
             s=58,
             color=point_colors,
             edgecolor="white",
@@ -1074,8 +2016,8 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
             end = phase.iloc[i + 1]
             ax.annotate(
                 "",
-                xy=(end["fid_mean"], end["fmem_mean"]),
-                xytext=(start["fid_mean"], start["fmem_mean"]),
+                xy=(end["fmem_mean"], end["fid_mean"]),
+                xytext=(start["fmem_mean"], start["fid_mean"]),
                 arrowprops=dict(arrowstyle="->", lw=1.2, alpha=0.85, color=dark_rgb),
                 zorder=4,
             )
@@ -1084,8 +2026,8 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
         best_idx = phase["fid_mean"].idxmin()
         best_row = phase.loc[best_idx]
         ax.scatter(
-            best_row["fid_mean"],
             best_row["fmem_mean"],
+            best_row["fid_mean"],
             s=140,
             facecolor="none",
             edgecolor="black",
@@ -1146,13 +2088,13 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
     axes[1].set_title(r"Seed-averaged $F_{\mathrm{mem}}(\tau)$")
     axes[1].set_xscale("log")
 
-    axes[2].set_xlabel(f"{FID_COL} mean")
-    axes[2].set_ylabel(display_label("fmem_mean"))
-    axes[2].set_title(r"Seed-averaged FID vs $F_{\mathrm{mem}}$ trajectory")
+    axes[2].set_xlabel(display_label("fmem_mean"))
+    axes[2].set_ylabel(f"{FID_COL} mean")
+    axes[2].set_title(r"Seed-averaged $F_{\mathrm{mem}}$ vs FID trajectory")
 
-    axes[3].set_xlabel(f"{FID_COL} mean")
-    axes[3].set_ylabel(display_label("fmem_mean"))
-    axes[3].set_title(r"Seed-averaged FID vs $F_{\mathrm{mem}}$ trajectory, log-log")
+    axes[3].set_xlabel(display_label("fmem_mean"))
+    axes[3].set_ylabel(f"{FID_COL} mean")
+    axes[3].set_title(r"Seed-averaged $F_{\mathrm{mem}}$ vs FID trajectory, log-log")
 
     for loss_idx, loss_col in enumerate(loss_cols):
         ax = axes[base_panels + loss_idx]
@@ -1336,6 +2278,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--n-train", type=int, default=None)
     parser.add_argument("--requested-steps", type=str, default=",".join(map(str, DEFAULT_REQUESTED_STEPS)))
+    parser.add_argument(
+        "--n-train-sweep-values",
+        type=str,
+        default=",".join(map(str, DEFAULT_N_TRAIN_SWEEP_VALUES)),
+        help="Comma-separated n_train targets for the focused tau triptych; nearest visible values are used.",
+    )
+    parser.add_argument(
+        "--n-train-sweep-param",
+        type=str,
+        default=DEFAULT_N_TRAIN_SWEEP_PARAM,
+        help="Parameterization for the focused n_train sweep. Use 'all' to average all visible parameterizations.",
+    )
     parser.add_argument("--show", action="store_true")
     return parser.parse_args()
 
@@ -1348,6 +2302,7 @@ def main() -> None:
     job_set_root = resolve_under_repo(repo, args.job_set_root)
     out_dir = ensure_dir(resolve_under_repo(repo, args.out_dir))
     requested_steps = parse_requested_steps(args.requested_steps)
+    requested_n_train_sweep_values = parse_requested_steps(args.n_train_sweep_values)
 
     print(f"repo: {repo}")
     print(f"eval_root: {eval_root}")
@@ -1383,6 +2338,28 @@ def main() -> None:
 
     fig_01_single_run_trajectories(metrics, out_dir, step_col, manifest_index, show=args.show)
     fig_02_metrics_by_n_train(metrics, out_dir, step_col, show=args.show)
+    fig_02b_n_train_sweep_tau_triptych(
+        metrics,
+        out_dir,
+        step_col,
+        requested_n_trains=requested_n_train_sweep_values,
+        param_filter=args.n_train_sweep_param,
+        show=args.show,
+    )
+    fig_02c_n_train_sweep_all_parameterizations(
+        metrics,
+        out_dir,
+        step_col,
+        requested_n_trains=requested_n_train_sweep_values,
+        show=args.show,
+    )
+    fig_02d_parameterization_pair_grid_by_n_train(
+        metrics,
+        out_dir,
+        step_col,
+        requested_n_trains=requested_n_train_sweep_values,
+        show=args.show,
+    )
     fig_07b_fmem_thresholds_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_03_final_fid_vs_fmem_faceted_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_04_fmem_at_best_fid_vs_n_train(metrics, out_dir, show=args.show)
