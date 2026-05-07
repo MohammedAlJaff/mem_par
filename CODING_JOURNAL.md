@@ -1,5 +1,47 @@
 # Coding Journal
 
+## 2026-05-07T07:07:59+02:00 - Figure Plotting Cleanup Checkpoint
+
+### Context
+Prepared the current figure-generation work for handoff so it can be pulled
+and continued from another machine. The main active script is:
+`prototyping/plot_mem_boundary_20260427_quality_memorization.py`.
+
+### Plotting Changes
+- Standardized figure output to write both PDF and PNG through the shared
+  `save_figure` helper.
+- Added compact publication-oriented figure sizing and smaller markers across
+  the mem-boundary plotting scripts.
+- Normalized visible plot text to use `FID` and math-form
+  `N_{\mathrm{train}}` labels where appropriate while leaving internal column
+  names such as `fid_10k` unchanged.
+- Stopped future generation of figure 04 by removing its call from `main`.
+  Existing stale `04_*` output files were intentionally left untouched.
+- Reworked figure 06 into a row-per-visible-`N_train` grid with five columns:
+  FID over tau, `F_mem` over tau, phase plot, log-FID phase plot, and log-log
+  phase plot. Each row selects the requested seed when available, otherwise
+  the best-coverage seed for that `N_train`.
+- Added margin row labels and compact log tick formatting to keep figure 06
+  readable after expanding it to all visible `N_train` values.
+- Kept figure 11 and figure 12 cleanup changes in the plotting script:
+  smaller subfigures, dashed paired metrics, no markers for figure 11, angled
+  x tick labels, in-panel legends, figure 12 row-wise shared `F_mem` scale,
+  and one column per parameterization for the FID/`F_mem` tau grid.
+
+### Verification
+Ran the legacy plotting script in the project environment:
+
+```bash
+module load Mambaforge && mamba activate mem_param_env && MPLCONFIGDIR=/tmp/mpl-mempar python prototyping/plot_mem_boundary_20260427_quality_memorization.py
+```
+
+The run completed successfully and regenerated
+`06_parameterization_trajectories_fixed_seed_n_train.{pdf,png}` without
+printing any new `04_fmem_at_best_fid_vs_n_train_by_parameterization.{pdf,png}`
+outputs. The refreshed figure 06 PNG was inspected for row labels, spacing, and
+tick readability. A targeted grep over visible label/title callsites found no
+remaining exposed `fid_10k`, `FID_best`, or lowercase `fid` labels.
+
 ## 2026-05-01T02:50:24+02:00 - Capacity Resume Wave Submitted
 
 ### Context

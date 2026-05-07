@@ -31,10 +31,24 @@ DEFAULT_EVAL_ROOTS = [
     Path("outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503"),
 ]
 DEFAULT_OUT_DIR = Path("prototyping/figures/paper_objective_quality_mem_frontier_20260503")
+FIGURE_EXTENSIONS = (".pdf", ".png")
+
+PAPER_FIGURE_WIDTH = 4.4
+PAPER_FIGURE_HEIGHT = 3.2
+
+
+def pub_figsize(width_units: float = 1.0, height_units: float = 1.0) -> tuple[float, float]:
+    return (PAPER_FIGURE_WIDTH * width_units, PAPER_FIGURE_HEIGHT * height_units)
+
+
+LINE_MARKER_SIZE = 2.2
+LEGEND_MARKER_SIZE = 2.8
+SCATTER_SIZE = 18
 
 FID_COL = "fid_10k"
 FMEM_COL = "f_mem"
 STEP_COL = "step"
+N_TRAIN_LABEL = r"$N_{\mathrm{train}}$"
 
 SUMMARY_METRICS = [
     "fid_best",
@@ -48,6 +62,16 @@ SUMMARY_METRICS = [
     "final_test_random_t_loss_10k",
     "test_random_t_loss_at_fid_best",
 ]
+
+
+def save_figure(fig: plt.Figure, out_dir: Path, name: str) -> None:
+    for ext in FIGURE_EXTENSIONS:
+        path = out_dir / f"{name}{ext}"
+        if ext == ".png":
+            fig.savefig(path, dpi=180, bbox_inches="tight")
+        else:
+            fig.savefig(path, bbox_inches="tight")
+        print(f"[figure] {path}")
 
 
 def resolve_under_repo(repo: Path, path: Path) -> Path:
@@ -315,7 +339,7 @@ def plot_metric_by_n(
     capacities = sorted(sub["capacity_label"].unique())
     ncols = min(3, len(capacities))
     nrows = math.ceil(len(capacities) / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.2 * nrows), sharey=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=pub_figsize(ncols, nrows), sharey=False)
     axes = np.asarray(axes).reshape(-1)
 
     for ax, capacity in zip(axes, capacities):
@@ -329,10 +353,11 @@ def plot_metric_by_n(
                 marker="o",
                 linewidth=1.8,
                 capsize=3,
+                markersize=LINE_MARKER_SIZE,
                 label=str(param),
             )
         ax.set_title(capacity)
-        ax.set_xlabel("n_train")
+        ax.set_xlabel(N_TRAIN_LABEL)
         ax.set_ylabel(ylabel)
         ax.set_xscale("log", base=2)
         ax.set_xticks(sorted(cap_rows["n_train"].unique()))
@@ -344,21 +369,19 @@ def plot_metric_by_n(
         ax.axis("off")
 
     fig.tight_layout()
-    path = out_dir / f"{name}.png"
-    fig.savefig(path, dpi=180)
+    save_figure(fig, out_dir, name)
     plt.close(fig)
-    print(f"[figure] {path}")
 
 
 def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8.0, 6.2))
+    fig, ax = plt.subplots(figsize=pub_figsize(1.2, 1.3))
     markers = {"fixed_capacity": "o", "base32_m124": "s", "base64_m124": "^", "base64_m1244": "D"}
 
     for (capacity, param), rows in summary.groupby(["capacity_label", "param"], dropna=False):
         ax.scatter(
             rows["fid_best_mean"],
             rows["f_mem_at_fid_best_mean"],
-            s=70,
+            s=SCATTER_SIZE,
             marker=markers.get(capacity, "o"),
             alpha=0.78,
             label=f"{capacity} | {param}",
@@ -370,10 +393,8 @@ def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=6, bbox_to_anchor=(1.02, 1), loc="upper left")
     fig.tight_layout()
-    path = out_dir / "13_pareto_parameterization_means.png"
-    fig.savefig(path, dpi=180)
+    save_figure(fig, out_dir, "13_pareto_parameterization_means")
     plt.close(fig)
-    print(f"[figure] {path}")
 
 
 def parse_args() -> argparse.Namespace:

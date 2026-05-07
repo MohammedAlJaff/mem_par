@@ -11,8 +11,8 @@ outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260
 outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_delta_20260503/*.jsonl
 ```
 
-The tracked files are enough to regenerate the paper-analysis and plotting PNGs.
-Per-attempt metrics, generated PNGs, checkpoint files, and `.pt` eval caches stay
+The tracked files are enough to regenerate the paper-analysis and plotting PDFs/PNGs.
+Per-attempt metrics, generated PDFs/PNGs, checkpoint files, and `.pt` eval caches stay
 ignored.
 
 Use the project environment, then run:
