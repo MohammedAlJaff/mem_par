@@ -41,7 +41,7 @@ import pandas as pd
 # 00. Configuration
 # ============================================================
 
-DEFAULT_REPO = Path("/proj/rep-learning-robotics/users/x_moalj/project_mem_par/mem_par")
+DEFAULT_REPO = Path(__file__).resolve().parents[1]
 EXPERIMENT_NAME = "mem_gen_boundary_20260427"
 EVAL_NAME = "mem_boundary_20260427_all_done_quality_20260501"
 
@@ -49,6 +49,7 @@ DEFAULT_EVAL_ROOT = Path("outputs/evals") / EVAL_NAME
 DEFAULT_JOB_SET_ROOT = Path("outputs/job_sets") / EXPERIMENT_NAME
 DEFAULT_OUT_DIR = Path("prototyping/figures") / f"{EVAL_NAME}_figures"
 FIGURE_EXTENSIONS = (".pdf", ".png")
+GENERATED_FIGURES: list[str] = []
 
 PAPER_FIGURE_WIDTH = 4.4
 PAPER_FIGURE_HEIGHT = 3.2
@@ -74,6 +75,7 @@ def grid_figsize(ncols: int, nrows: int) -> tuple[float, float]:
 DEFAULT_REQUESTED_STEPS = [0, 100_000, 300_000, 595_000, 1_000_000]
 DEFAULT_N_TRAIN_SWEEP_VALUES = [512, 2_048, 8_192]
 DEFAULT_N_TRAIN_SWEEP_PARAM = "x_x"
+DEFAULT_FIG_12B_N_TRAIN_VALUES = [512, 1_024, 2_048, 4_096, 8_192]
 
 FID_COL = "fid_10k"
 FMEM_COL = "f_mem"
@@ -107,10 +109,86 @@ LOSS_COLS = [
 ]
 
 FMEM_RHO_COLS = [
-    ("rho=0.3", "f_mem_rho0.3"),
-    ("rho=0.5", "f_mem_rho0.5"),
-    ("rho=0.7", "f_mem_rho0.7"),
+    (r"$\rho=0.3$", "f_mem_rho0.3"),
+    (r"$\rho=0.5$", "f_mem_rho0.5"),
+    (r"$\rho=0.7$", "f_mem_rho0.7"),
 ]
+
+FIGURE_CAPTIONS = {
+    "01_metric_trajectories_by_n_train": (
+        "Figure 01 (metric trajectories by $N_{\\mathrm{train}}$): Checkpoint trajectories for the main quality, "
+        "memorization, and loss metrics, grouped by training-set size. Each panel aggregates visible runs over "
+        "checkpoints; color/line encodings compare parameterizations within each $N_{\\mathrm{train}}$ condition."
+    ),
+    "02_metric_trajectories_by_param": (
+        "Figure 02 (metric trajectories by parameterization): Checkpoint trajectories for the same metrics as "
+        "Figure 01, reorganized by parameterization. Curves compare $N_{\\mathrm{train}}$ values, making it easier "
+        "to see how data scale changes each parameterization's quality and memorization dynamics."
+    ),
+    "03_final_fid_vs_fmem_by_n_train": (
+        "Figure 03 (final FID versus final $F_{\\mathrm{mem}}$): Final-checkpoint trade-off between sample quality "
+        "and memorization, faceted by $N_{\\mathrm{train}}$. Points correspond to visible runs/parameterizations "
+        "and diagnose whether late training improves FID at the cost of higher memorization."
+    ),
+    "05_pareto_best_fid_vs_fmem_at_best_fid": (
+        "Figure 05 (best-FID trade-off): For each run, the checkpoint with the lowest FID is selected and plotted "
+        "against the corresponding $F_{\\mathrm{mem}}$. This isolates the memorization level at each run's best "
+        "sample-quality checkpoint rather than at the final checkpoint."
+    ),
+    "06_parameterization_trajectories_fixed_seed_n_train": (
+        "Figure 06 (parameterization trajectories at a representative seed and $N_{\\mathrm{train}}$): Training "
+        "trajectories compare parameterizations for a fixed seed/data-size slice. The figure shows how FID, "
+        "$F_{\\mathrm{mem}}$, and their phase relationship evolve over checkpoints."
+    ),
+    "07_seed_averaged_parameterization_trajectories_fixed_n_train": (
+        "Figure 07 (seed-averaged parameterization trajectories): Parameterization trajectories averaged over "
+        "visible seeds/runs and arranged by $N_{\\mathrm{train}}$. Panels include FID, $F_{\\mathrm{mem}}$, "
+        "$F_{\\mathrm{mem}}$-versus-FID phase plots, and the available test-loss trajectory."
+    ),
+    "07b_fmem_thresholds_along_training_by_n_train": (
+        "Figure 07b ($F_{\\mathrm{mem}}$ threshold sweep): Log-scale $F_{\\mathrm{mem}}$ trajectories for "
+        "nearest-neighbor ratio thresholds $\\rho=0.3$, $\\rho=0.5$, and $\\rho=0.7$. Rows show the diagonal "
+        "parameterizations $\\epsilon/\\epsilon$, $v/v$, and $x/x$; colors encode $N_{\\mathrm{train}}$ with a "
+        "single shared legend."
+    ),
+    "07c_parameterization_fmem_thresholds_fixed_n_train": (
+        "Figure 07c (parameterization threshold sweep): Seed-averaged $F_{\\mathrm{mem}}$ trajectories across "
+        "ratio thresholds, arranged by $N_{\\mathrm{train}}$. Curves compare parameterizations at each threshold "
+        "and show how memorization timing changes across the sweep."
+    ),
+    "08_parameterization_best_fid_summary": (
+        "Figure 08 (parameterization summary at best FID): Summary of sample-quality optima by parameterization "
+        "and $N_{\\mathrm{train}}$. The figure compares best achieved FID with the memorization measured at the "
+        "same best-FID checkpoint, shown on both linear and log y-scales, highlighting cases where quality and "
+        "memorization optima diverge."
+    ),
+    "09_n_train_sweep_tau_triptych_fmem_testloss_fid": (
+        "Figure 09 (focused $N_{\\mathrm{train}}$ sweep): Seed-averaged trajectories for selected training-set "
+        "sizes under the focused parameterization. The triptych tracks $F_{\\mathrm{mem}}$, test loss, and FID "
+        "along training time/$\\tau$."
+    ),
+    "10_n_train_sweep_all_parameterizations_fmem_testloss_fid": (
+        "Figure 10 (focused $N_{\\mathrm{train}}$ sweep across parameterizations): Seed-averaged trajectories for "
+        "the selected $N_{\\mathrm{train}}$ values, with all visible parameterizations included. The panels compare "
+        "$F_{\\mathrm{mem}}$, test loss, and FID over training time/$\\tau$."
+    ),
+    "11_parameterization_pair_grid_by_n_train": (
+        "Figure 11 (parameterization metric-pair overlays): Seed-averaged metric-pair trajectories arranged by "
+        "$N_{\\mathrm{train}}$. Each panel overlays parameterizations to compare paired quality, memorization, "
+        "and loss dynamics along the training trajectory."
+    ),
+    "12_fid_fmem_tau_grid_by_param": (
+        "Figure 12 (FID and $F_{\\mathrm{mem}}$ along $\\tau$): Seed-averaged FID and $F_{\\mathrm{mem}}$ trajectories "
+        "arranged by $N_{\\mathrm{train}}$ rows and parameterization columns. Dotted lines show FID on the left "
+        "axis, solid lines show $F_{\\mathrm{mem}}$ on the right axis, and pastel row shading groups each "
+        "$N_{\\mathrm{train}}$ condition."
+    ),
+    "12b_fid_fmem_tau_grid_by_param_n_train_512_to_8192": (
+        "Figure 12b (mid-range FID and $F_{\\mathrm{mem}}$ along $\\tau$): Same layout and encodings as Figure 12, "
+        "restricted to $512 <= N_{\\mathrm{train}} <= 8192$. Rows use pastel background bands and larger "
+        "$N_{\\mathrm{train}}$ labels to emphasize the selected data-scale range."
+    ),
+}
 
 
 # ============================================================
@@ -159,10 +237,32 @@ def save_figure(fig: plt.Figure, out_dir: Path, name: str, show: bool = False) -
         print(f"[figure] {path}")
         if first_path is None:
             first_path = path
+    if name not in GENERATED_FIGURES:
+        GENERATED_FIGURES.append(name)
     if show:
         plt.show()
     plt.close(fig)
     return first_path if first_path is not None else out_dir / f"{name}.pdf"
+
+
+def caption_for_figure(name: str) -> str:
+    """Return a paste-ready caption for a generated figure."""
+    return FIGURE_CAPTIONS.get(
+        name,
+        f"{name}: Caption not registered yet. Add this output stem to FIGURE_CAPTIONS.",
+    )
+
+
+def print_figure_captions() -> None:
+    """Print captions in the same order figures were generated."""
+    if not GENERATED_FIGURES:
+        return
+
+    print("===== FIGURE CAPTIONS =====")
+    for name in GENERATED_FIGURES:
+        print(caption_for_figure(name))
+        print()
+    print("===== END FIGURE CAPTIONS =====")
 
 
 def safe_display_columns(df: pd.DataFrame, preferred: list[str]) -> list[str]:
@@ -595,14 +695,28 @@ def best_fid_rows(metrics: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise RuntimeError(f"Missing required best-FID columns: {missing}")
 
-    return (
+    sort_cols = ["manifest_index", FID_COL]
+    step_col = first_existing(metrics.columns, ["step", "checkpoint_step"])
+    if step_col is not None:
+        sort_cols.append(step_col)
+
+    best = (
         metrics
-        .dropna(subset=[FID_COL, FMEM_COL])
-        .sort_values(["manifest_index", FID_COL])
+        .dropna(subset=[FID_COL])
+        .sort_values(sort_cols)
         .groupby("manifest_index", as_index=False)
         .head(1)
         .copy()
     )
+    missing_fmem = best[best[FMEM_COL].isna()]
+    if not missing_fmem.empty:
+        run_ids = missing_fmem["manifest_index"].astype(str).tolist()
+        raise RuntimeError(
+            "Cannot compute F_mem@FID_best because F_mem is missing at the "
+            f"best-FID checkpoint for manifest_index values: {run_ids}"
+        )
+
+    return best
 
 
 # ============================================================
@@ -1790,6 +1904,12 @@ def fig_02e_fid_fmem_tau_grid_by_param(
     out_dir: Path,
     step_col: str,
     show: bool,
+    n_train_values: list[int] | None = None,
+    table_name: str = "12_fid_fmem_tau_grid_by_param_seed_average",
+    figure_name: str = "12_fid_fmem_tau_grid_by_param",
+    title: str = r"12 FID and $F_{\mathrm{mem}}$ along $\tau$ by parameterization and $N_{\mathrm{train}}$",
+    x_axis_bottom_only: bool = False,
+    subplot_hspace: float = 0.50,
 ) -> None:
     """Figure-11 middle-panel duplicate, split by parameterization columns."""
     if "n_train" not in metrics.columns or "param_label" not in metrics.columns:
@@ -1797,7 +1917,12 @@ def fig_02e_fid_fmem_tau_grid_by_param(
     if FID_COL not in metrics.columns or FMEM_COL not in metrics.columns:
         return
 
-    n_trains = n_train_ticks_from(metrics)
+    visible_n_trains = n_train_ticks_from(metrics)
+    if n_train_values is None:
+        n_trains = visible_n_trains
+    else:
+        requested = {int(value) for value in n_train_values}
+        n_trains = [n_train for n_train in visible_n_trains if n_train in requested]
     if not n_trains:
         print("[warn] FID/F_mem by-param grid skipped; no visible n_train values")
         return
@@ -1837,7 +1962,7 @@ def fig_02e_fid_fmem_tau_grid_by_param(
         .rename(columns={"_n_train_plot": "n_train"})
         .sort_values(["n_train", "param_label", x_col])
     )
-    save_table(summary, out_dir, "12_fid_fmem_tau_grid_by_param_seed_average")
+    save_table(summary, out_dir, table_name)
 
     params = sorted(summary["param_label"].dropna().unique(), key=str)
     if not params:
@@ -1869,8 +1994,22 @@ def fig_02e_fid_fmem_tau_grid_by_param(
             tick_label.set_horizontalalignment("right")
             tick_label.set_rotation_mode("anchor")
 
+    row_fid_limits: dict[int, tuple[float, float]] = {}
     row_fmem_limits: dict[int, tuple[float, float]] = {}
     for n_train in n_trains:
+        fid_values = (
+            pd.to_numeric(summary.loc[summary["n_train"] == n_train, f"{FID_COL}_mean"], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if not fid_values.empty:
+            lower = min(0.0, float(fid_values.min()))
+            upper = float(fid_values.max())
+            if upper <= lower:
+                upper = lower + max(abs(lower) * 0.05, 1.0)
+            pad = 0.05 * (upper - lower)
+            row_fid_limits[n_train] = (lower, upper + pad)
+
         values = (
             pd.to_numeric(summary.loc[summary["n_train"] == n_train, f"{FMEM_COL}_mean"], errors="coerce")
             .replace([np.inf, -np.inf], np.nan)
@@ -1890,17 +2029,21 @@ def fig_02e_fid_fmem_tau_grid_by_param(
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(3.0 * ncols, 2.0 * nrows),
+        figsize=(3.35 * ncols, 2.0 * nrows),
         sharex=False,
     )
     axes = np.asarray(axes).reshape(nrows, ncols)
+    row_backgrounds = ["#f4f8ff", "#fff7ed", "#f4fbf6", "#fff5fb", "#f7f5ff"]
 
     for row_idx, n_train in enumerate(n_trains):
+        row_facecolor = row_backgrounds[row_idx % len(row_backgrounds)]
         for col_idx, param in enumerate(params):
             ax_left = axes[row_idx, col_idx]
             ax_right = ax_left.twinx()
             ax_left.spines["right"].set_visible(False)
             ax_right.spines["left"].set_visible(False)
+            ax_left.set_facecolor(row_facecolor)
+            ax_right.patch.set_alpha(0.0)
             ax_right.tick_params(axis="x", which="both", bottom=False, top=False, labelbottom=False, labeltop=False)
 
             group = summary[
@@ -1930,12 +2073,19 @@ def fig_02e_fid_fmem_tau_grid_by_param(
             )
             if n_train in row_fmem_limits:
                 ax_right.set_ylim(row_fmem_limits[n_train])
+            if n_train in row_fid_limits:
+                ax_left.set_ylim(row_fid_limits[n_train])
 
             ax_left.set_ylabel("FID")
             ax_right.set_ylabel(display_label(FMEM_COL))
+            ax_left.tick_params(axis="y", labelsize=7)
+            ax_right.tick_params(axis="y", labelsize=7)
             ax_left.grid(True, alpha=0.3)
             style_x_axis(ax_left)
             angle_x_tick_labels(ax_left)
+            if x_axis_bottom_only and row_idx != nrows - 1:
+                ax_left.set_xlabel("")
+                ax_left.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
 
             if row_idx == 0:
                 ax_left.set_title(str(param))
@@ -1958,22 +2108,61 @@ def fig_02e_fid_fmem_tau_grid_by_param(
                 columnspacing=0.7,
             )
 
-    fig.suptitle(r"12 FID and $F_{\mathrm{mem}}$ along $\tau$ by parameterization and $N_{\mathrm{train}}$", y=0.997)
-    fig.subplots_adjust(left=0.10, top=0.955, hspace=0.50, wspace=0.55)
-    for ax in axes.ravel():
-        angle_x_tick_labels(ax)
+    fig.suptitle(title, y=0.997)
+    fig.subplots_adjust(left=0.10, top=0.955, hspace=subplot_hspace, wspace=0.62)
+    for row_idx in range(nrows):
+        for ax in axes[row_idx, :]:
+            angle_x_tick_labels(ax)
+            if x_axis_bottom_only and row_idx != nrows - 1:
+                ax.set_xlabel("")
+                ax.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
     for row_idx, n_train in enumerate(n_trains):
         row_bbox = axes[row_idx, 0].get_position()
+        row_right = axes[row_idx, -1].get_position().x1
+        row_facecolor = row_backgrounds[row_idx % len(row_backgrounds)]
+        band = plt.Rectangle(
+            (row_bbox.x0 - 0.035, row_bbox.y0 - 0.012),
+            row_right - row_bbox.x0 + 0.07,
+            row_bbox.y1 - row_bbox.y0 + 0.024,
+            transform=fig.transFigure,
+            facecolor=row_facecolor,
+            edgecolor="none",
+            alpha=0.42,
+            zorder=-1,
+        )
+        fig.patches.append(band)
         fig.text(
-            0.03,
+            0.055,
             0.5 * (row_bbox.y0 + row_bbox.y1),
             format_n_train_value(n_train),
             rotation=90,
             va="center",
             ha="center",
-            fontsize=9,
+            fontsize=12,
+            fontweight="semibold",
         )
-    save_figure(fig, out_dir, "12_fid_fmem_tau_grid_by_param", show=show)
+    save_figure(fig, out_dir, figure_name, show=show)
+
+
+def fig_12b_fid_fmem_tau_grid_by_param_mid_n_train(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    show: bool,
+) -> None:
+    """Figure 12 restricted to mid-range N_train rows."""
+    fig_02e_fid_fmem_tau_grid_by_param(
+        metrics,
+        out_dir,
+        step_col,
+        show=show,
+        n_train_values=DEFAULT_FIG_12B_N_TRAIN_VALUES,
+        table_name="12b_fid_fmem_tau_grid_by_param_n_train_512_to_8192_seed_average",
+        figure_name="12b_fid_fmem_tau_grid_by_param_n_train_512_to_8192",
+        title=r"12b FID and $F_{\mathrm{mem}}$ along $\tau$ by parameterization | $512 \leq N_{\mathrm{train}} \leq 8192$",
+        x_axis_bottom_only=True,
+        subplot_hspace=0.28,
+    )
 
 
 # ============================================================
@@ -1992,16 +2181,21 @@ def fig_07b_fmem_thresholds_by_n_train(
     seed/run-averaged over currently visible eval outputs for each n_train.
     Zero-valued points are omitted because these panels use log-y scale.
     """
-    if "n_train" not in metrics.columns:
+    if "n_train" not in metrics.columns or "param_label" not in metrics.columns:
         return
 
     rho_cols = [(label, col) for label, col in FMEM_RHO_COLS if col in metrics.columns]
     if not rho_cols:
         return
 
+    diagonal_params = [r"$\epsilon/\epsilon$", r"$v/v$", r"$x/x$"]
+    plot_metrics = metrics[metrics["param_label"].isin(diagonal_params)].copy()
+    if plot_metrics.empty:
+        return
+
     agg = (
-        metrics
-        .groupby(["n_train", step_col], dropna=False)
+        plot_metrics
+        .groupby(["param_label", "n_train", step_col], dropna=False)
         .agg(
             **{f"{col}_mean": (col, "mean") for _, col in rho_cols},
             n_runs=("manifest_index", "nunique"),
@@ -2010,27 +2204,89 @@ def fig_07b_fmem_thresholds_by_n_train(
     )
 
     n_trains = sorted(agg["n_train"].dropna().unique())
-    fig, axes = plt.subplots(1, len(rho_cols), figsize=pub_figsize(len(rho_cols), 1.0), sharex=True, sharey=True)
-    axes = np.atleast_1d(axes)
+    params = [param for param in diagonal_params if param in set(agg["param_label"].dropna())]
+    if not params:
+        return
 
-    for ax, (rho_label, col) in zip(axes, rho_cols):
-        mean_col = f"{col}_mean"
-        for n_train in n_trains:
-            sub = agg[agg["n_train"] == n_train].sort_values(step_col)
-            sub = sub[(sub[step_col] > 0) & (sub[mean_col] > 0)]
-            if sub.empty:
-                continue
-            ax.plot(sub[step_col], sub[mean_col], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=format_n_train_value(n_train))
+    ncols = len(rho_cols)
+    nrows = len(params)
+    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    n_train_colors = {n_train: base_colors[idx % len(base_colors)] for idx, n_train in enumerate(n_trains)}
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(GRID_CELL_WIDTH * ncols + 1.65, GRID_CELL_HEIGHT * nrows + 0.65),
+        sharex=True,
+        sharey=True,
+    )
+    axes = np.asarray(axes).reshape(nrows, ncols)
 
-        ax.set_xscale("log")
-        ax.set_yscale("log")
-        ax.set_xlabel(TAU_LABEL)
-        ax.set_ylabel(display_label(col))
-        ax.set_title(rho_label)
-        ax.grid(True, alpha=0.3)
-        ax.legend(title=N_TRAIN_LABEL, fontsize=8)
+    legend_handles: list[Line2D] = []
 
-    fig.suptitle(r"07b $F_{\mathrm{mem}}$ threshold sweep along training by $N_{\mathrm{train}}$", y=1.03)
+    for row_idx, param in enumerate(params):
+        row_summary = agg[agg["param_label"] == param]
+        for col_idx, (rho_label, col) in enumerate(rho_cols):
+            ax = axes[row_idx, col_idx]
+            mean_col = f"{col}_mean"
+            for n_train in n_trains:
+                sub = row_summary[row_summary["n_train"] == n_train].sort_values(step_col)
+                sub = sub[(sub[step_col] > 0) & (sub[mean_col] > 0)]
+                if sub.empty:
+                    continue
+                ax.plot(
+                    sub[step_col],
+                    sub[mean_col],
+                    marker="o",
+                    markersize=LINE_MARKER_SIZE,
+                    linewidth=1.6,
+                    color=n_train_colors[n_train],
+                    label=format_n_train_value(n_train),
+                )
+
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            if row_idx == nrows - 1:
+                ax.set_xlabel(TAU_LABEL)
+            if row_idx == 0:
+                ax.set_title(rho_label)
+            ax.grid(True, alpha=0.3)
+
+    for n_train in n_trains:
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=n_train_colors[n_train],
+                marker="o",
+                linewidth=1.8,
+                markersize=LEGEND_MARKER_SIZE,
+                label=format_n_train_value(n_train),
+            )
+        )
+
+    fig.legend(
+        handles=legend_handles,
+        title=N_TRAIN_LABEL,
+        loc="center left",
+        bbox_to_anchor=(0.86, 0.5),
+        frameon=False,
+        fontsize=8,
+        title_fontsize=8,
+    )
+    fig.suptitle(r"07b $F_{\mathrm{mem}}$ threshold sweep along training by $N_{\mathrm{train}}$", y=0.985)
+    fig.subplots_adjust(left=0.17, right=0.78, top=0.86, bottom=0.12, hspace=0.42, wspace=0.18)
+    fig.text(0.035, 0.5, r"$F_{\mathrm{mem}}$", rotation=90, va="center", ha="center", fontsize=10)
+    for row_idx, param in enumerate(params):
+        row_bbox = axes[row_idx, 0].get_position()
+        fig.text(
+            0.085,
+            0.5 * (row_bbox.y0 + row_bbox.y1),
+            param,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=9,
+        )
     save_figure(fig, out_dir, "07b_fmem_thresholds_along_training_by_n_train", show=show)
 
 
@@ -2828,7 +3084,7 @@ def fig_08_parameterization_best_fid_summary(
         .reset_index()
     )
 
-    fig, axes = plt.subplots(1, 2, figsize=pub_figsize(2.0, 1.0), sharex=True)
+    fig, axes = plt.subplots(1, 3, figsize=(12.0, 2.15), sharex=True)
 
     for label, sub in summary.groupby("param_label", dropna=False):
         sub = sub.sort_values("n_train")
@@ -2852,19 +3108,54 @@ def fig_08_parameterization_best_fid_summary(
             markersize=LEGEND_MARKER_SIZE,
             label=str(label),
         )
+        log_sub = sub[sub["fmem_at_best_fid_mean"] > 0].copy()
+        if not log_sub.empty:
+            y = pd.to_numeric(log_sub["fmem_at_best_fid_mean"], errors="coerce").to_numpy(dtype=float)
+            yerr = (
+                pd.to_numeric(log_sub["fmem_at_best_fid_std"], errors="coerce")
+                .fillna(0.0)
+                .to_numpy(dtype=float)
+            )
+            lower = np.clip(y - yerr, np.finfo(float).tiny, None)
+            upper = y + yerr
+            axes[2].errorbar(
+                log_sub["n_train"],
+                y,
+                yerr=np.vstack([y - lower, upper - y]),
+                marker="o",
+                linewidth=2.0,
+                capsize=3,
+                markersize=LEGEND_MARKER_SIZE,
+                label=str(label),
+            )
 
     axes[0].set_ylabel("best FID")
     axes[0].set_title("Best sample quality")
     axes[1].set_ylabel(r"$F_{\mathrm{mem}}$ at best FID")
     axes[1].set_title("Memorization at best sample quality")
+    axes[2].set_ylabel(r"$F_{\mathrm{mem}}$ at best FID")
+    axes[2].set_title("Memorization at best sample quality (log)")
+    axes[2].set_yscale("log")
 
     for ax in axes:
         apply_n_train_log_ticks(ax, n_train_ticks)
         ax.set_xlabel(N_TRAIN_LABEL)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+        ax.tick_params(axis="both", labelsize=7)
 
-    fig.suptitle(r"08 parameterization summary: quality optimum vs $F_{\mathrm{mem}}$ at quality optimum", y=1.02)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        title="param",
+        loc="center left",
+        bbox_to_anchor=(0.895, 0.52),
+        frameon=False,
+        fontsize=7,
+        title_fontsize=8,
+    )
+    fig.suptitle(r"08 parameterization summary: quality optimum vs $F_{\mathrm{mem}}$ at quality optimum", y=0.99)
+    fig.subplots_adjust(left=0.055, right=0.88, bottom=0.24, top=0.78, wspace=0.32)
     save_figure(fig, out_dir, "08_parameterization_best_fid_summary", show=show)
 
 
@@ -2905,6 +3196,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    GENERATED_FIGURES.clear()
 
     repo = args.repo
     eval_root = resolve_under_repo(repo, args.eval_root)
@@ -2970,6 +3262,7 @@ def main() -> None:
         show=args.show,
     )
     fig_02e_fid_fmem_tau_grid_by_param(metrics, out_dir, step_col, show=args.show)
+    fig_12b_fid_fmem_tau_grid_by_param_mid_n_train(metrics, out_dir, step_col, show=args.show)
     fig_07b_fmem_thresholds_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_03_final_fid_vs_fmem_faceted_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_05_pareto_best_fid_vs_fmem(metrics, out_dir, show=args.show)
@@ -2997,6 +3290,7 @@ def main() -> None:
     )
     fig_08_parameterization_best_fid_summary(metrics, out_dir, show=args.show)
 
+    print_figure_captions()
     print("done")
 
 

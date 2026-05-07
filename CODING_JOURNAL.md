@@ -1,5 +1,56 @@
 # Coding Journal
 
+## 2026-05-07T16:07:19+02:00 - Capacity Figures and N-Train Tau-Scale Analysis
+
+### Context
+Continued the paper-figure cleanup for mem-boundary analyses, with two main
+threads: capacity-control figure polish and a new Bonnaire-style tau-scale
+analysis focused only on the original `N_train` sweep.
+
+### Capacity Figure Changes
+- Updated `prototyping/analyze_mem_boundary_quality_mem_frontier.py` to use
+  repo-relative defaults instead of the cluster `/proj/...` path.
+- Renamed the capacity outputs into a capacity-specific scheme:
+  `C01_capacity_best_fid_and_fmem_by_capacity` and
+  `C03_capacity_quality_mem_pareto`.
+- Merged the previous separate capacity best-FID and `F_mem@FID_best` plots
+  into a single two-row C01 grid with capacity columns, shared scales,
+  shared legend, bold axis labels, and parsed capacity titles:
+  base channel size plus block channel multipliers.
+- Standardized capacity parameterization legends to math labels:
+  `\epsilon/\epsilon`, `v/v`, `x/v`, and `x/x`.
+
+### N-Train Tau-Scale Figures
+- Added `prototyping/plot_n_train_tau_scales.py`, a standalone script that
+  reads only
+  `outputs/evals/mem_boundary_20260427_all_done_quality_20260501/all_checkpoint_metrics.csv`.
+- The script writes run-level and seed-averaged tau-scale CSV tables plus
+  PNG/PDF figures under `prototyping/figures/n_train_tau_scales`.
+- Added threshold-based tau figures:
+  - `N01_n_train_tau_gen_mem_delta_by_param`;
+  - `N02_n_train_tau_gen_mem_delta_overlay_params`;
+  - `N03_n_train_tau_gen_threshold_sensitivity_overlay_params`;
+  - `N04_n_train_tau_gen_threshold_sensitivity_fmem_0p01_overlay_params`.
+- Added Bonnaire-style tau figures:
+  - `N05_bonnaire_tau_argmin_fmem_onset_overlay_params`, where
+    `tau_gen` is the first checkpoint attaining run-minimum FID and
+    `tau_mem` is the first checkpoint with `F_mem > 0`;
+  - `N06_bonnaire_tau_scaling_guides_overlay_params`, with reference guides
+    for constant `tau_gen` and `tau_mem` proportional to `N_train`.
+
+### Verification
+Ran the tau-scale script in the project conda environment:
+
+```bash
+MPLCONFIGDIR=/tmp/mpl XDG_CACHE_HOME=/tmp conda run -n memcompgen python prototyping/plot_n_train_tau_scales.py
+```
+
+The run completed successfully. Threshold-based `N01` processed `84` runs with
+`24` censored `tau_mem` rows. Bonnaire-style `N05` processed `84` runs with
+`0` missing `tau_gen` and only `1` censored `tau_mem` row. The generated `N02`,
+`N03`, `N04`, `N05`, and `N06` PNGs were visually inspected for axis scales,
+legends, threshold notes, and readability.
+
 ## 2026-05-07T07:07:59+02:00 - Figure Plotting Cleanup Checkpoint
 
 ### Context

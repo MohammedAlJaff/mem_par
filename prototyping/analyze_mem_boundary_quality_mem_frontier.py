@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_REPO = Path("/proj/rep-learning-robotics/users/x_moalj/project_mem_par/mem_par")
+DEFAULT_REPO = Path(__file__).resolve().parents[1]
 DEFAULT_EVAL_ROOTS = [
     Path("outputs/evals/mem_boundary_20260427_all_done_quality_20260501"),
     Path("outputs/evals/mem_boundary_capacity_20260427_full_trajectory_quality_20260503"),
@@ -32,6 +32,9 @@ DEFAULT_EVAL_ROOTS = [
 ]
 DEFAULT_OUT_DIR = Path("prototyping/figures/paper_objective_quality_mem_frontier_20260503")
 FIGURE_EXTENSIONS = (".pdf", ".png")
+
+CAPACITY_METRICS_FIGURE = "C01_capacity_best_fid_and_fmem_by_capacity"
+CAPACITY_PARETO_FIGURE = "C03_capacity_quality_mem_pareto"
 
 PAPER_FIGURE_WIDTH = 4.4
 PAPER_FIGURE_HEIGHT = 3.2
@@ -119,6 +122,29 @@ def parse_capacity_label(run_id: object) -> str:
     if match:
         return match.group(1)
     return "fixed_capacity"
+
+
+def format_capacity_title(capacity_label: object) -> str:
+    """Return a compact publication title for a capacity configuration."""
+    text = str(capacity_label)
+    match = re.fullmatch(r"base(\d+)_m(\d+)", text)
+    if not match:
+        return text.replace("_", " ")
+
+    base_channels = int(match.group(1))
+    multipliers = ", ".join(match.group(2))
+    return f"base channels: {base_channels}\nblock multipliers: ({multipliers})"
+
+
+def format_param_legend(param: object) -> str:
+    """Display parameterization pairs as compact math labels."""
+    labels = {
+        "eps_eps": r"$\epsilon/\epsilon$",
+        "v_v": r"$v/v$",
+        "x_v": r"$x/v$",
+        "x_x": r"$x/x$",
+    }
+    return labels.get(str(param), str(param).replace("_", "/"))
 
 
 def add_analysis_columns(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -331,6 +357,14 @@ def plot_metric_by_n(
     ylabel: str,
     out_dir: Path,
     name: str,
+    figsize: tuple[float, float] | None = None,
+    share_y_scale: bool = False,
+    shared_axis_labels: bool = False,
+    shared_legend: bool = False,
+    per_axis_xlabel: bool = False,
+    show_all_y_tick_labels: bool = False,
+    bold_axis_labels: bool = False,
+    fixed_subplot_geometry: bool = False,
 ) -> None:
     sub = summary[summary["analysis_family"] == family].copy()
     if sub.empty:
@@ -339,8 +373,23 @@ def plot_metric_by_n(
     capacities = sorted(sub["capacity_label"].unique())
     ncols = min(3, len(capacities))
     nrows = math.ceil(len(capacities) / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=pub_figsize(ncols, nrows), sharey=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize or pub_figsize(ncols, nrows), sharey=False)
     axes = np.asarray(axes).reshape(-1)
+    y_limits: tuple[float, float] | None = None
+
+    if share_y_scale:
+        means = sub[f"{metric}_mean"].to_numpy(dtype=float)
+        sem_col = f"{metric}_sem"
+        if sem_col in sub:
+            sems = sub[sem_col].fillna(0.0).to_numpy(dtype=float)
+        else:
+            sems = np.zeros_like(means)
+        finite = np.isfinite(means) & np.isfinite(sems)
+        if finite.any():
+            ymin = float(np.min(means[finite] - sems[finite]))
+            ymax = float(np.max(means[finite] + sems[finite]))
+            pad = 0.06 * (ymax - ymin) if ymax > ymin else 0.1 * max(abs(ymax), 1.0)
+            y_limits = (ymin - pad, ymax + pad)
 
     for ax, capacity in zip(axes, capacities):
         cap_rows = sub[sub["capacity_label"] == capacity]
@@ -354,22 +403,132 @@ def plot_metric_by_n(
                 linewidth=1.8,
                 capsize=3,
                 markersize=LINE_MARKER_SIZE,
-                label=str(param),
+                label=format_param_legend(param),
             )
-        ax.set_title(capacity)
-        ax.set_xlabel(N_TRAIN_LABEL)
-        ax.set_ylabel(ylabel)
+        ax.set_title(format_capacity_title(capacity), fontsize=10)
+        ax.set_xlabel(
+            N_TRAIN_LABEL if per_axis_xlabel or not shared_axis_labels else "",
+            fontweight="bold" if bold_axis_labels else "normal",
+        )
+        ax.set_ylabel(
+            "" if shared_axis_labels else ylabel,
+            fontweight="bold" if bold_axis_labels else "normal",
+        )
         ax.set_xscale("log", base=2)
         ax.set_xticks(sorted(cap_rows["n_train"].unique()))
         ax.set_xticklabels([str(int(v)) for v in sorted(cap_rows["n_train"].unique())])
+        if y_limits is not None:
+            ax.set_ylim(*y_limits)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+        if not shared_legend:
+            ax.legend(fontsize=8)
 
     for ax in axes[len(capacities):]:
         ax.axis("off")
 
-    fig.tight_layout()
+    if shared_axis_labels:
+        for idx, ax in enumerate(axes[: len(capacities)]):
+            if idx % ncols != 0 and not show_all_y_tick_labels:
+                ax.tick_params(axis="y", labelleft=False)
+        if not per_axis_xlabel:
+            fig.supxlabel(
+                N_TRAIN_LABEL,
+                fontsize=10,
+                fontweight="bold" if bold_axis_labels else "normal",
+                y=0.02,
+            )
+        fig.supylabel(
+            ylabel,
+            fontsize=10,
+            fontweight="bold" if bold_axis_labels else "normal",
+            x=0.045 if fixed_subplot_geometry else 0.025,
+        )
+
+    if shared_legend:
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, fontsize=8, loc="center right", bbox_to_anchor=(0.995, 0.53))
+
+    if fixed_subplot_geometry:
+        fig.subplots_adjust(left=0.095, right=0.875, bottom=0.25, top=0.77, wspace=0.28)
+    elif shared_axis_labels or shared_legend:
+        right = 0.89 if shared_legend else 1.0
+        bottom = 0.02 if per_axis_xlabel else 0.08
+        fig.tight_layout(rect=(0.055, bottom, right, 1.0))
+    else:
+        fig.tight_layout()
     save_figure(fig, out_dir, name)
+    plt.close(fig)
+
+
+def _metric_limits(summary: pd.DataFrame, metric: str) -> tuple[float, float] | None:
+    means = summary[f"{metric}_mean"].to_numpy(dtype=float)
+    sem_col = f"{metric}_sem"
+    if sem_col in summary:
+        sems = summary[sem_col].fillna(0.0).to_numpy(dtype=float)
+    else:
+        sems = np.zeros_like(means)
+    finite = np.isfinite(means) & np.isfinite(sems)
+    if not finite.any():
+        return None
+
+    ymin = float(np.min(means[finite] - sems[finite]))
+    ymax = float(np.max(means[finite] + sems[finite]))
+    pad = 0.06 * (ymax - ymin) if ymax > ymin else 0.1 * max(abs(ymax), 1.0)
+    return (ymin - pad, ymax + pad)
+
+
+def plot_capacity_metric_grid(summary: pd.DataFrame, out_dir: Path) -> None:
+    sub = summary[summary["analysis_family"] == "capacity"].copy()
+    if sub.empty:
+        return
+
+    capacities = sorted(sub["capacity_label"].unique())
+    metrics = [
+        ("fid_best", "best FID"),
+        ("f_mem_at_fid_best", r"$F_{mem}$ at best FID"),
+    ]
+    nrows = len(metrics)
+    ncols = len(capacities)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(11.0, 4.6), sharex="col", sharey=False)
+    axes = np.asarray(axes).reshape(nrows, ncols)
+    y_limits = {metric: _metric_limits(sub, metric) for metric, _ in metrics}
+
+    for col_idx, capacity in enumerate(capacities):
+        cap_rows = sub[sub["capacity_label"] == capacity]
+        axes[0, col_idx].set_title(format_capacity_title(capacity), fontsize=10)
+
+        for row_idx, (metric, _) in enumerate(metrics):
+            ax = axes[row_idx, col_idx]
+            for param, rows in cap_rows.groupby("param"):
+                rows = rows.sort_values("n_train")
+                ax.errorbar(
+                    rows["n_train"],
+                    rows[f"{metric}_mean"],
+                    yerr=rows.get(f"{metric}_sem"),
+                    marker="o",
+                    linewidth=1.8,
+                    capsize=3,
+                    markersize=LINE_MARKER_SIZE,
+                    label=format_param_legend(param),
+                )
+            ax.set_xscale("log", base=2)
+            ax.set_xticks(sorted(cap_rows["n_train"].unique()))
+            ax.set_xticklabels([str(int(v)) for v in sorted(cap_rows["n_train"].unique())])
+            if y_limits[metric] is not None:
+                ax.set_ylim(*y_limits[metric])
+            if row_idx == 0:
+                ax.tick_params(axis="x", labelbottom=False)
+            else:
+                ax.set_xlabel(N_TRAIN_LABEL, fontweight="bold")
+            ax.grid(True, alpha=0.3)
+
+    fig.text(0.047, 0.68, metrics[0][1], rotation=90, va="center", ha="center", fontsize=10, fontweight="bold")
+    fig.text(0.047, 0.285, metrics[1][1], rotation=90, va="center", ha="center", fontsize=10, fontweight="bold")
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, fontsize=8, loc="center right", bbox_to_anchor=(0.995, 0.5))
+    fig.subplots_adjust(left=0.095, right=0.875, bottom=0.13, top=0.88, wspace=0.28, hspace=0.38)
+    save_figure(fig, out_dir, CAPACITY_METRICS_FIGURE)
     plt.close(fig)
 
 
@@ -384,7 +543,7 @@ def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
             s=SCATTER_SIZE,
             marker=markers.get(capacity, "o"),
             alpha=0.78,
-            label=f"{capacity} | {param}",
+            label=f"{capacity} | {format_param_legend(param)}",
         )
 
     ax.set_xlabel("mean best FID")
@@ -393,7 +552,7 @@ def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=6, bbox_to_anchor=(1.02, 1), loc="upper left")
     fig.tight_layout()
-    save_figure(fig, out_dir, "13_pareto_parameterization_means")
+    save_figure(fig, out_dir, CAPACITY_PARETO_FIGURE)
     plt.close(fig)
 
 
@@ -459,22 +618,7 @@ def main() -> None:
         out_dir=out_dir,
         name="11_n_sweep_fmem_at_best_fid_by_n",
     )
-    plot_metric_by_n(
-        group_summary,
-        family="capacity",
-        metric="fid_best",
-        ylabel="mean best FID",
-        out_dir=out_dir,
-        name="12_capacity_best_fid_by_n_capacity",
-    )
-    plot_metric_by_n(
-        group_summary,
-        family="capacity",
-        metric="f_mem_at_fid_best",
-        ylabel=r"mean $F_{mem}$ at best FID",
-        out_dir=out_dir,
-        name="12b_capacity_fmem_at_best_fid_by_n_capacity",
-    )
+    plot_capacity_metric_grid(group_summary, out_dir)
     plot_pareto(group_summary, out_dir)
 
     print(f"[done] wrote paper-objective analysis to {out_dir}")
