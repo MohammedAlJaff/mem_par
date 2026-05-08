@@ -1,5 +1,25 @@
 # Coding Journal
 
+## 2026-05-09T01:36:46+0200 - N-Train tau-scale figure polish
+
+Updated the standalone n-train tau-scale plotting script:
+
+- Kept the threshold-based tau definition fixed at `FID <= 1.10 x run-best FID` for `tau_gen`.
+- Kept the main three-column tau layout as `tau_gen`, `tau_mem`, and `Delta tau`, removing the extra log-y `tau_mem` column.
+- Added figure-level definition titles while keeping subfigures title-free and driven by axis labels.
+- Added one external parameterization legend on the right side of each tau figure.
+- Centralized parameter colors so `eps/eps`, `v/v`, `x/v`, and `x/x` use the same colors across all tau figures, including the original N01 grid.
+- Added explicit per-subfigure panel sizing so the side legend no longer changes panel flatness.
+- Increased and bolded titles, axis labels, tick labels, legend text, line widths, markers, and censored-point markers for readability.
+- Increased panel heights after the typography pass so the figures are less flat and have more breathing room.
+
+Verification:
+
+- `python -m py_compile prototyping/plot_n_train_tau_scales.py`
+- `MPLCONFIGDIR=/tmp/mpl XDG_CACHE_HOME=/tmp conda run -n memcompgen python prototyping/plot_n_train_tau_scales.py`
+
+Generated outputs were refreshed under `prototyping/figures/n_train_tau_scales/`.
+
 ## 2026-05-07T16:07:19+02:00 - Capacity Figures and N-Train Tau-Scale Analysis
 
 ### Context

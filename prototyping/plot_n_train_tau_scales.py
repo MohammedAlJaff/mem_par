@@ -42,8 +42,29 @@ PARAM_COLORS = {
     "x_v": "#2ca02c",
     "x_x": "#d62728",
 }
-GEN_THRESHOLD_SENSITIVITY = (1.05, 1.10, 1.25)
+GEN_THRESHOLD_SENSITIVITY = (1.10,)
 FMEM_THRESHOLD_SENSITIVITY = 0.01
+
+PARAM_GRID_PANEL_SIZE = (2.80, 1.70)
+OVERLAY_PANEL_SIZE = (3.35, 2.35)
+SCALING_PANEL_SIZE = (3.35, 2.35)
+
+PARAM_GRID_LAYOUT = {"left": 0.07, "right": 0.82, "bottom": 0.15, "top": 0.88, "wspace": 0.30, "hspace": 0.48}
+OVERLAY_LAYOUT = {"left": 0.07, "right": 0.82, "bottom": 0.27, "top": 0.84, "wspace": 0.32}
+THRESHOLD_LAYOUT = {"left": 0.09, "right": 0.82, "bottom": 0.08, "top": 0.76, "wspace": 0.32, "hspace": 0.52}
+SCALING_LAYOUT = {"left": 0.08, "right": 0.78, "bottom": 0.20, "top": 0.82, "wspace": 0.35}
+
+AXIS_LABEL_SIZE = 18
+TICK_LABEL_SIZE = 15
+TITLE_SIZE = 16
+LEGEND_SIZE = 14
+LEGEND_TITLE_SIZE = 14
+OFFSET_LABEL_SIZE = 14
+LINE_WIDTH = 2.5
+GUIDE_LINE_WIDTH = 1.7
+MARKER_SIZE = 7.0
+CAP_SIZE = 4
+CENSORED_MARKER_SIZE = 88
 
 
 def resolve_under_repo(repo: Path, path: Path) -> Path:
@@ -259,7 +280,7 @@ def y_limits_for(summary: pd.DataFrame, mean_cols: list[str], sem_cols: list[str
 
 
 def tau_definition_text(summary: pd.DataFrame) -> str:
-    fid_rel = float(summary["fid_rel_threshold"].iloc[0]) if "fid_rel_threshold" in summary.columns else 1.05
+    fid_rel = float(summary["fid_rel_threshold"].iloc[0]) if "fid_rel_threshold" in summary.columns else 1.10
     fmem_threshold = float(summary["fmem_threshold"].iloc[0]) if "fmem_threshold" in summary.columns else 0.05
     return (
         rf"$\tau_{{\mathrm{{gen}}}}$: first step with FID $\leq {fid_rel:.2f}\times$ run-best FID; "
@@ -268,51 +289,70 @@ def tau_definition_text(summary: pd.DataFrame) -> str:
     )
 
 
+def figsize_from_panel(
+    ncols: int,
+    nrows: int,
+    panel_size: tuple[float, float],
+    layout: dict[str, float],
+) -> tuple[float, float]:
+    panel_width, panel_height = panel_size
+    wspace = layout.get("wspace", 0.0)
+    hspace = layout.get("hspace", 0.0)
+    width_units = ncols + wspace * max(ncols - 1, 0)
+    height_units = nrows + hspace * max(nrows - 1, 0)
+    width = panel_width * width_units / (layout["right"] - layout["left"])
+    height = panel_height * height_units / (layout["top"] - layout["bottom"])
+    return (width, height)
+
+
 def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
     params = [param for param in PARAM_ORDER if param in set(summary["param"])]
     params.extend(param for param in sorted(summary["param"].unique()) if param not in params)
     if not params:
         raise RuntimeError("No parameterizations available for plotting.")
 
-    fig, axes = plt.subplots(2, len(params), figsize=(15.0, 5.2), sharex="col", sharey=False)
+    fig, axes = plt.subplots(
+        2,
+        len(params),
+        figsize=figsize_from_panel(len(params), 2, PARAM_GRID_PANEL_SIZE, PARAM_GRID_LAYOUT),
+        sharex="col",
+        sharey=False,
+    )
     axes = np.asarray(axes).reshape(2, len(params))
 
     tau_ylim = y_limits_for(summary, ["tau_gen_mean", "tau_mem_mean"], ["tau_gen_sem", "tau_mem_sem"])
     delta_ylim = y_limits_for(summary, ["delta_tau_mean"], ["delta_tau_sem"], include_zero=True)
 
-    gen_color = "#1f77b4"
-    mem_color = "#ff7f0e"
-    delta_color = "#2ca02c"
     n_train_values = sorted(summary["n_train"].unique())
     n_train_labels = [str(int(v)) for v in n_train_values]
 
     for col_idx, param in enumerate(params):
         sub = summary[summary["param"] == param].sort_values("n_train").copy()
         x = sub["n_train"].to_numpy(dtype=float)
-        title = PARAM_LABELS.get(param, str(param).replace("_", "/"))
-
+        color = param_color(param)
         top = axes[0, col_idx]
-        top.set_title(title, fontsize=15, fontweight="bold")
         top.errorbar(
             x,
             sub["tau_gen_mean"],
             yerr=sub["tau_gen_sem"],
-            color=gen_color,
+            color=color,
             marker="o",
             linestyle="-",
-            linewidth=1.9,
-            capsize=3,
+            linewidth=LINE_WIDTH,
+            capsize=CAP_SIZE,
+            markersize=MARKER_SIZE,
             label=r"$\tau_{\mathrm{gen}}$",
         )
         top.errorbar(
             x,
             sub["tau_mem_mean"],
             yerr=sub["tau_mem_sem"],
-            color=mem_color,
+            color=color,
             marker="s",
             linestyle="--",
-            linewidth=1.9,
-            capsize=3,
+            linewidth=LINE_WIDTH,
+            capsize=CAP_SIZE,
+            markersize=MARKER_SIZE,
             label=r"$\tau_{\mathrm{mem}}$",
         )
         censored = sub["n_tau_mem_censored"] > 0
@@ -321,24 +361,25 @@ def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
                 sub.loc[censored, "n_train"],
                 sub.loc[censored, "tau_mem_mean"],
                 marker="^",
-                s=48,
+                s=CENSORED_MARKER_SIZE,
                 facecolors="none",
-                edgecolors=mem_color,
-                linewidths=1.4,
+                edgecolors=color,
+                linewidths=GUIDE_LINE_WIDTH,
                 zorder=5,
             )
 
         bottom = axes[1, col_idx]
-        bottom.axhline(0.0, color="0.25", linewidth=0.9, linestyle=":")
+        bottom.axhline(0.0, color="0.25", linewidth=GUIDE_LINE_WIDTH, linestyle=":")
         bottom.errorbar(
             x,
             sub["delta_tau_mean"],
             yerr=sub["delta_tau_sem"],
-            color=delta_color,
+            color=color,
             marker="o",
             linestyle="-",
-            linewidth=1.9,
-            capsize=3,
+            linewidth=LINE_WIDTH,
+            capsize=CAP_SIZE,
+            markersize=MARKER_SIZE,
             label=r"$\Delta\tau$",
         )
         if censored.any():
@@ -346,10 +387,10 @@ def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
                 sub.loc[censored, "n_train"],
                 sub.loc[censored, "delta_tau_mean"],
                 marker="^",
-                s=48,
+                s=CENSORED_MARKER_SIZE,
                 facecolors="none",
-                edgecolors=delta_color,
-                linewidths=1.4,
+                edgecolors=color,
+                linewidths=GUIDE_LINE_WIDTH,
                 zorder=5,
             )
 
@@ -358,40 +399,26 @@ def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
             ax.xaxis.set_major_locator(mticker.FixedLocator(n_train_values))
             ax.xaxis.set_major_formatter(mticker.FixedFormatter(n_train_labels))
             ax.xaxis.set_minor_locator(mticker.NullLocator())
-            ax.tick_params(axis="both", labelsize=11)
+            ax.tick_params(axis="both", labelsize=TICK_LABEL_SIZE, width=1.3, length=5.5)
             ax.grid(True, alpha=0.3)
         top.set_ylim(*tau_ylim)
         bottom.set_ylim(*delta_ylim)
         top.tick_params(axis="x", which="major", bottom=True, labelbottom=True, length=5)
         bottom.tick_params(axis="x", which="major", bottom=True, labelbottom=True, length=5)
-        top.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=14)
-        bottom.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=14)
+        top.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
+        bottom.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
         for ax in (top, bottom):
             for label in ax.get_xticklabels():
                 label.set_rotation(35)
                 label.set_horizontalalignment("right")
+            embolden_tick_labels(ax)
 
-    axes[0, 0].set_ylabel("training step", fontweight="bold", fontsize=15)
-    axes[1, 0].set_ylabel(r"$\Delta\tau=\tau_{\mathrm{mem}}-\tau_{\mathrm{gen}}$", fontweight="bold", fontsize=15)
+    axes[0, 0].set_ylabel("training step", fontweight="bold", fontsize=AXIS_LABEL_SIZE)
+    axes[1, 0].set_ylabel(r"$\Delta\tau=\tau_{\mathrm{mem}}-\tau_{\mathrm{gen}}$", fontweight="bold", fontsize=AXIS_LABEL_SIZE)
 
-    legend_handles = [
-        Line2D([0], [0], color=gen_color, marker="o", linestyle="-", linewidth=1.9, label=r"$\tau_{\mathrm{gen}}$"),
-        Line2D([0], [0], color=mem_color, marker="s", linestyle="--", linewidth=1.9, label=r"$\tau_{\mathrm{mem}}$"),
-        Line2D([0], [0], color=delta_color, marker="o", linestyle="-", linewidth=1.9, label=r"$\Delta\tau$"),
-        Line2D(
-            [0],
-            [0],
-            color="0.25",
-            marker="^",
-            linestyle="None",
-            markerfacecolor="none",
-            markersize=7,
-            label="censored/lower bound",
-        ),
-    ]
-    fig.legend(handles=legend_handles, fontsize=12, loc="center right", bbox_to_anchor=(0.995, 0.5))
-    fig.text(0.07, 0.035, tau_definition_text(summary), fontsize=10, ha="left", va="bottom")
-    fig.subplots_adjust(left=0.07, right=0.8, bottom=0.2, top=0.9, wspace=0.3, hspace=0.48)
+    fig.suptitle(tau_definition_text(summary), fontsize=TITLE_SIZE, fontweight="bold", y=0.98)
+    add_param_legend(fig, params)
+    fig.subplots_adjust(**PARAM_GRID_LAYOUT)
     save_figure(fig, out_dir, FIGURE_NAME)
     plt.close(fig)
 
@@ -402,16 +429,53 @@ def ordered_params(summary: pd.DataFrame) -> list[str]:
     return params
 
 
+def param_color(param: str) -> str:
+    return PARAM_COLORS.get(param, "0.2")
+
+
+def embolden_tick_labels(ax: plt.Axes) -> None:
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight("bold")
+    ax.yaxis.get_offset_text().set_fontsize(OFFSET_LABEL_SIZE)
+    ax.yaxis.get_offset_text().set_fontweight("bold")
+
+
+def add_param_legend(fig: plt.Figure, params: list[str], anchor: tuple[float, float] = (0.995, 0.5)) -> None:
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            color=param_color(param),
+            marker="o",
+            linestyle="-",
+            linewidth=LINE_WIDTH,
+            markersize=MARKER_SIZE,
+            label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
+        )
+        for param in params
+    ]
+    fig.legend(
+        handles=handles,
+        title="parameterization",
+        title_fontsize=LEGEND_TITLE_SIZE,
+        fontsize=LEGEND_SIZE,
+        loc="center right",
+        bbox_to_anchor=anchor,
+        frameon=False,
+    )
+
+
 def style_n_train_axis(ax: plt.Axes, n_train_values: list[int], n_train_labels: list[str]) -> None:
     ax.set_xscale("log", base=2)
     ax.xaxis.set_major_locator(mticker.FixedLocator(n_train_values))
     ax.xaxis.set_major_formatter(mticker.FixedFormatter(n_train_labels))
     ax.xaxis.set_minor_locator(mticker.NullLocator())
-    ax.tick_params(axis="both", labelsize=11)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_SIZE, width=1.3, length=5.5)
     for label in ax.get_xticklabels():
         label.set_rotation(35)
         label.set_horizontalalignment("right")
-    ax.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=14)
+    embolden_tick_labels(ax)
+    ax.set_xlabel(N_TRAIN_LABEL, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
     ax.grid(True, alpha=0.3)
 
 
@@ -423,13 +487,33 @@ def plot_tau_scales_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
     n_train_values = [int(v) for v in sorted(summary["n_train"].unique())]
     n_train_labels = [str(v) for v in n_train_values]
     metric_specs = [
-        ("tau_gen", r"$\tau_{\mathrm{gen}}$", "training step", False, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$", "training step", True, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$ (log y)", "training step", True, True),
-        ("delta_tau", r"$\Delta\tau=\tau_{\mathrm{mem}}-\tau_{\mathrm{gen}}$", r"$\Delta\tau$", True, False),
+        (
+            "tau_gen",
+            r"$\tau_{\mathrm{gen}}$",
+            False,
+            False,
+        ),
+        (
+            "tau_mem",
+            r"$\tau_{\mathrm{mem}}$",
+            True,
+            False,
+        ),
+        (
+            "delta_tau",
+            r"$\Delta\tau$",
+            True,
+            False,
+        ),
     ]
 
-    fig, axes = plt.subplots(1, 4, figsize=(17.5, 3.9), sharex=False, sharey=False)
+    fig, axes = plt.subplots(
+        1,
+        len(metric_specs),
+        figsize=figsize_from_panel(len(metric_specs), 1, OVERLAY_PANEL_SIZE, OVERLAY_LAYOUT),
+        sharex=False,
+        sharey=False,
+    )
     axes = np.asarray(axes).reshape(-1)
 
     y_limits = {
@@ -443,13 +527,13 @@ def plot_tau_scales_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
         "delta_tau": y_limits_for(summary, ["delta_tau_mean"], ["delta_tau_sem"], include_zero=True),
     }
 
-    for ax, (metric, title, ylabel, show_censored, log_y) in zip(axes, metric_specs):
+    for ax, (metric, ylabel, show_censored, log_y) in zip(axes, metric_specs):
         if metric == "delta_tau":
-            ax.axhline(0.0, color="0.25", linewidth=0.9, linestyle=":")
+            ax.axhline(0.0, color="0.25", linewidth=GUIDE_LINE_WIDTH, linestyle=":")
 
         for param in params:
             sub = summary[summary["param"] == param].sort_values("n_train")
-            color = PARAM_COLORS.get(param, None)
+            color = param_color(param)
             ax.errorbar(
                 sub["n_train"],
                 sub[f"{metric}_mean"],
@@ -457,27 +541,24 @@ def plot_tau_scales_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
                 color=color,
                 marker="o",
                 linestyle="-",
-                linewidth=2.0,
-                capsize=3,
-                markersize=5.2,
-                label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
+                linewidth=LINE_WIDTH,
+                capsize=CAP_SIZE,
+                markersize=MARKER_SIZE,
             )
-            if show_censored:
-                censored = sub["n_tau_mem_censored"] > 0
-                if censored.any():
-                    ax.scatter(
-                        sub.loc[censored, "n_train"],
-                        sub.loc[censored, f"{metric}_mean"],
-                        marker="^",
-                        s=64,
-                        facecolors="none",
-                        edgecolors=color,
-                        linewidths=1.5,
-                        zorder=5,
-                    )
+            censored = sub["n_tau_mem_censored"] > 0
+            if show_censored and censored.any():
+                ax.scatter(
+                    sub.loc[censored, "n_train"],
+                    sub.loc[censored, f"{metric}_mean"],
+                    marker="^",
+                    s=CENSORED_MARKER_SIZE,
+                    facecolors="none",
+                    edgecolors=color,
+                    linewidths=GUIDE_LINE_WIDTH,
+                    zorder=5,
+                )
 
-        ax.set_title(title, fontsize=15, fontweight="bold")
-        ax.set_ylabel(ylabel, fontweight="bold", fontsize=14)
+        ax.set_ylabel(ylabel, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
         if log_y:
             ax.set_yscale("log")
             positive = summary.loc[summary[f"{metric}_mean"] > 0, f"{metric}_mean"]
@@ -489,42 +570,14 @@ def plot_tau_scales_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
             formatter = mticker.ScalarFormatter(useMathText=False)
             formatter.set_powerlimits((6, 6))
             ax.yaxis.set_major_formatter(formatter)
-            ax.yaxis.get_offset_text().set_fontsize(11)
+            ax.yaxis.get_offset_text().set_fontsize(OFFSET_LABEL_SIZE)
         else:
             ax.set_ylim(*y_limits[metric])
         style_n_train_axis(ax, n_train_values, n_train_labels)
 
-    param_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=PARAM_COLORS.get(param, "0.2"),
-            marker="o",
-            linestyle="-",
-            linewidth=2.0,
-            markersize=5.2,
-            label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
-        )
-        for param in params
-    ]
-    censor_handle = Line2D(
-        [0],
-        [0],
-        color="0.25",
-        marker="^",
-        linestyle="None",
-        markerfacecolor="none",
-        markersize=7,
-        label="censored/lower bound",
-    )
-    fig.legend(
-        handles=param_handles + [censor_handle],
-        fontsize=10,
-        loc="center right",
-        bbox_to_anchor=(0.995, 0.5),
-    )
-    fig.text(0.055, 0.025, tau_definition_text(summary), fontsize=10, ha="left", va="bottom")
-    fig.subplots_adjust(left=0.055, right=0.85, bottom=0.33, top=0.84, wspace=0.38)
+    fig.suptitle(tau_definition_text(summary), fontsize=TITLE_SIZE, fontweight="bold", y=0.98)
+    add_param_legend(fig, params)
+    fig.subplots_adjust(**OVERLAY_LAYOUT)
     save_figure(fig, out_dir, OVERLAY_FIGURE_NAME)
     plt.close(fig)
 
@@ -539,14 +592,34 @@ def plot_tau_gen_threshold_sensitivity(summary: pd.DataFrame, out_dir: Path, fig
     n_train_labels = [str(v) for v in n_train_values]
     fmem_threshold = float(summary["fmem_threshold"].iloc[0])
     metric_specs = [
-        ("tau_gen", r"$\tau_{\mathrm{gen}}$", "training step", False, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$", "training step", True, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$ (log y)", "training step", True, True),
-        ("delta_tau", r"$\Delta\tau=\tau_{\mathrm{mem}}-\tau_{\mathrm{gen}}$", r"$\Delta\tau$", True, False),
+        (
+            "tau_gen",
+            r"$\tau_{\mathrm{gen}}$",
+            False,
+            False,
+        ),
+        (
+            "tau_mem",
+            r"$\tau_{\mathrm{mem}}$",
+            True,
+            False,
+        ),
+        (
+            "delta_tau",
+            r"$\Delta\tau$",
+            True,
+            False,
+        ),
     ]
 
-    fig, axes = plt.subplots(len(thresholds), 4, figsize=(17.5, 3.15 * len(thresholds)), sharex=False, sharey=False)
-    axes = np.asarray(axes).reshape(len(thresholds), 4)
+    fig, axes = plt.subplots(
+        len(thresholds),
+        len(metric_specs),
+        figsize=figsize_from_panel(len(metric_specs), len(thresholds), OVERLAY_PANEL_SIZE, THRESHOLD_LAYOUT),
+        sharex=False,
+        sharey=False,
+    )
+    axes = np.asarray(axes).reshape(len(thresholds), len(metric_specs))
     y_limits = {
         "tau_linear": y_limits_for(
             summary,
@@ -559,16 +632,14 @@ def plot_tau_gen_threshold_sensitivity(summary: pd.DataFrame, out_dir: Path, fig
 
     for row_idx, threshold in enumerate(thresholds):
         row_summary = summary[np.isclose(summary["fid_rel_threshold"], threshold)].copy()
-        for col_idx, (metric, title, ylabel, show_censored, log_y) in enumerate(metric_specs):
+        for col_idx, (metric, ylabel, show_censored, log_y) in enumerate(metric_specs):
             ax = axes[row_idx, col_idx]
-            if row_idx == 0:
-                ax.set_title(title, fontsize=15, fontweight="bold")
             if metric == "delta_tau":
-                ax.axhline(0.0, color="0.25", linewidth=0.9, linestyle=":")
+                ax.axhline(0.0, color="0.25", linewidth=GUIDE_LINE_WIDTH, linestyle=":")
 
             for param in params:
                 sub = row_summary[row_summary["param"] == param].sort_values("n_train")
-                color = PARAM_COLORS.get(param, None)
+                color = param_color(param)
                 ax.errorbar(
                     sub["n_train"],
                     sub[f"{metric}_mean"],
@@ -576,24 +647,22 @@ def plot_tau_gen_threshold_sensitivity(summary: pd.DataFrame, out_dir: Path, fig
                     color=color,
                     marker="o",
                     linestyle="-",
-                    linewidth=1.9,
-                    capsize=3,
-                    markersize=4.8,
-                    label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
+                    linewidth=LINE_WIDTH,
+                    capsize=CAP_SIZE,
+                    markersize=MARKER_SIZE,
                 )
-                if show_censored:
-                    censored = sub["n_tau_mem_censored"] > 0
-                    if censored.any():
-                        ax.scatter(
-                            sub.loc[censored, "n_train"],
-                            sub.loc[censored, f"{metric}_mean"],
-                            marker="^",
-                            s=56,
-                            facecolors="none",
-                            edgecolors=color,
-                            linewidths=1.4,
-                            zorder=5,
-                        )
+                censored = sub["n_tau_mem_censored"] > 0
+                if show_censored and censored.any():
+                    ax.scatter(
+                        sub.loc[censored, "n_train"],
+                        sub.loc[censored, f"{metric}_mean"],
+                        marker="^",
+                        s=CENSORED_MARKER_SIZE,
+                        facecolors="none",
+                        edgecolors=color,
+                        linewidths=GUIDE_LINE_WIDTH,
+                        zorder=5,
+                    )
 
             if log_y:
                 ax.set_yscale("log")
@@ -605,60 +674,26 @@ def plot_tau_gen_threshold_sensitivity(summary: pd.DataFrame, out_dir: Path, fig
                 formatter = mticker.ScalarFormatter(useMathText=False)
                 formatter.set_powerlimits((6, 6))
                 ax.yaxis.set_major_formatter(formatter)
-                ax.yaxis.get_offset_text().set_fontsize(10)
+                ax.yaxis.get_offset_text().set_fontsize(OFFSET_LABEL_SIZE)
             else:
                 ax.set_ylim(*y_limits[metric])
 
             if col_idx == 0:
-                ax.set_ylabel(
-                    f"FID <= {threshold:.2f}x best\n{ylabel}",
-                    fontweight="bold",
-                    fontsize=12,
-                )
+                ax.set_ylabel(ylabel, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
             elif row_idx == len(thresholds) - 1:
-                ax.set_ylabel(ylabel, fontweight="bold", fontsize=12)
+                ax.set_ylabel(ylabel, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
             style_n_train_axis(ax, n_train_values, n_train_labels)
 
-    param_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=PARAM_COLORS.get(param, "0.2"),
-            marker="o",
-            linestyle="-",
-            linewidth=2.0,
-            markersize=5.2,
-            label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
-        )
-        for param in params
-    ]
-    censor_handle = Line2D(
-        [0],
-        [0],
-        color="0.25",
-        marker="^",
-        linestyle="None",
-        markerfacecolor="none",
-        markersize=7,
-        label="censored/lower bound",
-    )
-    fig.legend(
-        handles=param_handles + [censor_handle],
-        fontsize=10,
-        loc="center right",
-        bbox_to_anchor=(0.995, 0.5),
-    )
-    fig.text(
-        0.055,
-        0.025,
-        rf"Rows vary $\tau_{{\mathrm{{gen}}}}$ threshold: first step with FID $\leq \alpha\times$ run-best FID; "
+    fig.suptitle(
+        rf"$\tau_{{\mathrm{{gen}}}}$: first step with FID $\leq 1.10\times$ run-best FID; "
         rf"$\tau_{{\mathrm{{mem}}}}$: first step with $F_{{\mathrm{{mem}}}}\geq {fmem_threshold:.2f}$; "
         r"censored points use final checkpoint",
-        fontsize=10,
-        ha="left",
-        va="bottom",
+        fontsize=TITLE_SIZE,
+        fontweight="bold",
+        y=0.98,
     )
-    fig.subplots_adjust(left=0.075, right=0.85, bottom=0.12, top=0.92, wspace=0.38, hspace=0.52)
+    add_param_legend(fig, params)
+    fig.subplots_adjust(**THRESHOLD_LAYOUT)
     save_figure(fig, out_dir, figure_name)
     plt.close(fig)
 
@@ -671,13 +706,33 @@ def plot_bonnaire_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
     n_train_values = [int(v) for v in sorted(summary["n_train"].unique())]
     n_train_labels = [str(v) for v in n_train_values]
     metric_specs = [
-        ("tau_gen", r"$\tau_{\mathrm{gen}}$ (FID argmin)", "training step", False, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$ ($F_{\mathrm{mem}}>0$)", "training step", True, False),
-        ("tau_mem", r"$\tau_{\mathrm{mem}}$ (log y)", "training step", True, True),
-        ("delta_tau", r"$\Delta\tau=\tau_{\mathrm{mem}}-\tau_{\mathrm{gen}}$", r"$\Delta\tau$", True, False),
+        (
+            "tau_gen",
+            r"$\tau_{\mathrm{gen}}$",
+            False,
+            False,
+        ),
+        (
+            "tau_mem",
+            r"$\tau_{\mathrm{mem}}$",
+            True,
+            False,
+        ),
+        (
+            "delta_tau",
+            r"$\Delta\tau$",
+            True,
+            False,
+        ),
     ]
 
-    fig, axes = plt.subplots(1, 4, figsize=(17.5, 3.9), sharex=False, sharey=False)
+    fig, axes = plt.subplots(
+        1,
+        len(metric_specs),
+        figsize=figsize_from_panel(len(metric_specs), 1, OVERLAY_PANEL_SIZE, OVERLAY_LAYOUT),
+        sharex=False,
+        sharey=False,
+    )
     axes = np.asarray(axes).reshape(-1)
     y_limits = {
         "tau_linear": y_limits_for(
@@ -689,13 +744,13 @@ def plot_bonnaire_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
         "delta_tau": y_limits_for(summary, ["delta_tau_mean"], ["delta_tau_sem"], include_zero=True),
     }
 
-    for ax, (metric, title, ylabel, show_censored, log_y) in zip(axes, metric_specs):
+    for ax, (metric, ylabel, show_censored, log_y) in zip(axes, metric_specs):
         if metric == "delta_tau":
-            ax.axhline(0.0, color="0.25", linewidth=0.9, linestyle=":")
+            ax.axhline(0.0, color="0.25", linewidth=GUIDE_LINE_WIDTH, linestyle=":")
 
         for param in params:
             sub = summary[summary["param"] == param].sort_values("n_train")
-            color = PARAM_COLORS.get(param, None)
+            color = param_color(param)
             ax.errorbar(
                 sub["n_train"],
                 sub[f"{metric}_mean"],
@@ -703,27 +758,24 @@ def plot_bonnaire_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
                 color=color,
                 marker="o",
                 linestyle="-",
-                linewidth=2.0,
-                capsize=3,
-                markersize=5.2,
-                label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
+                linewidth=LINE_WIDTH,
+                capsize=CAP_SIZE,
+                markersize=MARKER_SIZE,
             )
-            if show_censored:
-                censored = sub["n_tau_mem_censored"] > 0
-                if censored.any():
-                    ax.scatter(
-                        sub.loc[censored, "n_train"],
-                        sub.loc[censored, f"{metric}_mean"],
-                        marker="^",
-                        s=64,
-                        facecolors="none",
-                        edgecolors=color,
-                        linewidths=1.5,
-                        zorder=5,
-                    )
+            censored = sub["n_tau_mem_censored"] > 0
+            if show_censored and censored.any():
+                ax.scatter(
+                    sub.loc[censored, "n_train"],
+                    sub.loc[censored, f"{metric}_mean"],
+                    marker="^",
+                    s=CENSORED_MARKER_SIZE,
+                    facecolors="none",
+                    edgecolors=color,
+                    linewidths=GUIDE_LINE_WIDTH,
+                    zorder=5,
+                )
 
-        ax.set_title(title, fontsize=15, fontweight="bold")
-        ax.set_ylabel(ylabel, fontweight="bold", fontsize=14)
+        ax.set_ylabel(ylabel, fontweight="bold", fontsize=AXIS_LABEL_SIZE)
         if log_y:
             ax.set_yscale("log")
             positive = summary.loc[summary[f"{metric}_mean"] > 0, f"{metric}_mean"]
@@ -734,52 +786,22 @@ def plot_bonnaire_overlay(summary: pd.DataFrame, out_dir: Path) -> None:
             formatter = mticker.ScalarFormatter(useMathText=False)
             formatter.set_powerlimits((6, 6))
             ax.yaxis.set_major_formatter(formatter)
-            ax.yaxis.get_offset_text().set_fontsize(11)
+            ax.yaxis.get_offset_text().set_fontsize(OFFSET_LABEL_SIZE)
         else:
             ax.set_ylim(*y_limits[metric])
         style_n_train_axis(ax, n_train_values, n_train_labels)
 
-    param_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=PARAM_COLORS.get(param, "0.2"),
-            marker="o",
-            linestyle="-",
-            linewidth=2.0,
-            markersize=5.2,
-            label=PARAM_LABELS.get(param, str(param).replace("_", "/")),
-        )
-        for param in params
-    ]
-    censor_handle = Line2D(
-        [0],
-        [0],
-        color="0.25",
-        marker="^",
-        linestyle="None",
-        markerfacecolor="none",
-        markersize=7,
-        label="censored/lower bound",
-    )
-    fig.legend(
-        handles=param_handles + [censor_handle],
-        fontsize=10,
-        loc="center right",
-        bbox_to_anchor=(0.995, 0.5),
-    )
-    fig.text(
-        0.055,
-        0.025,
+    fig.suptitle(
         r"Bonnaire-style definitions: "
         r"$\tau_{\mathrm{gen}}$ is the first checkpoint attaining run-minimum FID; "
         r"$\tau_{\mathrm{mem}}$ is the first checkpoint with $F_{\mathrm{mem}}>0$; "
         r"censored points use final checkpoint",
-        fontsize=10,
-        ha="left",
-        va="bottom",
+        fontsize=TITLE_SIZE,
+        fontweight="bold",
+        y=0.98,
     )
-    fig.subplots_adjust(left=0.055, right=0.85, bottom=0.33, top=0.84, wspace=0.38)
+    add_param_legend(fig, params)
+    fig.subplots_adjust(**OVERLAY_LAYOUT)
     save_figure(fig, out_dir, BONNAIRE_OVERLAY_FIGURE_NAME)
     plt.close(fig)
 
@@ -791,12 +813,18 @@ def plot_bonnaire_scaling_guides(summary: pd.DataFrame, out_dir: Path) -> None:
 
     n_train_values = [int(v) for v in sorted(summary["n_train"].unique())]
     n_train_labels = [str(v) for v in n_train_values]
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 3.9), sharex=False, sharey=False)
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=figsize_from_panel(2, 1, SCALING_PANEL_SIZE, SCALING_LAYOUT),
+        sharex=False,
+        sharey=False,
+    )
     tau_gen_ax, tau_mem_ax = axes
 
     for param in params:
         sub = summary[summary["param"] == param].sort_values("n_train")
-        color = PARAM_COLORS.get(param, None)
+        color = param_color(param)
         label = PARAM_LABELS.get(param, str(param).replace("_", "/"))
         tau_gen_ax.errorbar(
             sub["n_train"],
@@ -805,9 +833,9 @@ def plot_bonnaire_scaling_guides(summary: pd.DataFrame, out_dir: Path) -> None:
             color=color,
             marker="o",
             linestyle="-",
-            linewidth=2.0,
-            capsize=3,
-            markersize=5.2,
+            linewidth=LINE_WIDTH,
+            capsize=CAP_SIZE,
+            markersize=MARKER_SIZE,
             label=label,
         )
         tau_mem_ax.errorbar(
@@ -817,9 +845,9 @@ def plot_bonnaire_scaling_guides(summary: pd.DataFrame, out_dir: Path) -> None:
             color=color,
             marker="o",
             linestyle="-",
-            linewidth=2.0,
-            capsize=3,
-            markersize=5.2,
+            linewidth=LINE_WIDTH,
+            capsize=CAP_SIZE,
+            markersize=MARKER_SIZE,
             label=label,
         )
         censored = sub["n_tau_mem_censored"] > 0
@@ -828,15 +856,15 @@ def plot_bonnaire_scaling_guides(summary: pd.DataFrame, out_dir: Path) -> None:
                 sub.loc[censored, "n_train"],
                 sub.loc[censored, "tau_mem_mean"],
                 marker="^",
-                s=64,
+                s=CENSORED_MARKER_SIZE,
                 facecolors="none",
                 edgecolors=color,
-                linewidths=1.5,
+                linewidths=GUIDE_LINE_WIDTH,
                 zorder=5,
             )
 
     tau_gen_guide = float(summary["tau_gen_mean"].median())
-    tau_gen_ax.axhline(tau_gen_guide, color="0.2", linestyle="--", linewidth=1.2, label="constant guide")
+    tau_gen_ax.axhline(tau_gen_guide, color="0.2", linestyle="--", linewidth=GUIDE_LINE_WIDTH, label="constant guide")
 
     positive_mem = summary[summary["tau_mem_mean"] > 0].sort_values("n_train")
     if not positive_mem.empty:
@@ -848,30 +876,26 @@ def plot_bonnaire_scaling_guides(summary: pd.DataFrame, out_dir: Path) -> None:
             anchor_tau * guide_x / anchor_n,
             color="0.2",
             linestyle="--",
-            linewidth=1.2,
+            linewidth=GUIDE_LINE_WIDTH,
             label=r"$\propto N_{\mathrm{train}}$ guide",
         )
 
-    tau_gen_ax.set_title(r"$\tau_{\mathrm{gen}}$: first min-FID checkpoint", fontsize=14, fontweight="bold")
-    tau_mem_ax.set_title(r"$\tau_{\mathrm{mem}}$: first $F_{\mathrm{mem}}>0$", fontsize=14, fontweight="bold")
-    tau_gen_ax.set_ylabel("training step", fontsize=14, fontweight="bold")
-    tau_mem_ax.set_ylabel("training step", fontsize=14, fontweight="bold")
+    tau_gen_ax.set_ylabel(r"$\tau_{\mathrm{gen}}$", fontsize=AXIS_LABEL_SIZE, fontweight="bold")
+    tau_mem_ax.set_ylabel(r"$\tau_{\mathrm{mem}}$", fontsize=AXIS_LABEL_SIZE, fontweight="bold")
     tau_mem_ax.set_yscale("log")
 
     for ax in axes:
         style_n_train_axis(ax, n_train_values, n_train_labels)
 
-    handles, labels = tau_mem_ax.get_legend_handles_labels()
-    tau_mem_ax.legend(handles, labels, fontsize=9, loc="upper left", bbox_to_anchor=(1.02, 1.0))
-    fig.text(
-        0.08,
-        0.04,
+    fig.suptitle(
         r"Reference guides show Bonnaire-style expectations: $\tau_{\mathrm{gen}}\propto N^0$ and "
         r"$\tau_{\mathrm{mem}}\propto N_{\mathrm{train}}$ at fixed width.",
-        fontsize=10,
-        ha="left",
+        fontsize=TITLE_SIZE,
+        fontweight="bold",
+        y=0.98,
     )
-    fig.subplots_adjust(left=0.08, right=0.78, bottom=0.25, top=0.82, wspace=0.35)
+    add_param_legend(fig, params)
+    fig.subplots_adjust(**SCALING_LAYOUT)
     save_figure(fig, out_dir, BONNAIRE_SCALING_FIGURE_NAME)
     plt.close(fig)
 
@@ -881,7 +905,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--metrics", type=Path, default=DEFAULT_METRICS)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
-    parser.add_argument("--fid-rel", type=float, default=1.05)
+    parser.add_argument("--fid-rel", type=float, default=1.10)
     parser.add_argument("--fmem-threshold", type=float, default=0.05)
     return parser.parse_args()
 
