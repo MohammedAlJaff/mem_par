@@ -29,18 +29,32 @@ FMEM_COL = "f_mem"
 STEP_COL = "step"
 N_TRAIN_LABEL = r"$N_{\mathrm{train}}$"
 
-PARAM_ORDER = ["eps_eps", "v_v", "x_v", "x_x"]
+PARAM_ORDER = ["eps_eps", "v_v", "x_x"]
+HIDDEN_PARAMS = {"x_v", "x/v", r"$x/v$"}
 PARAM_LABELS = {
     "eps_eps": r"$\epsilon/\epsilon$",
     "v_v": r"$v/v$",
+    "u_u": r"$v/v$",
     "x_v": r"$x/v$",
     "x_x": r"$x/x$",
 }
 PARAM_COLORS = {
     "eps_eps": "#1f77b4",
-    "v_v": "#ff7f0e",
-    "x_v": "#2ca02c",
+    "eps/eps": "#1f77b4",
+    "epsilon_epsilon": "#1f77b4",
+    "epsilon/epsilon": "#1f77b4",
+    r"$\epsilon/\epsilon$": "#1f77b4",
+    "v_v": "#2ca02c",
+    "u_u": "#2ca02c",
+    "u/u": "#2ca02c",
+    "v/v": "#2ca02c",
+    r"$v/v$": "#2ca02c",
+    "x_v": "#ff7f0e",
+    "x/v": "#ff7f0e",
+    r"$x/v$": "#ff7f0e",
     "x_x": "#d62728",
+    "x/x": "#d62728",
+    r"$x/x$": "#d62728",
 }
 GEN_THRESHOLD_SENSITIVITY = (1.10,)
 FMEM_THRESHOLD_SENSITIVITY = 0.01
@@ -306,8 +320,7 @@ def figsize_from_panel(
 
 
 def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
-    params = [param for param in PARAM_ORDER if param in set(summary["param"])]
-    params.extend(param for param in sorted(summary["param"].unique()) if param not in params)
+    params = ordered_params(summary)
     if not params:
         raise RuntimeError("No parameterizations available for plotting.")
 
@@ -424,13 +437,21 @@ def plot_tau_scales(summary: pd.DataFrame, out_dir: Path) -> None:
 
 
 def ordered_params(summary: pd.DataFrame) -> list[str]:
-    params = [param for param in PARAM_ORDER if param in set(summary["param"])]
-    params.extend(param for param in sorted(summary["param"].unique()) if param not in params)
+    available = [param for param in set(summary["param"]) if str(param) not in HIDDEN_PARAMS]
+    params = [param for param in PARAM_ORDER if param in set(available)]
+    params.extend(param for param in sorted(available) if param not in params)
     return params
 
 
+def hide_excluded_parameterizations(metrics: pd.DataFrame) -> pd.DataFrame:
+    if "param" not in metrics.columns:
+        return metrics
+    return metrics[~metrics["param"].astype(str).isin(HIDDEN_PARAMS)].copy()
+
+
 def param_color(param: str) -> str:
-    return PARAM_COLORS.get(param, "0.2")
+    text = str(param)
+    return PARAM_COLORS.get(text, "0.2")
 
 
 def embolden_tick_labels(ax: plt.Axes) -> None:
@@ -917,6 +938,9 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = pd.read_csv(metrics_path)
+    metrics = hide_excluded_parameterizations(metrics)
+    if metrics.empty:
+        raise RuntimeError("No checkpoint metrics remain after hiding excluded parameterizations.")
     run_tau = compute_run_tau_scales(metrics, fid_rel=float(args.fid_rel), fmem_threshold=float(args.fmem_threshold))
     summary = aggregate_tau_scales(run_tau)
 

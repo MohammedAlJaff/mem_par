@@ -50,6 +50,20 @@ PARAM_SPACES: dict[str, tuple[str, str]] = {
     "x_v": ("x", "v"),
 }
 PARAM_ORDER = {param: index for index, param in enumerate(PARAM_SPACES)}
+PARAM_LABELS = {
+    "eps_eps": r"$\epsilon/\epsilon$",
+    "v_v": r"$v/v$",
+    "x_v": r"$x/v$",
+    "x_x": r"$x/x$",
+}
+PARAM_COLORS = {
+    "eps_eps": "#1f77b4",
+    "v_v": "#2ca02c",
+    "x_v": "#ff7f0e",
+    "x_x": "#d62728",
+}
+PLOT_PARAM_ORDER = ("x_x", "eps_eps", "v_v")
+PLOT_EXCLUDED_PARAMS = {"x_v"}
 RUN_RE = re.compile(
     r"celeba32_N(?P<n_train>\d+)_B(?P<batch>\d+)_(?:(?P<model_label>[A-Za-z0-9]+_m\d+)_)?"
     r"(?P<param>x_x|eps_eps|v_v|x_v)_"
@@ -64,6 +78,18 @@ DEFAULT_SAMPLER = "heun"
 DEFAULT_SAMPLING_STEPS = 50
 DEFAULT_HELDOUT_SPLIT = "valid"
 FID_IMAGE_RANGE = "-1_1"
+
+
+def format_param_label(param: object) -> str:
+    return PARAM_LABELS.get(str(param), str(param).replace("_", "/"))
+
+
+def param_color(param: object) -> str:
+    return PARAM_COLORS.get(str(param), "0.2")
+
+
+def should_plot_param(param: object) -> bool:
+    return str(param) not in PLOT_EXCLUDED_PARAMS
 
 
 @dataclass(frozen=True)
@@ -1018,6 +1044,8 @@ def plot_grouped_metric(
         return
     fig, axis = plt.subplots(figsize=(8.2, 4.9))
     for manifest_row in group_rows:
+        if not should_plot_param(manifest_row.param):
+            continue
         series = [
             row
             for row in rows
@@ -1030,7 +1058,15 @@ def plot_grouped_metric(
             continue
         tau = [safe_float(item.get("tau")) for item in series]
         values = [safe_float(item.get(metric_column)) for item in series]
-        axis.plot(tau, values, marker="o", markersize=2.5, linewidth=1.2, label=manifest_row.param)
+        axis.plot(
+            tau,
+            values,
+            color=param_color(manifest_row.param),
+            marker="o",
+            markersize=2.5,
+            linewidth=1.2,
+            label=format_param_label(manifest_row.param),
+        )
     axis.set_xlabel("tau = step / 1,000,000")
     axis.set_ylabel(ylabel)
     axis.set_title(title)
@@ -1053,7 +1089,7 @@ def plot_final_by_n(
         return
     fig, axis = plt.subplots(figsize=(8.0, 4.8))
     n_values = sorted({safe_int(row.get("n_train")) for row in final_rows})
-    for param in PARAM_SPACES:
+    for param in PLOT_PARAM_ORDER:
         means: list[float] = []
         for n_train in n_values:
             vals = [
@@ -1063,7 +1099,14 @@ def plot_final_by_n(
             ]
             vals = [value for value in vals if math.isfinite(value)]
             means.append(float(np.mean(vals)) if vals else math.nan)
-        axis.plot(n_values, means, marker="o", linewidth=1.5, label=param)
+        axis.plot(
+            n_values,
+            means,
+            color=param_color(param),
+            marker="o",
+            linewidth=1.5,
+            label=format_param_label(param),
+        )
     axis.set_xscale("log", base=2)
     axis.set_xlabel("n_train")
     axis.set_ylabel(ylabel)

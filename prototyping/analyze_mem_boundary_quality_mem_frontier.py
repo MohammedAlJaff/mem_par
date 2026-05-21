@@ -34,6 +34,7 @@ DEFAULT_OUT_DIR = Path("prototyping/figures/paper_objective_quality_mem_frontier
 FIGURE_EXTENSIONS = (".pdf", ".png")
 
 CAPACITY_METRICS_FIGURE = "C01_capacity_best_fid_and_fmem_by_capacity"
+CAPACITY_FMEM_FIGURE = "C02_capacity_fmem_at_best_fid_by_capacity"
 CAPACITY_PARETO_FIGURE = "C03_capacity_quality_mem_pareto"
 
 PAPER_FIGURE_WIDTH = 4.4
@@ -52,6 +53,43 @@ FID_COL = "fid_10k"
 FMEM_COL = "f_mem"
 STEP_COL = "step"
 N_TRAIN_LABEL = r"$N_{\mathrm{train}}$"
+PARAM_LABELS = {
+    "eps_eps": r"$\epsilon/\epsilon$",
+    "epsilon_epsilon": r"$\epsilon/\epsilon$",
+    "eps/eps": r"$\epsilon/\epsilon$",
+    "epsilon/epsilon": r"$\epsilon/\epsilon$",
+    r"$\epsilon/\epsilon$": r"$\epsilon/\epsilon$",
+    "v_v": r"$v/v$",
+    "u_u": r"$v/v$",
+    "u/u": r"$v/v$",
+    "v/v": r"$v/v$",
+    r"$v/v$": r"$v/v$",
+    "x_v": r"$x/v$",
+    "x/v": r"$x/v$",
+    r"$x/v$": r"$x/v$",
+    "x_x": r"$x/x$",
+    "x/x": r"$x/x$",
+    r"$x/x$": r"$x/x$",
+}
+PARAM_COLORS = {
+    "eps_eps": "#1f77b4",
+    "epsilon_epsilon": "#1f77b4",
+    "eps/eps": "#1f77b4",
+    "epsilon/epsilon": "#1f77b4",
+    r"$\epsilon/\epsilon$": "#1f77b4",
+    "v_v": "#2ca02c",
+    "u_u": "#2ca02c",
+    "u/u": "#2ca02c",
+    "v/v": "#2ca02c",
+    r"$v/v$": "#2ca02c",
+    "x_v": "#ff7f0e",
+    "x/v": "#ff7f0e",
+    r"$x/v$": "#ff7f0e",
+    "x_x": "#d62728",
+    "x/x": "#d62728",
+    r"$x/x$": "#d62728",
+}
+HIDDEN_PARAMS = {"x_v", "x/v", r"$x/v$"}
 
 SUMMARY_METRICS = [
     "fid_best",
@@ -138,13 +176,18 @@ def format_capacity_title(capacity_label: object) -> str:
 
 def format_param_legend(param: object) -> str:
     """Display parameterization pairs as compact math labels."""
-    labels = {
-        "eps_eps": r"$\epsilon/\epsilon$",
-        "v_v": r"$v/v$",
-        "x_v": r"$x/v$",
-        "x_x": r"$x/x$",
-    }
-    return labels.get(str(param), str(param).replace("_", "/"))
+    return PARAM_LABELS.get(str(param), str(param).replace("_", "/"))
+
+
+def param_color(param: object) -> str:
+    """Canonical color for plots where color encodes parameterization."""
+    return PARAM_COLORS.get(str(param), "0.2")
+
+
+def hide_excluded_parameterizations(metrics: pd.DataFrame) -> pd.DataFrame:
+    if "param" not in metrics.columns:
+        return metrics
+    return metrics[~metrics["param"].astype(str).isin(HIDDEN_PARAMS)].copy()
 
 
 def add_analysis_columns(metrics: pd.DataFrame) -> pd.DataFrame:
@@ -350,6 +393,29 @@ def save_table(df: pd.DataFrame, out_dir: Path, name: str) -> Path:
     return path
 
 
+def apply_n_train_log_axis(ax: plt.Axes, values: pd.Series | np.ndarray | list[object]) -> None:
+    """Use tight log2 x-limits around the observed N_train values."""
+    ticks = sorted(
+        {
+            int(value)
+            for value in pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+            if float(value) > 0
+        }
+    )
+    if not ticks:
+        return
+
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([str(value) for value in ticks])
+
+    if len(ticks) == 1:
+        pad_octaves = 0.50
+    else:
+        pad_octaves = 0.18
+    ax.set_xlim(ticks[0] / (2.0 ** pad_octaves), ticks[-1] * (2.0 ** pad_octaves))
+
+
 def plot_metric_by_n(
     summary: pd.DataFrame,
     family: str,
@@ -399,6 +465,7 @@ def plot_metric_by_n(
                 rows["n_train"],
                 rows[f"{metric}_mean"],
                 yerr=rows.get(f"{metric}_sem"),
+                color=param_color(param),
                 marker="o",
                 linewidth=1.8,
                 capsize=3,
@@ -414,9 +481,7 @@ def plot_metric_by_n(
             "" if shared_axis_labels else ylabel,
             fontweight="bold" if bold_axis_labels else "normal",
         )
-        ax.set_xscale("log", base=2)
-        ax.set_xticks(sorted(cap_rows["n_train"].unique()))
-        ax.set_xticklabels([str(int(v)) for v in sorted(cap_rows["n_train"].unique())])
+        apply_n_train_log_axis(ax, cap_rows["n_train"])
         if y_limits is not None:
             ax.set_ylim(*y_limits)
         ax.grid(True, alpha=0.3)
@@ -505,15 +570,14 @@ def plot_capacity_metric_grid(summary: pd.DataFrame, out_dir: Path) -> None:
                     rows["n_train"],
                     rows[f"{metric}_mean"],
                     yerr=rows.get(f"{metric}_sem"),
+                    color=param_color(param),
                     marker="o",
                     linewidth=1.8,
                     capsize=3,
                     markersize=LINE_MARKER_SIZE,
                     label=format_param_legend(param),
                 )
-            ax.set_xscale("log", base=2)
-            ax.set_xticks(sorted(cap_rows["n_train"].unique()))
-            ax.set_xticklabels([str(int(v)) for v in sorted(cap_rows["n_train"].unique())])
+            apply_n_train_log_axis(ax, cap_rows["n_train"])
             if y_limits[metric] is not None:
                 ax.set_ylim(*y_limits[metric])
             if row_idx == 0:
@@ -532,6 +596,26 @@ def plot_capacity_metric_grid(summary: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 
+def plot_capacity_fmem_standalone(summary: pd.DataFrame, out_dir: Path) -> None:
+    """Restore standalone C02 while keeping the merged C01/C02 grid."""
+    plot_metric_by_n(
+        summary,
+        family="capacity",
+        metric="f_mem_at_fid_best",
+        ylabel=r"$F_{mem}$ at best FID",
+        out_dir=out_dir,
+        name=CAPACITY_FMEM_FIGURE,
+        figsize=(11.0, 2.9),
+        share_y_scale=True,
+        shared_axis_labels=True,
+        shared_legend=True,
+        per_axis_xlabel=True,
+        show_all_y_tick_labels=True,
+        bold_axis_labels=True,
+        fixed_subplot_geometry=True,
+    )
+
+
 def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=pub_figsize(1.2, 1.3))
     markers = {"fixed_capacity": "o", "base32_m124": "s", "base64_m124": "^", "base64_m1244": "D"}
@@ -541,8 +625,11 @@ def plot_pareto(summary: pd.DataFrame, out_dir: Path) -> None:
             rows["fid_best_mean"],
             rows["f_mem_at_fid_best_mean"],
             s=SCATTER_SIZE,
+            color=param_color(param),
             marker=markers.get(capacity, "o"),
             alpha=0.78,
+            edgecolor="white",
+            linewidth=0.6,
             label=f"{capacity} | {format_param_legend(param)}",
         )
 
@@ -582,6 +669,9 @@ def main() -> None:
         print(f"[load] {label}: rows={len(frame)} root={root}")
 
     metrics = add_analysis_columns(pd.concat(frames, ignore_index=True))
+    metrics = hide_excluded_parameterizations(metrics)
+    if metrics.empty:
+        raise RuntimeError("No metrics remain after hiding excluded parameterizations.")
     duplicate_step_rows = metrics.duplicated(["run_key", STEP_COL]).sum()
     if duplicate_step_rows:
         raise RuntimeError(f"Found {duplicate_step_rows} duplicate run_key/step rows across merged eval roots.")
@@ -619,6 +709,7 @@ def main() -> None:
         name="11_n_sweep_fmem_at_best_fid_by_n",
     )
     plot_capacity_metric_grid(group_summary, out_dir)
+    plot_capacity_fmem_standalone(group_summary, out_dir)
     plot_pareto(group_summary, out_dir)
 
     print(f"[done] wrote paper-objective analysis to {out_dir}")

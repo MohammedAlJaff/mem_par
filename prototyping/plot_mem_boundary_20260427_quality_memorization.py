@@ -61,6 +61,30 @@ SCATTER_SIZE_SMALL = 18
 SCATTER_SIZE_MEDIUM = 24
 SCATTER_SIZE_LARGE = 34
 SCATTER_SIZE_HIGHLIGHT = 48
+FIG_08_TEXT_COLOR = "#111111"
+FIG_08_PANEL_SIZE = (2.85, 2.08)
+FIG_08_LAYOUT = {
+    "left": 0.10,
+    "right": 0.82,
+    "bottom": 0.12,
+    "top": 0.86,
+    "wspace": 0.24,
+    "hspace": 0.45,
+}
+FIG_08_N_TRAIN_LABEL = r"$\mathbf{N}_{\mathbf{train}}$"
+FIG_12C_PANEL_SIZE = (2.46, 1.35)
+FIG_12C_LAYOUT = {
+    "left": 0.075,
+    "right": 0.97,
+    "bottom": 0.23,
+    "top": 0.86,
+    "wspace": 0.10,
+    "hspace": 0.18,
+}
+FIG_12C_TEXT_COLOR = "#111111"
+FIG_12C_TICK_WEIGHT = "semibold"
+FIG_12C_ROW_BACKGROUNDS = ("#f5f8ff", "#fff8ef")
+FIG_12C_FMEM_LABEL = r"$\mathbf{F}_{\mathbf{mem}}$"
 
 
 def pub_figsize(width_units: float = 1.0, height_units: float = 1.0) -> tuple[float, float]:
@@ -72,6 +96,23 @@ def grid_figsize(ncols: int, nrows: int) -> tuple[float, float]:
     """Return a denser figsize for faceted figure grids."""
     return (GRID_CELL_WIDTH * ncols, GRID_CELL_HEIGHT * nrows)
 
+
+def figsize_from_panel_size(
+    panel_size: tuple[float, float],
+    ncols: int,
+    nrows: int,
+    layout: dict[str, float],
+) -> tuple[float, float]:
+    """Compute total figure size from explicit subplot panel dimensions."""
+    panel_width, panel_height = panel_size
+    wspace = layout.get("wspace", 0.0)
+    hspace = layout.get("hspace", 0.0)
+    axes_width = panel_width * (ncols + (ncols - 1) * wspace)
+    axes_height = panel_height * (nrows + (nrows - 1) * hspace)
+    fig_width = axes_width / (layout["right"] - layout["left"])
+    fig_height = axes_height / (layout["top"] - layout["bottom"])
+    return fig_width, fig_height
+
 DEFAULT_REQUESTED_STEPS = [0, 100_000, 300_000, 595_000, 1_000_000]
 DEFAULT_N_TRAIN_SWEEP_VALUES = [512, 2_048, 8_192]
 DEFAULT_N_TRAIN_SWEEP_PARAM = "x_x"
@@ -81,6 +122,25 @@ FID_COL = "fid_10k"
 FMEM_COL = "f_mem"
 TAU_LABEL = r"$\tau$"
 N_TRAIN_LABEL = r"$N_{\mathrm{train}}$"
+DIAGONAL_PARAM_LABELS = [r"$\epsilon/\epsilon$", r"$v/v$", r"$x/x$"]
+HIDDEN_PARAM_LABELS = {r"$x/v$"}
+CANONICAL_PARAM_COLORS = {
+    r"$\epsilon/\epsilon$": "#1f77b4",
+    r"$v/v$": "#2ca02c",
+    r"$x/v$": "#ff7f0e",
+    r"$x/x$": "#d62728",
+    "eps_eps": "#1f77b4",
+    "eps/eps": "#1f77b4",
+    "epsilon_epsilon": "#1f77b4",
+    "epsilon/epsilon": "#1f77b4",
+    "v_v": "#2ca02c",
+    "v/v": "#2ca02c",
+    "u_u": "#2ca02c",
+    "x_v": "#ff7f0e",
+    "x/v": "#ff7f0e",
+    "x_x": "#d62728",
+    "x/x": "#d62728",
+}
 
 
 def format_n_train_value(value: int) -> str:
@@ -145,6 +205,12 @@ FIGURE_CAPTIONS = {
         "visible seeds/runs and arranged by $N_{\\mathrm{train}}$. Panels include FID, $F_{\\mathrm{mem}}$, "
         "$F_{\\mathrm{mem}}$-versus-FID phase plots, and the available test-loss trajectory."
     ),
+    "07d_all_run_phase_trajectories_by_n_train": (
+        "Figure 07d (all-run phase trajectories): Individual run trajectories in the FID--$F_{\\mathrm{mem}}$ "
+        "phase plane, arranged by $N_{\\mathrm{train}}$. The two columns reproduce the phase-view columns from "
+        "Figure 07, using a linear FID view and a log-FID view with linear $F_{\\mathrm{mem}}$ axes; each trajectory is one run over checkpoints, and color "
+        "encodes the diagonal parameterization."
+    ),
     "07b_fmem_thresholds_along_training_by_n_train": (
         "Figure 07b ($F_{\\mathrm{mem}}$ threshold sweep): Log-scale $F_{\\mathrm{mem}}$ trajectories for "
         "nearest-neighbor ratio thresholds $\\rho=0.3$, $\\rho=0.5$, and $\\rho=0.7$. Rows show the diagonal "
@@ -158,9 +224,9 @@ FIGURE_CAPTIONS = {
     ),
     "08_parameterization_best_fid_summary": (
         "Figure 08 (parameterization summary at best FID): Summary of sample-quality optima by parameterization "
-        "and $N_{\\mathrm{train}}$. The figure compares best achieved FID with the memorization measured at the "
-        "same best-FID checkpoint, shown on both linear and log y-scales, highlighting cases where quality and "
-        "memorization optima diverge."
+        "and $N_{\\mathrm{train}}$. The top panel spans both columns and shows best achieved FID; the bottom "
+        "panels show the memorization measured at the same best-FID checkpoint on linear and log y-scales, "
+        "highlighting cases where quality and memorization optima diverge."
     ),
     "09_n_train_sweep_tau_triptych_fmem_testloss_fid": (
         "Figure 09 (focused $N_{\\mathrm{train}}$ sweep): Seed-averaged trajectories for selected training-set "
@@ -187,6 +253,14 @@ FIGURE_CAPTIONS = {
         "Figure 12b (mid-range FID and $F_{\\mathrm{mem}}$ along $\\tau$): Same layout and encodings as Figure 12, "
         "restricted to $512 <= N_{\\mathrm{train}} <= 8192$. Rows use pastel background bands and larger "
         "$N_{\\mathrm{train}}$ labels to emphasize the selected data-scale range."
+    ),
+    "12c_fid_fmem_tau_grid_by_param_merged_n_train_512_to_8192": (
+        "Figure 12c (merged mid-range $N_{\\mathrm{train}}$ trajectories): Seed-averaged log-FID and "
+        "$F_{\\mathrm{mem}}$ trajectories for $512 <= N_{\\mathrm{train}} <= 8192$, arranged as log-FID and "
+        "$F_{\\mathrm{mem}}$ rows crossed with diagonal-parameterization columns. Columns use the canonical parameterization colors "
+        "($\\epsilon/\\epsilon$ blue, $v/v$ green, $x/x$ red), while curve shade and line style encode "
+        "$N_{\\mathrm{train}}$ within each column, dark-to-light as $N_{\\mathrm{train}}$ increases; $x/v$ is omitted. "
+        "The horizontal axis uses $\\tau=\\mathrm{step}/10^6$."
     ),
 }
 
@@ -669,6 +743,43 @@ def apply_pretty_param_labels(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def hide_excluded_parameterizations(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop parameterizations that should not appear in generated figures/tables."""
+    if "param_label" not in df.columns:
+        return df
+    return df[~df["param_label"].isin(HIDDEN_PARAM_LABELS)].copy()
+
+
+def canonical_param_color(value: object, fallback_index: int | None = None) -> str:
+    """Return the canonical color for known parameterizations."""
+    text = str(value)
+    if text in CANONICAL_PARAM_COLORS:
+        return CANONICAL_PARAM_COLORS[text]
+
+    pretty = pretty_param_label(value)
+    if pretty in CANONICAL_PARAM_COLORS:
+        return CANONICAL_PARAM_COLORS[pretty]
+
+    if fallback_index is not None:
+        base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+        return base_colors[fallback_index % len(base_colors)]
+    return "0.2"
+
+
+def canonical_param_color_map(params: Iterable[object]) -> dict[object, str]:
+    """Build a stable parameterization color map with canonical known colors."""
+    return {
+        param: canonical_param_color(param, idx)
+        for idx, param in enumerate(params)
+    }
+
+
+def mix_color_with_white(color: object, amount: float) -> tuple[float, float, float]:
+    """Lighten a color by mixing it with white."""
+    base = np.asarray(to_rgb(color))
+    return tuple(base + (1.0 - base) * amount)
+
+
 # ============================================================
 # 04. Derived run summaries: final and best-FID rows
 # ============================================================
@@ -858,8 +969,7 @@ def fig_01_metric_trajectories_by_n_train(
     if not n_trains or not params:
         return
 
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {param: base_colors[idx % len(base_colors)] for idx, param in enumerate(params)}
+    param_colors = canonical_param_color_map(params)
 
     nrows = len(plot_metrics)
     ncols = len(n_trains)
@@ -1415,11 +1525,7 @@ def fig_02c_n_train_sweep_all_parameterizations(
     save_table(summary, out_dir, "10_n_train_sweep_all_parameterizations_seed_average")
 
     params = sorted(summary["param_label"].dropna().unique(), key=str)
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {
-        param: base_colors[idx % len(base_colors)]
-        for idx, param in enumerate(params)
-    }
+    param_colors = canonical_param_color_map(params)
 
     def metric_shade(param: object, side: str) -> tuple[float, float, float]:
         base = np.asarray(to_rgb(param_colors[param]))
@@ -1719,11 +1825,7 @@ def fig_02d_parameterization_pair_grid_by_n_train(
     save_table(summary, out_dir, "11_parameterization_pair_grid_by_n_train_seed_average")
 
     params = sorted(summary["param_label"].dropna().unique(), key=str)
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {
-        param: base_colors[idx % len(base_colors)]
-        for idx, param in enumerate(params)
-    }
+    param_colors = canonical_param_color_map(params)
 
     def metric_shade(param: object, side: str) -> tuple[float, float, float]:
         base = np.asarray(to_rgb(param_colors[param]))
@@ -1968,11 +2070,7 @@ def fig_02e_fid_fmem_tau_grid_by_param(
     if not params:
         return
 
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {
-        param: base_colors[idx % len(base_colors)]
-        for idx, param in enumerate(params)
-    }
+    param_colors = canonical_param_color_map(params)
 
     def metric_colors(param: object) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
         base = np.asarray(to_rgb(param_colors[param]))
@@ -2162,6 +2260,254 @@ def fig_12b_fid_fmem_tau_grid_by_param_mid_n_train(
         title=r"12b FID and $F_{\mathrm{mem}}$ along $\tau$ by parameterization | $512 \leq N_{\mathrm{train}} \leq 8192$",
         x_axis_bottom_only=True,
         subplot_hspace=0.28,
+    )
+
+
+def fig_12c_fid_fmem_tau_grid_by_param_merged_n_train(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    show: bool,
+) -> None:
+    """Merged mid-range N_train trajectories in metric rows and parameter columns."""
+    if "n_train" not in metrics.columns or "param_label" not in metrics.columns:
+        return
+    if FID_COL not in metrics.columns or FMEM_COL not in metrics.columns:
+        return
+
+    visible_n_trains = n_train_ticks_from(metrics)
+    requested = set(DEFAULT_FIG_12B_N_TRAIN_VALUES)
+    n_trains = [n_train for n_train in visible_n_trains if n_train in requested]
+    if not n_trains:
+        print("[warn] merged FID/F_mem grid skipped; no selected mid-range n_train values")
+        return
+
+    x_col = choose_tau_plot_col(metrics, step_col)
+    seed_col = choose_seed_col(metrics)
+    run_col = first_existing(metrics.columns, ["manifest_index", "run_id", "metrics_file"])
+
+    sub = metrics.copy()
+    sub["_n_train_plot"] = pd.to_numeric(sub["n_train"], errors="coerce")
+    sub = sub[
+        sub["_n_train_plot"].isin(n_trains)
+        & sub["param_label"].isin(DIAGONAL_PARAM_LABELS)
+    ].copy()
+    if sub.empty:
+        print("[warn] merged FID/F_mem grid skipped; selected parameterizations are absent")
+        return
+
+    sub["_n_train_plot"] = sub["_n_train_plot"].astype(int)
+    for column in [x_col, FID_COL, FMEM_COL]:
+        sub[column] = pd.to_numeric(sub[column], errors="coerce")
+    sub = sub.dropna(subset=["_n_train_plot", "param_label", x_col, FID_COL, FMEM_COL])
+    if sub.empty:
+        print("[warn] merged FID/F_mem grid skipped; selected data has no finite values")
+        return
+
+    agg_spec = {
+        f"{FID_COL}_mean": (FID_COL, "mean"),
+        f"{FID_COL}_std": (FID_COL, "std"),
+        f"{FMEM_COL}_mean": (FMEM_COL, "mean"),
+        f"{FMEM_COL}_std": (FMEM_COL, "std"),
+    }
+    if run_col is not None:
+        agg_spec["n_runs"] = (run_col, "nunique")
+    else:
+        agg_spec["n_rows"] = (x_col, "size")
+    if seed_col is not None:
+        agg_spec["n_seeds"] = (seed_col, "nunique")
+
+    summary = (
+        sub
+        .groupby(["param_label", "_n_train_plot", x_col], dropna=False)
+        .agg(**agg_spec)
+        .reset_index()
+        .rename(columns={"_n_train_plot": "n_train"})
+        .sort_values(["param_label", "n_train", x_col])
+    )
+    save_table(
+        summary,
+        out_dir,
+        "12c_fid_fmem_tau_grid_by_param_merged_n_train_512_to_8192_seed_average",
+    )
+
+    params = [param for param in DIAGONAL_PARAM_LABELS if param in set(summary["param_label"].dropna())]
+    if not params:
+        return
+
+    x_axis_label = r"$\tau$ (training steps / $10^6$)" if x_col == "tau" else "training step"
+
+    def shared_limits(column: str, positive_only: bool = False) -> tuple[float, float] | None:
+        values = (
+            pd.to_numeric(summary[column], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if positive_only:
+            values = values[values > 0]
+        if values.empty:
+            return None
+        lower = float(values.min()) if positive_only else min(0.0, float(values.min()))
+        upper = float(values.max())
+        if upper <= lower:
+            upper = lower + max(abs(lower) * 0.05, 1.0)
+        pad = 0.06 * (upper - lower)
+        if positive_only:
+            lower = max(lower / 1.15, np.finfo(float).tiny)
+            return lower, upper * 1.15
+        return lower, upper + pad
+
+    fid_log_limits = shared_limits(f"{FID_COL}_mean", positive_only=True)
+    fmem_limits = shared_limits(f"{FMEM_COL}_mean")
+    linestyles = ["-", "--", ":", "-.", (0, (3, 1, 1, 1)), (0, (1, 1))]
+    n_train_linestyles = {
+        n_train: linestyles[idx % len(linestyles)]
+        for idx, n_train in enumerate(n_trains)
+    }
+    shade_amounts = {
+        n_train: float(amount)
+        for n_train, amount in zip(n_trains, np.linspace(0.0, 0.62, len(n_trains)))
+    }
+
+    def apply_12c_x_axis(ax: plt.Axes) -> None:
+        if x_col == "tau":
+            apply_tau_axis_for_triptych(ax, summary[x_col])
+            ticks = list(ax.get_xticks())
+            labels = [tick.get_text() for tick in ax.get_xticklabels()]
+            if len(ticks) > 1:
+                ax.set_xticks(ticks[1:])
+                ax.set_xticklabels(labels[1:])
+        else:
+            ax.set_xscale("log")
+
+    nrows = 2
+    ncols = len(params)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=figsize_from_panel_size(FIG_12C_PANEL_SIZE, ncols, nrows, FIG_12C_LAYOUT),
+        sharex=True,
+        sharey="row",
+    )
+    axes = np.asarray(axes).reshape(nrows, ncols)
+
+    for col_idx, param in enumerate(params):
+        base_color = canonical_param_color(param)
+        axes[0, col_idx].set_title(
+            str(param),
+            fontsize=10,
+            fontweight="bold",
+            color=FIG_12C_TEXT_COLOR,
+        )
+        for n_train in n_trains:
+            group = summary[
+                (summary["param_label"] == param)
+                & (summary["n_train"] == n_train)
+            ].sort_values(x_col)
+            group = group[group[x_col] > 0]
+            if group.empty:
+                continue
+
+            color = mix_color_with_white(base_color, shade_amounts[n_train])
+            linestyle = n_train_linestyles[n_train]
+            log_group = group[group[f"{FID_COL}_mean"] > 0]
+            if not log_group.empty:
+                axes[0, col_idx].plot(
+                    log_group[x_col].to_numpy(dtype=float),
+                    log_group[f"{FID_COL}_mean"].to_numpy(dtype=float),
+                    color=color,
+                    linestyle=linestyle,
+                    linewidth=2.3,
+                    alpha=0.96,
+                )
+            axes[1, col_idx].plot(
+                group[x_col].to_numpy(dtype=float),
+                group[f"{FMEM_COL}_mean"].to_numpy(dtype=float),
+                color=color,
+                linestyle=linestyle,
+                linewidth=2.3,
+                alpha=0.96,
+            )
+
+        for row_idx, ax in enumerate(axes[:, col_idx]):
+            apply_12c_x_axis(ax)
+            ax.set_facecolor(FIG_12C_ROW_BACKGROUNDS[row_idx % len(FIG_12C_ROW_BACKGROUNDS)])
+            if row_idx == 0:
+                ax.set_yscale("log")
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(axis="both", labelsize=8, colors=FIG_12C_TEXT_COLOR, labelcolor=FIG_12C_TEXT_COLOR)
+            if row_idx != nrows - 1:
+                ax.tick_params(axis="x", which="both", labelbottom=False)
+            else:
+                ax.set_xlabel(x_axis_label, fontsize=10, fontweight="bold", color=FIG_12C_TEXT_COLOR)
+                for tick_label in ax.get_xticklabels(which="both"):
+                    tick_label.set_rotation(30)
+                    tick_label.set_horizontalalignment("right")
+                    tick_label.set_rotation_mode("anchor")
+            for tick_label in [*ax.get_xticklabels(which="both"), *ax.get_yticklabels(which="both")]:
+                tick_label.set_color(FIG_12C_TEXT_COLOR)
+                tick_label.set_fontweight(FIG_12C_TICK_WEIGHT)
+
+    if fid_log_limits is not None:
+        axes[0, 0].set_ylim(fid_log_limits)
+    if fmem_limits is not None:
+        axes[1, 0].set_ylim(fmem_limits)
+    axes[0, 0].set_ylabel("FID (log)", fontsize=10, fontweight="bold", color=FIG_12C_TEXT_COLOR)
+    axes[1, 0].set_ylabel(FIG_12C_FMEM_LABEL, fontsize=10, fontweight="bold", color=FIG_12C_TEXT_COLOR)
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=mix_color_with_white("0.15", shade_amounts[n_train]),
+            linestyle=n_train_linestyles[n_train],
+            linewidth=2.3,
+            label=format_n_train_value(n_train),
+        )
+        for n_train in n_trains
+    ]
+    legend = fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.035),
+        ncol=len(legend_handles),
+        frameon=False,
+        fontsize=8,
+        handlelength=2.8,
+        columnspacing=1.0,
+        handletextpad=0.45,
+    )
+    for text in legend.get_texts():
+        text.set_fontweight(FIG_12C_TICK_WEIGHT)
+        text.set_color(FIG_12C_TEXT_COLOR)
+
+    fig.suptitle(
+        rf"12c log-FID and {FIG_12C_FMEM_LABEL}: shade + line style | $\tau=\mathrm{{step}}/10^6$",
+        y=0.985,
+        fontsize=12,
+        fontweight="bold",
+        color=FIG_12C_TEXT_COLOR,
+    )
+    fig.subplots_adjust(**FIG_12C_LAYOUT)
+    for row_idx in range(nrows):
+        row_bbox = axes[row_idx, 0].get_position()
+        row_right = axes[row_idx, -1].get_position().x1
+        band = plt.Rectangle(
+            (row_bbox.x0 - 0.02, row_bbox.y0 - 0.012),
+            row_right - row_bbox.x0 + 0.04,
+            row_bbox.y1 - row_bbox.y0 + 0.024,
+            transform=fig.transFigure,
+            facecolor=FIG_12C_ROW_BACKGROUNDS[row_idx % len(FIG_12C_ROW_BACKGROUNDS)],
+            edgecolor="none",
+            alpha=0.38,
+            zorder=-1,
+        )
+        fig.patches.append(band)
+    save_figure(
+        fig,
+        out_dir,
+        "12c_fid_fmem_tau_grid_by_param_merged_n_train_512_to_8192",
+        show=show,
     )
 
 
@@ -2356,8 +2702,9 @@ def fig_04_fmem_at_best_fid_vs_n_train(
     fig, ax = plt.subplots(figsize=pub_figsize(1.15, 1.05))
 
     for label, sub in best.groupby("param_label", dropna=False):
+        color = canonical_param_color(label)
         # Light points show individual seeds/runs.
-        ax.scatter(sub["n_train"], sub[FMEM_COL], s=SCATTER_SIZE_MEDIUM, alpha=0.45, label=f"{label} runs")
+        ax.scatter(sub["n_train"], sub[FMEM_COL], color=color, s=SCATTER_SIZE_MEDIUM, alpha=0.45, label=f"{label} runs")
 
         # Heavy line shows seed/run mean at each n_train.
         mean = (
@@ -2369,6 +2716,7 @@ def fig_04_fmem_at_best_fid_vs_n_train(
             mean["n_train"],
             mean["fmem_mean"],
             yerr=mean["fmem_std"],
+            color=color,
             marker="o",
             linewidth=2.0,
             capsize=3,
@@ -2544,24 +2892,25 @@ def fig_06_parameterization_trajectories_fixed_seed_n_train(
     for row_idx, (n_train_value, selected_seed, sub) in enumerate(row_entries):
         row_axes = axes[row_idx]
         for label, group in sub.groupby("param_label", dropna=False):
+            color = canonical_param_color(label)
             group = group.sort_values(x_col)
             x_group = positive_x(group)
             if not x_group.empty:
-                row_axes[0].plot(x_group[x_col], x_group[FID_COL], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
-                row_axes[1].plot(x_group[x_col], x_group[FMEM_COL], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
+                row_axes[0].plot(x_group[x_col], x_group[FID_COL], color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
+                row_axes[1].plot(x_group[x_col], x_group[FMEM_COL], color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
 
-            row_axes[2].plot(group[FID_COL], group[FMEM_COL], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
+            row_axes[2].plot(group[FID_COL], group[FMEM_COL], color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
             log_phase = group[group[FID_COL] > 0]
-            row_axes[3].plot(log_phase[FID_COL], log_phase[FMEM_COL], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
+            row_axes[3].plot(log_phase[FID_COL], log_phase[FMEM_COL], color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
             log_log_phase = group[(group[FID_COL] > 0) & (group[FMEM_COL] > 0)]
-            row_axes[4].plot(log_log_phase[FID_COL], log_log_phase[FMEM_COL], marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
+            row_axes[4].plot(log_log_phase[FID_COL], log_log_phase[FMEM_COL], color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=1.6, label=str(label))
 
             best_idx = group[FID_COL].idxmin()
             best_row = group.loc[best_idx]
-            row_axes[2].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, edgecolor="black", linewidth=1.0)
-            row_axes[3].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, edgecolor="black", linewidth=1.0)
+            row_axes[2].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, facecolor=color, edgecolor="black", linewidth=1.0)
+            row_axes[3].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, facecolor=color, edgecolor="black", linewidth=1.0)
             if best_row[FID_COL] > 0 and best_row[FMEM_COL] > 0:
-                row_axes[4].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, edgecolor="black", linewidth=1.0)
+                row_axes[4].scatter(best_row[FID_COL], best_row[FMEM_COL], s=SCATTER_SIZE_HIGHLIGHT, facecolor=color, edgecolor="black", linewidth=1.0)
 
         row_axes[0].set_ylabel(display_label(FID_COL))
         row_axes[1].set_ylabel(display_label(FMEM_COL))
@@ -2723,6 +3072,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
         mean_col: str,
         std_col: str,
         label: object,
+        color: str,
         log_x: bool,
         log_y: bool,
     ) -> None:
@@ -2747,15 +3097,15 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
             lower = lower.clip(lower=np.finfo(float).tiny)
             upper = upper.clip(lower=np.finfo(float).tiny)
 
-        ax.plot(plot_group[x_col], y, marker="o", markersize=LINE_MARKER_SIZE, linewidth=2.0, label=str(label))
-        ax.fill_between(plot_group[x_col], lower, upper, alpha=0.15)
+        ax.plot(plot_group[x_col], y, color=color, marker="o", markersize=LINE_MARKER_SIZE, linewidth=2.0, label=str(label))
+        ax.fill_between(plot_group[x_col], lower, upper, color=color, alpha=0.15)
 
         if log_x:
             ax.set_xscale("log")
         if log_y:
             ax.set_yscale("log")
 
-    def plot_directed_phase(ax: plt.Axes, group: pd.DataFrame, label: object, log_axes: bool) -> None:
+    def plot_directed_phase(ax: plt.Axes, group: pd.DataFrame, label: object, color: str, log_axes: bool) -> None:
         """Plot F_mem-vs-FID trajectory and add arrows for training direction."""
         phase = group[["fid_mean", "fmem_mean", step_col]].copy()
 
@@ -2770,6 +3120,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
         line = ax.plot(
             phase["fmem_mean"],
             phase["fid_mean"],
+            color=color,
             linewidth=1.5,
             alpha=0.35,
             label=str(label),
@@ -2829,8 +3180,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
     if not params:
         return
 
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {param: base_colors[idx % len(base_colors)] for idx, param in enumerate(params)}
+    param_colors = canonical_param_color_map(params)
 
     for row_idx, n_train_value in enumerate(n_train_values):
         row_summary = summary[summary["n_train"] == n_train_value]
@@ -2849,6 +3199,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
             group = row_summary[row_summary["param_label"] == param].sort_values(step_col)
             if group.empty:
                 continue
+            color = param_colors[param]
 
             plot_with_band(
                 axes[row_idx, 0],
@@ -2857,6 +3208,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
                 "fid_mean",
                 "fid_std",
                 param,
+                color,
                 log_x=True,
                 log_y=False,
             )
@@ -2867,11 +3219,12 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
                 "fmem_mean",
                 "fmem_std",
                 param,
+                color,
                 log_x=True,
                 log_y=False,
             )
-            plot_directed_phase(axes[row_idx, 2], group, param, log_axes=False)
-            plot_directed_phase(axes[row_idx, 3], group, param, log_axes=True)
+            plot_directed_phase(axes[row_idx, 2], group, param, color, log_axes=False)
+            plot_directed_phase(axes[row_idx, 3], group, param, color, log_axes=True)
             if loss_col is not None:
                 plot_with_band(
                     axes[row_idx, 4],
@@ -2880,6 +3233,7 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
                     f"{loss_col}_mean",
                     f"{loss_col}_std",
                     param,
+                    color,
                     log_x=True,
                     log_y=True,
                 )
@@ -2929,6 +3283,179 @@ def fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
         fig,
         out_dir,
         "07_seed_averaged_parameterization_trajectories_fixed_n_train",
+        show=show,
+    )
+
+
+def fig_07d_all_run_phase_trajectories_by_n_train(
+    metrics: pd.DataFrame,
+    out_dir: Path,
+    step_col: str,
+    n_train: int | None,
+    show: bool,
+) -> None:
+    """All individual run trajectories in the Figure-07 phase columns."""
+    required = {"n_train", "param_label", FID_COL, FMEM_COL, step_col}
+    if not required.issubset(metrics.columns):
+        return
+
+    n_train_values = pick_n_train_values_for_param_grid(metrics, n_train)
+    if not n_train_values:
+        return
+
+    sub = metrics[metrics["n_train"].isin(n_train_values)].copy()
+    if sub.empty:
+        return
+
+    run_col = first_existing(sub.columns, ["manifest_index", "run_id", "metrics_file"])
+    seed_col = choose_seed_col(sub)
+    for column in [FID_COL, FMEM_COL, step_col]:
+        sub[column] = pd.to_numeric(sub[column], errors="coerce")
+    sub = sub.dropna(subset=["n_train", "param_label", FID_COL, FMEM_COL, step_col])
+    if sub.empty:
+        return
+
+    source_cols = ["n_train", "param_label", step_col, FID_COL, FMEM_COL]
+    for column in [run_col, seed_col, "param_label_raw"]:
+        if column is not None and column in sub.columns and column not in source_cols:
+            source_cols.insert(2, column)
+    save_table(
+        sub[source_cols].sort_values([c for c in ["n_train", "param_label", run_col, seed_col, step_col] if c in source_cols]),
+        out_dir,
+        "07d_all_run_phase_trajectories_by_n_train_source",
+    )
+
+    params = sorted(sub["param_label"].dropna().unique(), key=str)
+    if not params:
+        return
+    param_colors = canonical_param_color_map(params)
+
+    positive = sub[(sub[FID_COL] > 0) & (sub[FMEM_COL] > 0)].copy()
+    if positive.empty:
+        return
+
+    fmem_max = float(sub[FMEM_COL].max())
+    fid_min = float(sub[FID_COL].min())
+    fid_max = float(sub[FID_COL].max())
+    fmem_linear_limits = (0.0, fmem_max * 1.06 if fmem_max > 0 else 1.0)
+    fid_linear_limits = (
+        max(0.0, fid_min - 0.06 * (fid_max - fid_min)),
+        fid_max + 0.06 * (fid_max - fid_min),
+    )
+    fid_log_limits = (
+        max(float(positive[FID_COL].min()) / 1.15, np.finfo(float).tiny),
+        float(positive[FID_COL].max()) * 1.15,
+    )
+
+    nrows = len(n_train_values)
+    ncols = 2
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(6.2, max(2.5, 1.35 * nrows)),
+        sharex=False,
+        sharey=False,
+    )
+    axes = np.asarray(axes).reshape(nrows, ncols)
+
+    group_cols = ["param_label"]
+    if run_col is not None:
+        group_cols.append(run_col)
+    elif seed_col is not None:
+        group_cols.append(seed_col)
+
+    for row_idx, n_train_value in enumerate(n_train_values):
+        row_summary = sub[sub["n_train"] == n_train_value]
+        if row_summary.empty:
+            continue
+
+        ax_linear = axes[row_idx, 0]
+        ax_log = axes[row_idx, 1]
+
+        for keys, group in row_summary.groupby(group_cols, dropna=False):
+            param = keys[0] if isinstance(keys, tuple) else keys
+            color = param_colors[param]
+            phase = group.sort_values(step_col)
+            if phase.empty:
+                continue
+
+            markevery = max(1, len(phase) // 8)
+            ax_linear.plot(
+                phase[FMEM_COL],
+                phase[FID_COL],
+                color=color,
+                linewidth=0.9,
+                alpha=0.34,
+                marker="o",
+                markersize=1.4,
+                markevery=markevery,
+            )
+
+            log_phase = phase[(phase[FID_COL] > 0) & (phase[FMEM_COL] > 0)]
+            if not log_phase.empty:
+                ax_log.plot(
+                    log_phase[FMEM_COL],
+                    log_phase[FID_COL],
+                    color=color,
+                    linewidth=0.9,
+                    alpha=0.34,
+                    marker="o",
+                    markersize=1.4,
+                    markevery=markevery,
+                )
+
+        ax_linear.set_xlim(*fmem_linear_limits)
+        ax_linear.set_ylim(*fid_linear_limits)
+        ax_log.set_xlim(*fmem_linear_limits)
+        ax_log.set_ylim(*fid_log_limits)
+        ax_log.set_yscale("log")
+
+        for ax in [ax_linear, ax_log]:
+            ax.grid(True, alpha=0.28)
+            ax.tick_params(axis="both", which="both", labelsize=6)
+            if row_idx == nrows - 1:
+                ax.set_xlabel(display_label(FMEM_COL), fontsize=8)
+            compact_locator = mticker.LogLocator(base=10, numticks=4)
+            if ax is ax_log:
+                ax.yaxis.set_major_locator(mticker.LogLocator(base=10, numticks=4))
+                ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+
+        ax_linear.set_ylabel(f"{format_n_train_value(n_train_value)}\nFID", fontsize=8)
+        if row_idx == 0:
+            ax_linear.set_title(r"FID vs $F_{\mathrm{mem}}$", fontsize=9)
+            ax_log.set_title(r"FID vs $F_{\mathrm{mem}}$ (log FID)", fontsize=9)
+
+    param_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=param_colors[param],
+            linewidth=2.0,
+            marker="o",
+            markersize=LEGEND_MARKER_SIZE,
+            label=str(param),
+        )
+        for param in params
+    ]
+    fig.legend(
+        handles=param_handles,
+        title="param",
+        fontsize=7,
+        title_fontsize=8,
+        loc="lower center",
+        ncol=min(3, len(param_handles)),
+        frameon=False,
+    )
+    fig.suptitle(
+        r"07d all individual run phase trajectories by $N_{\mathrm{train}}$",
+        y=0.995,
+        fontsize=12,
+    )
+    fig.subplots_adjust(left=0.13, right=0.98, top=0.94, bottom=0.08, hspace=0.36, wspace=0.28)
+    save_figure(
+        fig,
+        out_dir,
+        "07d_all_run_phase_trajectories_by_n_train",
         show=show,
     )
 
@@ -2985,8 +3512,7 @@ def fig_07c_parameterization_fmem_thresholds_fixed_n_train(
     if not params:
         return
 
-    base_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    param_colors = {param: base_colors[idx % len(base_colors)] for idx, param in enumerate(params)}
+    param_colors = canonical_param_color_map(params)
 
     nrows = len(n_train_values)
     ncols = len(rho_cols)
@@ -3084,28 +3610,44 @@ def fig_08_parameterization_best_fid_summary(
         .reset_index()
     )
 
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 2.15), sharex=True)
+    fig = plt.figure(figsize=figsize_from_panel_size(FIG_08_PANEL_SIZE, 2, 2, FIG_08_LAYOUT))
+    grid = fig.add_gridspec(2, 2)
+    axes = np.array(
+        [
+            fig.add_subplot(grid[0, :]),
+            fig.add_subplot(grid[1, 0]),
+            fig.add_subplot(grid[1, 1]),
+        ],
+        dtype=object,
+    )
 
     for label, sub in summary.groupby("param_label", dropna=False):
+        color = canonical_param_color(label)
         sub = sub.sort_values("n_train")
         axes[0].errorbar(
             sub["n_train"],
             sub["best_fid_mean"],
             yerr=sub["best_fid_std"],
+            color=color,
             marker="o",
-            linewidth=2.0,
-            capsize=3,
-            markersize=LEGEND_MARKER_SIZE,
+            linewidth=2.6,
+            capsize=3.5,
+            capthick=1.6,
+            elinewidth=1.6,
+            markersize=LEGEND_MARKER_SIZE + 1.0,
             label=str(label),
         )
         axes[1].errorbar(
             sub["n_train"],
             sub["fmem_at_best_fid_mean"],
             yerr=sub["fmem_at_best_fid_std"],
+            color=color,
             marker="o",
-            linewidth=2.0,
-            capsize=3,
-            markersize=LEGEND_MARKER_SIZE,
+            linewidth=2.6,
+            capsize=3.5,
+            capthick=1.6,
+            elinewidth=1.6,
+            markersize=LEGEND_MARKER_SIZE + 1.0,
             label=str(label),
         )
         log_sub = sub[sub["fmem_at_best_fid_mean"] > 0].copy()
@@ -3122,40 +3664,60 @@ def fig_08_parameterization_best_fid_summary(
                 log_sub["n_train"],
                 y,
                 yerr=np.vstack([y - lower, upper - y]),
+                color=color,
                 marker="o",
-                linewidth=2.0,
-                capsize=3,
-                markersize=LEGEND_MARKER_SIZE,
+                linewidth=2.6,
+                capsize=3.5,
+                capthick=1.6,
+                elinewidth=1.6,
+                markersize=LEGEND_MARKER_SIZE + 1.0,
                 label=str(label),
             )
 
-    axes[0].set_ylabel("best FID")
-    axes[0].set_title("Best sample quality")
-    axes[1].set_ylabel(r"$F_{\mathrm{mem}}$ at best FID")
-    axes[1].set_title("Memorization at best sample quality")
-    axes[2].set_ylabel(r"$F_{\mathrm{mem}}$ at best FID")
-    axes[2].set_title("Memorization at best sample quality (log)")
+    axes[0].set_ylabel("best FID", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
+    axes[0].set_title("Best FID", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
+    axes[1].set_ylabel(r"$\mathbf{F}_{\mathbf{mem}}$ at best FID", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
+    axes[1].set_title(r"$\mathbf{F}_{\mathbf{mem}}$ at best FID", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
+    axes[2].set_ylabel(r"$\mathbf{F}_{\mathbf{mem}}$ at best FID", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
+    axes[2].set_title(r"$\mathbf{F}_{\mathbf{mem}}$ at best FID (log)", fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
     axes[2].set_yscale("log")
 
     for ax in axes:
         apply_n_train_log_ticks(ax, n_train_ticks)
-        ax.set_xlabel(N_TRAIN_LABEL)
+        ax.set_xlabel(FIG_08_N_TRAIN_LABEL, fontsize=11, fontweight="bold", color=FIG_08_TEXT_COLOR)
         ax.grid(True, alpha=0.3)
-        ax.tick_params(axis="both", labelsize=7)
+        ax.tick_params(axis="both", labelsize=9, colors=FIG_08_TEXT_COLOR, labelcolor=FIG_08_TEXT_COLOR)
+        for tick_label in [*ax.get_xticklabels(which="both"), *ax.get_yticklabels(which="both")]:
+            tick_label.set_color(FIG_08_TEXT_COLOR)
+            tick_label.set_fontweight("semibold")
+        for spine in ax.spines.values():
+            spine.set_color(FIG_08_TEXT_COLOR)
+            spine.set_linewidth(1.2)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(
+    legend = fig.legend(
         handles,
         labels,
         title="param",
         loc="center left",
-        bbox_to_anchor=(0.895, 0.52),
+        bbox_to_anchor=(0.84, 0.50),
         frameon=False,
-        fontsize=7,
-        title_fontsize=8,
+        fontsize=9,
+        title_fontsize=10,
     )
-    fig.suptitle(r"08 parameterization summary: quality optimum vs $F_{\mathrm{mem}}$ at quality optimum", y=0.99)
-    fig.subplots_adjust(left=0.055, right=0.88, bottom=0.24, top=0.78, wspace=0.32)
+    legend.get_title().set_fontweight("bold")
+    legend.get_title().set_color(FIG_08_TEXT_COLOR)
+    for text in legend.get_texts():
+        text.set_fontweight("semibold")
+        text.set_color(FIG_08_TEXT_COLOR)
+    fig.suptitle(
+        r"08 parameterization summary: quality optimum vs $\mathbf{F}_{\mathbf{mem}}$ at quality optimum",
+        y=0.965,
+        fontsize=13,
+        fontweight="bold",
+        color=FIG_08_TEXT_COLOR,
+    )
+    fig.subplots_adjust(**FIG_08_LAYOUT)
     save_figure(fig, out_dir, "08_parameterization_best_fid_summary", show=show)
 
 
@@ -3218,6 +3780,9 @@ def main() -> None:
     metrics = merge_manifest_metadata(metrics, manifests)
     metrics, param_col = add_param_label(metrics)
     metrics = apply_pretty_param_labels(metrics)
+    metrics = hide_excluded_parameterizations(metrics)
+    if metrics.empty:
+        raise RuntimeError("No checkpoint metrics remain after hiding excluded parameterizations.")
 
     step_col = choose_step_col(metrics)
 
@@ -3263,6 +3828,7 @@ def main() -> None:
     )
     fig_02e_fid_fmem_tau_grid_by_param(metrics, out_dir, step_col, show=args.show)
     fig_12b_fid_fmem_tau_grid_by_param_mid_n_train(metrics, out_dir, step_col, show=args.show)
+    fig_12c_fid_fmem_tau_grid_by_param_merged_n_train(metrics, out_dir, step_col, show=args.show)
     fig_07b_fmem_thresholds_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_03_final_fid_vs_fmem_faceted_by_n_train(metrics, out_dir, step_col, show=args.show)
     fig_05_pareto_best_fid_vs_fmem(metrics, out_dir, show=args.show)
@@ -3275,6 +3841,13 @@ def main() -> None:
         show=args.show,
     )
     fig_07_seed_averaged_parameterization_trajectories_fixed_n_train(
+        metrics,
+        out_dir,
+        step_col,
+        n_train=args.n_train,
+        show=args.show,
+    )
+    fig_07d_all_run_phase_trajectories_by_n_train(
         metrics,
         out_dir,
         step_col,
