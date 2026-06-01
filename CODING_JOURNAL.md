@@ -1,5 +1,174 @@
 # Coding Journal
 
+## 2026-06-01T21:48:10Z - Intrinsic/Ambient prototype and agent-guide consolidation
+
+### Context
+Built a prototype experiment path under `prototyping/intr_amb_experiments/` to
+study how flow-matching target parameterization affects memorization on
+synthetic data with controlled intrinsic and ambient dimension.
+
+The prototype remains outside canonical `src/` for now, but reuses canonical
+GDFM, config conventions, checkpoint persistence, and synthetic memorization
+metrics where practical.
+
+### ManifoldGMM data model
+Updated `prototyping/intr_amb_experiments/data.py` into a commented
+teaching-oriented data model.
+
+Important modeling change:
+- Split the old single `sigma` into two explicit quantities:
+  - `mode_sigma`: within-mode spread along the projected manifold.
+  - `off_manifold_sigma`: perpendicular thickness around the manifold.
+
+The dataset covariance is now:
+
+```text
+Sigma_tilde = mode_sigma^2 A + off_manifold_sigma^2 (I - A)
+```
+
+This makes the `D=2, K=1` case interpretable: `mode_sigma` controls spread
+along the line, and `off_manifold_sigma` controls visible thickness around the
+line. Legacy `sigma` compatibility remains as an alias for `mode_sigma`.
+
+### Single-parameterization training prototype
+Added and iterated on `prototyping/intr_amb_experiments/train_param_sweep.py`.
+Despite the filename, the script now runs one parameterization per invocation;
+sweeps over `x`, `eps`, and `v` should happen at the job layer.
+
+Current behavior:
+- Builds one fixed `ManifoldGMM` train/reference pair per run.
+- Trains one GDFM MLP with matched `prediction_space` and `loss_space`.
+- Uses standard normal source noise through `GDFM.compute_loss(batch)`.
+- Uses fixed standard normal `z_init` for checkpoint replay.
+- Saves exact train/reference tensors and `z_init` for reproducibility.
+- Writes prototype outputs under
+  `prototyping/intr_amb_experiments/outputs/param_runs`.
+
+Current main defaults:
+- `optimizer = adam`
+- `sampling_method = heun`
+- `tau_sample = 128`
+- `tau = 50000`
+- `tau_eval = 5000`
+- `N = 100`
+- `N_gen = 1000`
+- `mode_sigma = 0.5`
+- `off_manifold_sigma = 0.05`
+- `sep = 2.0`
+
+### Metrics and diagnostics
+Checkpoint metrics now include nearest-neighbor memorization, held-out
+baselines, deltas against held-out, true synthetic `gmm_nll`, and
+dimension-normalized `gmm_nll_per_dim`.
+
+Important interpretation note:
+- `mean d1/d2` is only a memorization signal when generated quality is
+  comparable to held-out quality.
+- If generated samples are off-distribution, both `d1` and `d2` can be large
+  and the ratio can be higher than the held-out ratio.
+- `gmm_nll` and `gmm_nll_per_dim` are the current quality checks for this
+  synthetic setup.
+
+### 2D visualization
+For `D == 2`, the final checkpoint now saves:
+- `figures/final_2d_source_generated_train.png`
+- `figures/final_2d_sampling_process.mp4`
+
+The MP4 records the sampling trajectory with the active sampler. The default
+sampler is Heun; `--sampling_method euler` remains available. The source layer
+in the final scatter was made faint to keep the train/generated structure
+readable.
+
+### Agent guide consolidation
+Merged repo instruction files into one canonical file:
+
+```text
+AGENTS.md
+```
+
+Removed duplicate/legacy instruction files:
+- `AGENT.md`
+- `CLAUDE.md`
+
+The new `AGENTS.md` combines project framing, communication rules, engineering
+discipline, repo ownership boundaries, artifact rules, Python/style rules,
+environment notes, workflow rules, and the journal-update expectation.
+
+### Checks
+Syntax check passed:
+
+```bash
+conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/data.py \
+  prototyping/intr_amb_experiments/train_param_sweep.py
+```
+
+Short `D=2, K=1` smoke run passed:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_param_sweep.py \
+  --param v \
+  --D 2 \
+  --K 1 \
+  --N 20 \
+  --N_test 20 \
+  --tau 5 \
+  --tau_eval 5 \
+  --N_gen 32 \
+  --tau_sample 8 \
+  --mode_sigma 0.5 \
+  --off_manifold_sigma 0.05 \
+  --no_progress
+```
+
+Smoke output:
+
+```text
+prototyping/intr_amb_experiments/outputs/param_runs/param-v_D-2_K-1_M-5_N-20_Ntest-20_modesigma-0.5_offmanifoldsigma-0.05_tau-5_taueval-5_Ngen-32_seed-0_gseed-0_20260601_234831
+```
+
+### Next actions
+- Pull this scoped commit on Berzelius.
+- Launch matched `x`, `eps`, and `v` jobs from the job layer.
+- Use the 2D scatter/video outputs to sanity check `mode_sigma` versus
+  `off_manifold_sigma` before interpreting memorization curves.
+
+## 2026-05-21T04:54:42+0200 - Conference Objective Reassessment
+
+### Context
+Reassessed the paper objective after reviewing the current draft direction and
+the updated objective notes. The project is pivoting from the workshop framing
+of "target parameterization empirically changes memorization" toward the
+conference framing:
+
+```text
+Target parameterization changes the route from generation to memorization.
+```
+
+### Current Evidence Base
+- The current CelebA 32x32 grayscale `N_train` and capacity results suggest
+  that `x/x` memorizes earliest and most, `eps/eps` memorizes latest and least,
+  `v/v` is usually intermediate, and `x/v` behaves closer to `x/x`.
+- The ordering remains visible in quality-controlled summaries such as
+  `F_mem@FID_best`.
+- The effective-capacity explanation is now treated as a hypothesis to test,
+  not a proven mechanism.
+
+### Documentation Changes
+- Added root `OBJECTIVES.txt` as the canonical working objective for the
+  conference-paper version.
+- Rewrote `PAPER_OBJECTIVE.md` around quality-controlled memorization,
+  prediction/loss-space disentanglement, capacity/data boundaries, common-space
+  losses, metric validation, and the synthetic `K/D` mechanism experiment.
+- Updated `README.md` to point readers to `OBJECTIVES.txt` and summarize the
+  current paper direction.
+- Demoted continuous-`k` and learned-`k` targets to optional future or
+  concurrent-work extensions rather than the main repo objective.
+
+### Scope
+Docs-only update. No code, job scripts, plotting scripts, metrics code, or
+experiments were intentionally changed.
+
 ## 2026-05-09T01:36:46+0200 - N-Train tau-scale figure polish
 
 Updated the standalone n-train tau-scale plotting script:
