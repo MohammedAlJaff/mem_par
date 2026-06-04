@@ -1,5 +1,629 @@
 # Coding Journal
 
+## 2026-06-04T22:00:24Z - Synthetic metric chunking test
+
+### Context
+Before adding separate `f_mem` threshold tests, the synthetic nearest-neighbor
+metric should first prove that sample-side and reference-side chunking do not
+change metric values for a fixed reference/sample setup.
+
+### Change
+- Added a test-only synthetic metric import in `tests/test_mp_metrics.py`.
+- Added `test_synthetic_chunking_matches_full_for_fixed_jittered_samples`.
+- The test builds fixed tensors for `D = 2, 3, 10, 100`:
+  - `x`: a deterministic reference grid with 2048 rows
+  - `y`: 2048 samples where exactly 512 are tiny-jitter near-copies from
+    `x` and 1536 are far off-grid non-copies
+- It compares full `y`-at-once and full-reference computation against:
+  - sample-side chunking via `chunk_size=1`, `chunk_size=2`, `chunk_size=7`,
+    and `query_batch_size=4`
+  - reference-side chunking via `reference_batch_size=257` and
+    `reference_batch_size=509`
+  - mixed sample/reference chunking combinations
+- It checks that the constructed `f_mem` is exactly `512 / 2048 = 0.25` for
+  full and chunked computation.
+- It checks nearest-neighbor indices exactly and continuous distance/ratio
+  summaries within tolerance, since `torch.cdist` can differ slightly across
+  query matrix shapes.
+
+### Checks
+
+```bash
+PYTHONPATH=src conda run -n memcompgen python -m unittest \
+  tests.test_mp_metrics.TestMPMetrics.test_synthetic_chunking_matches_full_for_fixed_jittered_samples
+
+PYTHONPATH=src conda run -n memcompgen python -m py_compile \
+  tests/test_mp_metrics.py \
+  src/mp_metrics/metrics_synthetic.py
+
+PYTHONPATH=src conda run -n memcompgen python tests/test_mp_metrics.py
+
+git diff --check -- tests/test_mp_metrics.py CODING_JOURNAL.md
+```
+
+### Result
+- The focused chunking test passed with exact `f_mem = 0.25` across
+  `D = 2, 3, 10, 100`.
+- The full metric test file passed: 19 tests, 1 skipped.
+- No runtime metric code changed.
+- Reference-side batch size `1` was intentionally not kept in this test because
+  it turns the large metric check into millions of tiny `cdist` calls. The test
+  still covers non-divisor reference chunks on both X-only and mixed X/Y paths.
+
+## 2026-06-03T23:31:27Z - W&B object naming and per-step loss logging
+
+### Context
+The sphere prototype W&B layout should separate run hyperparameters, generated
+checkpoint metrics, generated-minus-reference gaps, and held-out reference
+summaries. Training loss should be recorded every optimizer step, so a separate
+loss logging cadence is unnecessary.
+
+### Change
+- Removed the active `--tau_log` / `--log_every` CLI and
+  `config.training.log_every` write path.
+- Appended local train loss every optimizer step and logged W&B `train/loss`
+  every optimizer step.
+- Kept `metrics/train_history.json` writes at checkpoint/final writes rather
+  than rewriting the file every step.
+- Replaced W&B checkpoint metric names:
+  - generated metrics now use `generated/*`
+  - generated-minus-reference metrics now use `gap/*`
+  - held-out reference metrics now use W&B summary `reference/*`
+  - static/final run fields now use W&B summary `run/*`
+- Replaced the nested W&B config payload with flat comparison keys such as
+  `run/param`, `data/ambient_dim`, `train/lr`, `eval/n_gen`, and
+  `sampling/n_steps`.
+- Changed reference sampling to depend only on `geometry_seed`, so changing
+  `seed` no longer changes train/reference target tensors.
+
+### Checks
+
+```bash
+PYTHONPATH=src conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --help
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --param v --tau_log 100
+
+PYTHONPATH=src:prototyping/intr_amb_experiments conda run -n memcompgen python -c "..."
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param v --D 4 --K 2 --N 8 --N_test 8 --radius sqrtD \
+  --off_manifold_sigma 0.05 --tau 3 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 3 --N_gen 32 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 123 \
+  --device cpu --out_dir /tmp/intr_amb_wandb_cleanup_review_20260603 \
+  --run_id seed0 --no_progress
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param v --D 4 --K 2 --N 8 --N_test 8 --radius sqrtD \
+  --off_manifold_sigma 0.05 --tau 3 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 3 --N_gen 32 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 1 --geometry_seed 123 \
+  --device cpu --out_dir /tmp/intr_amb_wandb_cleanup_review_20260603 \
+  --run_id seed1 --no_progress
+
+rg -n "tau_log|--log_every|log_every|eval_baseline|eval_static" \
+  prototyping/intr_amb_experiments --glob '!**/outputs/**'
+
+git diff --check
+```
+
+### Result
+- Syntax checks passed.
+- Help no longer exposes `--tau_log` / `--log_every`.
+- Passing `--tau_log 100` fails with argparse as expected.
+- Fake-W&B assertions confirmed:
+  - `train/loss`
+  - `generated/*`
+  - `gap/*`
+  - summary `reference/*`
+  - summary `run/rho`, `run/sample_count`, `run/final_loss`, and
+    `run/final_step`
+- The flat W&B config payload contains the planned 33 keys.
+- A tiny `tau=3` run wrote train history steps `[1, 2, 3]`.
+- Same `geometry_seed` with different `seed` produced identical train/reference
+  tensors and different `z_init`.
+- Live-source scan found no remaining old loss-cadence names.
+
+## 2026-06-03T23:17:01Z - Cleaned W&B eval time series
+
+### Context
+The W&B eval logger was recording every numeric checkpoint metric as a time
+series. This made fixed reference quantities such as held-out baseline metrics,
+`rho`, and `sample_count` appear repeatedly at every eval checkpoint.
+
+### Change
+- Added an explicit W&B eval time-series allowlist for generated metrics,
+  training loss at eval steps, and generated-minus-baseline deltas.
+- Moved held-out baseline metrics, `rho`, and `sample_count` to W&B summary
+  once after the step-0 evaluation.
+- Kept local CSV/JSONL checkpoint metrics unchanged.
+
+### Checks
+
+```bash
+PYTHONPATH=src:prototyping/intr_amb_experiments conda run -n memcompgen python -c "..."
+
+PYTHONPATH=src conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+```
+
+### Result
+- The fake-W&B assertion confirmed that `eval/baseline_*`, `eval/rho`, and
+  `eval/sample_count` are no longer logged as time series.
+- The summary receives `eval_baseline/*`, `eval_static/rho`, and
+  `eval_static/sample_count`.
+- Syntax checks passed.
+
+## 2026-06-03T22:56:34Z - W&B logging for sphere prototype
+
+### Context
+The sphere-only intrinsic/ambient prototype needs optional W&B logging for
+actual parameterization sweeps, while preserving the saved local artifacts as
+the source of truth.
+
+### Change
+- Added opt-in W&B CLI flags to
+  `prototyping/intr_amb_experiments/intr_amb_core.py`.
+- Set the default W&B project to `memparam-intr-amb-hypersphere`.
+- Derived default W&B run names from `run_id` and grouped comparable sweeps by
+  sphere dimension, radius mode, train size, and training horizon.
+- Logged numeric train/eval metrics under `train/*` and `eval/*`.
+- Saved W&B metadata to `artifacts/wandb.json`, including project, name, group,
+  mode, active/inactive status, and local W&B paths.
+- Routed W&B cache/config/data directories under each run's `logs/wandb`
+  directory.
+- Kept W&B non-strict by default; `--wandb_strict` fails the run if W&B init or
+  logging fails.
+
+### Checks
+
+```bash
+PYTHONPATH=src conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --help
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param v --D 4 --K 2 --N 8 --N_test 8 --radius sqrtD \
+  --off_manifold_sigma 0.05 --tau 1 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 32 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 \
+  --device cpu --out_dir /tmp/intr_amb_wandb_review_codex_933822 \
+  --run_id wandb_smoke --wandb --wandb_mode offline --no_progress --print_eval
+
+git diff --check -- \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  CODING_JOURNAL.md \
+  requirements.txt \
+  environment.yml
+```
+
+### Result
+- Syntax checks passed.
+- Help text exposes the new W&B flags and the default project name.
+- The offline smoke run completed training and saved W&B metadata.
+- In this sandbox, W&B core could not start because local IPC/socket binding is
+  blocked, so the run recorded `active = false` in `artifacts/wandb.json` and
+  continued. This should not block normal local or cluster execution where W&B
+  can start its local service.
+
+## 2026-06-03T22:43:36Z - Sphere-only intrinsic/ambient prototype
+
+### Context
+The intrinsic/ambient prototype should now study only a hypersphere-shell target
+distribution. The source distribution must remain a clean standard normal
+Gaussian, independent of target radius or off-manifold target thickness.
+
+### Change
+- Deleted the old GMM prototype source and replay entrypoint:
+  - `prototyping/intr_amb_experiments/data.py`
+  - `prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py`
+  - `prototyping/intr_amb_experiments/proto_intrinsinc_ambient.ipynb`
+- Replaced `prototyping/intr_amb_experiments/intr_amb_core.py` with a
+  sphere-only trainer and replay core.
+- Removed the active `--dataset`, `--M`, `--n_modes`, `--mode_sigma`,
+  `--sigma`, and `--sep` CLI surface.
+- Kept `--radius {unit,sqrtD}` and `--off_manifold_sigma` as target-data
+  parameters only.
+- Added explicit saved source metadata:
+  - `source_distribution = standard_normal`
+  - `source_covariance = identity`
+
+### Checks
+
+```bash
+PYTHONPATH=src conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --help
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --param v --M 3
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param x --D 4 --K 2 --N 8 --N_test 8 --radius unit \
+  --off_manifold_sigma 0.05 --tau 1 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 512 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 \
+  --device cpu --out_dir /tmp/intr_amb_sphere_only_review \
+  --run_id source_unit_x --no_progress
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param eps --D 4 --K 2 --N 8 --N_test 8 --radius sqrtD \
+  --off_manifold_sigma 0.2 --tau 1 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 512 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 \
+  --device cpu --out_dir /tmp/intr_amb_sphere_only_review \
+  --run_id source_sqrtD_eps --no_progress
+
+PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py \
+  --param v --D 4 --K 2 --N 8 --N_test 8 --radius sqrtD \
+  --off_manifold_sigma 0.05 --tau 1 --B 4 --H 16 --L 1 --T_emb 8 \
+  --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 512 --tau_sample 2 \
+  --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 \
+  --device cpu --out_dir /tmp/intr_amb_sphere_only_review \
+  --run_id source_sqrtD_v --no_progress
+
+conda run -n memcompgen python -c "import json, torch; a=torch.load('/tmp/intr_amb_sphere_only_review/source_unit_x/artifacts/z_init.pt', map_location='cpu'); b=torch.load('/tmp/intr_amb_sphere_only_review/source_sqrtD_eps/artifacts/z_init.pt', map_location='cpu'); meta=json.load(open('/tmp/intr_amb_sphere_only_review/source_sqrtD_eps/artifacts/data_meta.json')); print({'same_source_bank': bool(torch.equal(a,b)), 'shape': list(a.shape), 'mean': round(float(a.mean()), 4), 'std': round(float(a.std(unbiased=False)), 4), 'source_distribution': meta['source_distribution'], 'source_covariance': meta['source_covariance'], 'radius': meta['radius'], 'off_manifold_sigma': meta['off_manifold_sigma']})"
+
+conda run -n memcompgen python prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py \
+  --run_dir /tmp/intr_amb_sphere_only_review/source_sqrtD_v \
+  --device cpu --print_eval
+
+rg -n "gmm|GMM|ManifoldGMM|mode_sigma|--M|--sep" prototyping/intr_amb_experiments
+
+git diff --check -- \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py \
+  CODING_JOURNAL.md
+```
+
+### Result
+- Syntax checks passed.
+- The help text no longer exposes the removed GMM flags.
+- Passing `--M` fails with argparse as expected.
+- Tiny CPU runs completed for `x`, `eps`, and `v`.
+- The saved source bank was identical across different target radius/thickness
+  settings with shape `[512, 4]`, mean `-0.0003`, and std `1.0191`.
+- Replay evaluation completed for the saved `v` run.
+- The GMM-reference scan returned no matches under
+  `prototyping/intr_amb_experiments`.
+
+## 2026-06-03T00:32:34Z - Removed redundant train wrapper
+
+### Context
+After the unified intrinsic/ambient refactor, the new
+`train_intrinsic_ambient.py` file was only a thin wrapper around
+`intr_amb_core.py` and did not own any real behavior.
+
+### Change
+- Deleted `prototyping/intr_amb_experiments/train_intrinsic_ambient.py`
+- Added the training CLI `main()` directly to
+  `prototyping/intr_amb_experiments/intr_amb_core.py`
+
+The unified train command is now:
+
+```bash
+python prototyping/intr_amb_experiments/intr_amb_core.py --dataset gmm|sphere --param ...
+```
+
+The replay entrypoints remain separate:
+- `eval_intrinsic_ambient_gmm.py`
+- `eval_intrinsic_ambient_sphere.py`
+
+### Checks
+
+```bash
+conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+
+git diff --check -- \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py \
+  CODING_JOURNAL.md
+```
+
+## 2026-06-03T00:23:51Z - Unified intrinsic/ambient trainer and replay eval split
+
+### Context
+Refactored the prototype intrinsic/ambient experiment path to remove the
+duplicated train entrypoints.
+
+The prototype now uses:
+- one unified trainer with explicit dataset selection
+- one shared replay/eval core
+- two thin dataset-specific replay commands
+
+This keeps the data classes separate in `data.py` and `sphere_data.py`, but
+consolidates training, checkpoint replay, figure writing, and metric table
+handling.
+
+### New entrypoints and shared core
+Added:
+- `prototyping/intr_amb_experiments/intr_amb_core.py`
+- `prototyping/intr_amb_experiments/train_intrinsic_ambient.py`
+- `prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py`
+- `prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py`
+
+Removed:
+- `prototyping/intr_amb_experiments/train_param_sweep.py`
+- `prototyping/intr_amb_experiments/train_intrinsic_ambient_sphere.py`
+
+### Unified trainer behavior
+The trainer now takes:
+
+```text
+python prototyping/intr_amb_experiments/train_intrinsic_ambient.py --dataset gmm|sphere --param ...
+```
+
+Shared behavior retained:
+- one parameterization per run
+- inline checkpoint evaluation during training
+- saved `train_tensor.pt`, `reference_tensor.pt`, `z_init.pt`, config, and run summary
+- sparse `train_history.json`
+- 2D final scatter and MP4 sampling movie when `D == 2`
+
+New default output root:
+
+```text
+prototyping/intr_amb_experiments/outputs/intrinsic_ambient_runs
+```
+
+Run names now encode the dataset family directly.
+
+### Dataset registry split
+`intr_amb_core.py` now owns a small dataset-spec registry with explicit hooks
+for:
+- CLI validation
+- config field population
+- dataset reconstruction from train args
+- dataset reconstruction from saved config during replay
+- dataset-specific quality metrics
+- dataset-specific quality figure specs
+- dataset-specific metadata payloads
+
+Shared metrics remain:
+- `f_mem`
+- `mean_nn_ratio`, `std_nn_ratio`
+- `mean_d1`, `mean_d2`
+- held-out baselines and deltas for the shared metrics
+
+GMM-specific metrics remain:
+- `gmm_nll`
+- `gmm_nll_per_dim`
+- baseline and delta variants
+
+Sphere-specific metrics remain:
+- `radius_mae`
+- `off_manifold_dist_mean`
+- baseline and delta variants
+
+### Replay eval split
+Replay evaluation is now a separate command surface:
+
+```text
+python prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py --run_dir ...
+python prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py --run_dir ...
+```
+
+These entrypoints are thin wrappers over the shared replay core. Replay now:
+- loads saved config, `train_tensor.pt`, `reference_tensor.pt`, `z_init.pt`,
+  and checkpoints
+- reconstructs the correct dataset object from the saved config
+- recomputes the same checkpoint rows as the trainer
+- rewrites `checkpoint_metrics.csv` and `checkpoint_metrics.jsonl`
+- regenerates the shared and dataset-specific figures
+- restores saved loss values from `train_history.json` when available
+
+### CLI validation
+The unified trainer now tracks which flags were explicitly passed so it can
+reject inactive dataset-specific arguments instead of silently ignoring them.
+
+Examples:
+- `dataset=gmm` rejects explicit sphere-only `--radius`
+- `dataset=sphere` rejects explicit GMM-only flags such as `--M`
+- `dataset=sphere` enforces `K + 1 <= D`
+
+### Checks
+Syntax and diff hygiene passed:
+
+```bash
+conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/data.py \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py
+
+git diff --check -- \
+  prototyping/intr_amb_experiments/data.py \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/intr_amb_core.py \
+  prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py \
+  prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py \
+  CODING_JOURNAL.md
+```
+
+Unified GMM smoke run passed:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset gmm \
+  --param v \
+  --D 2 \
+  --K 1 \
+  --N 20 \
+  --N_test 20 \
+  --tau 5 \
+  --tau_eval 5 \
+  --N_gen 32 \
+  --tau_sample 8 \
+  --M 5 \
+  --mode_sigma 0.5 \
+  --off_manifold_sigma 0.05 \
+  --sep 2.0 \
+  --device cpu \
+  --run_id smoke_unified_gmm_20260603 \
+  --no_progress
+```
+
+Unified sphere smoke run passed:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset sphere \
+  --param v \
+  --D 3 \
+  --K 2 \
+  --N 20 \
+  --N_test 20 \
+  --tau 5 \
+  --tau_eval 5 \
+  --N_gen 32 \
+  --tau_sample 8 \
+  --radius 1.0 \
+  --off_manifold_sigma 0.05 \
+  --device cpu \
+  --run_id smoke_unified_sphere_20260603 \
+  --no_progress
+```
+
+Replay equivalence checks passed. Before and after replay, the GMM metric files
+had the same SHA1 digests:
+
+```text
+e3f79432473571d7a1cbd8615aca9edeb0602c2a  checkpoint_metrics.csv
+55f7dca70a9690d50bdeaa3d567990d19314d115  checkpoint_metrics.jsonl
+```
+
+Before and after replay, the sphere metric files also had the same SHA1
+digests:
+
+```text
+9f1476d8495eb62ab9e89f50436d775019217c91  checkpoint_metrics.csv
+9c286f3803243ab050e8557f0750a5e08a5c4112  checkpoint_metrics.jsonl
+```
+
+Replay commands used:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/eval_intrinsic_ambient_gmm.py \
+  --run_dir prototyping/intr_amb_experiments/outputs/intrinsic_ambient_runs/smoke_unified_gmm_20260603 \
+  --device cpu
+
+conda run -n memcompgen python prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py \
+  --run_dir prototyping/intr_amb_experiments/outputs/intrinsic_ambient_runs/smoke_unified_sphere_20260603 \
+  --device cpu
+```
+
+Additional replay-loss check passed for mismatched `tau_eval` and `tau_log`.
+The trainer now records loss points at checkpoint steps even when they are not
+ordinary history-log steps, so replay can restore checkpoint `loss` values
+instead of dropping them.
+
+Commands used:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset gmm \
+  --param v \
+  --D 2 \
+  --K 1 \
+  --N 20 \
+  --N_test 20 \
+  --tau 6 \
+  --tau_eval 3 \
+  --tau_log 4 \
+  --N_gen 16 \
+  --tau_sample 4 \
+  --M 3 \
+  --mode_sigma 0.5 \
+  --off_manifold_sigma 0.05 \
+  --sep 2.0 \
+  --device cpu \
+  --run_id smoke_unified_gmm_replayloss_20260603 \
+  --no_progress
+
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset sphere \
+  --param v \
+  --D 3 \
+  --K 2 \
+  --N 20 \
+  --N_test 20 \
+  --tau 6 \
+  --tau_eval 3 \
+  --tau_log 4 \
+  --N_gen 16 \
+  --tau_sample 4 \
+  --radius 1.0 \
+  --off_manifold_sigma 0.05 \
+  --device cpu \
+  --run_id smoke_unified_sphere_replayloss_20260603 \
+  --no_progress
+```
+
+These runs wrote `train_history.json` entries at checkpoint-only steps such as
+step `3`, and replay preserved the checkpoint metric file SHA1 digests for both
+datasets.
+
+Validation failure checks passed:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset gmm --param v --D 2 --K 1 --N 20 --N_test 20 --tau 1 --tau_eval 1 --N_gen 4 --radius 1.0 --no_progress
+```
+
+Result:
+
+```text
+ValueError: dataset=gmm does not accept sphere-only flags: --radius
+```
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset sphere --param v --D 3 --K 2 --N 20 --N_test 20 --tau 1 --tau_eval 1 --N_gen 4 --M 5 --radius 1.0 --no_progress
+```
+
+Result:
+
+```text
+ValueError: dataset=sphere does not accept GMM-only flags: --M
+```
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient.py \
+  --dataset sphere --param v --D 3 --K 3 --N 20 --N_test 20 --tau 1 --tau_eval 1 --N_gen 4 --radius 1.0 --no_progress
+```
+
+Result:
+
+```text
+ValueError: --K must satisfy K + 1 <= --D for dataset=sphere.
+```
+
+### Next actions
+- Decide whether the replay path should also write a small eval summary artifact
+  beyond the regenerated metric tables and figures.
+- If this prototype hardens further, migrate the shared train/eval split toward
+  the canonical `synthetic_train_runner` / `synthetic_eval` pattern in `src/`.
+
 ## 2026-06-01T21:48:10Z - Intrinsic/Ambient prototype and agent-guide consolidation
 
 ### Context
@@ -218,6 +842,189 @@ analysis focused only on the original `N_train` sweep.
 - Added threshold-based tau figures:
   - `N01_n_train_tau_gen_mem_delta_by_param`;
   - `N02_n_train_tau_gen_mem_delta_overlay_params`;
+
+## 2026-06-02T23:55:52Z - Parallel hypersphere-shell prototype runner
+
+### Context
+Added a parallel prototype path under `prototyping/intr_amb_experiments/` for
+uniform hypersphere-shell data, while keeping the existing ManifoldGMM
+prototype intact.
+
+The goal was to preserve the current single-parameterization training flow and
+memorization metrics, but replace the GMM-specific data machinery and quality
+metric with sphere-specific geometry.
+
+### New prototype files
+- Added `prototyping/intr_amb_experiments/sphere_data.py`
+- Added `prototyping/intr_amb_experiments/train_intrinsic_ambient_sphere.py`
+
+### Hypersphere-shell data model
+The new dataset samples clean data uniformly on `S^K` embedded in a random
+`(K + 1)`-dimensional subspace of `R^D`.
+
+Construction:
+- Draw a random orthonormal row basis `B in R^((K+1) x D)` from a QR factorization.
+- Define the subspace projector `A = B^T B`.
+- Sample clean shell points as `x_shell = radius * u @ B` with
+  `u ~ Uniform(S^K)`.
+- Add off-manifold thickness only in the orthogonal complement:
+  `x = x_shell + off_manifold_sigma * z_perp`, where
+  `z_perp = xi (I - A)` and `xi ~ N(0, I_D)`.
+
+The dataset caches:
+- `train_set`
+- `A`, `B`, and `subspace_dim = K + 1`
+- `sample(n, seed=None)`
+- `dist_to_manifold(x)`
+- `projected_radius_error(x)`
+
+### New single-run sphere trainer
+Added `train_intrinsic_ambient_sphere.py` as a sphere-specific analogue of the
+existing `train_param_sweep.py`.
+
+Important behavior:
+- Trains exactly one parameterization per run.
+- Keeps the same GDFM training, checkpointing, replay, and fixed-`z_init`
+  evaluation flow as the GMM prototype.
+- Writes outputs under:
+
+```text
+prototyping/intr_amb_experiments/outputs/sphere_param_runs
+```
+
+CLI changes relative to the GMM runner:
+- Keeps: `--param`, `--D`, `--K`, `--N`, `--N_test`,
+  `--off_manifold_sigma`, optimizer/training/sampling/checkpoint args
+- Adds: `--radius`
+- Removes GMM-only controls: `--M`, `--mode_sigma` / `--sigma`, `--sep`
+
+Sphere-specific config / metadata naming:
+- `dataset_key = intr_amb_hypersphere_shell`
+- `data.dataset = intr_amb_hypersphere_shell`
+- saved metadata includes `radius` and `subspace_dim`
+
+### Metrics
+Kept memorization metrics unchanged:
+- `f_mem`
+- nearest-neighbor ratio statistics
+- `mean_d1`, `mean_d2`
+
+Replaced `gmm_nll` with sphere-specific metrics:
+- `radius_mae`:
+  mean absolute error between the projected sample radius and the target
+  `radius`
+- `off_manifold_dist_mean`:
+  mean orthogonal distance `||x - A x||_2`
+
+The checkpoint schema now includes generated, held-out baseline, and delta
+versions of both sphere-specific metrics:
+- `radius_mae`, `baseline_radius_mae`, `delta_radius_mae`
+- `off_manifold_dist_mean`,
+  `baseline_off_manifold_dist_mean`,
+  `delta_off_manifold_dist_mean`
+
+The figure set was updated accordingly:
+- `radius_mae_over_steps.png`
+- `off_manifold_dist_mean_over_steps.png`
+- `delta_radius_mae_over_steps.png`
+- `delta_off_manifold_dist_mean_over_steps.png`
+
+### Checks
+Syntax check passed:
+
+```bash
+conda run -n memcompgen python -m py_compile \
+  prototyping/intr_amb_experiments/sphere_data.py \
+  prototyping/intr_amb_experiments/train_intrinsic_ambient_sphere.py
+```
+
+GMM-only strings were absent from the new sphere files aside from the
+generic "comma-separated" CLI help text:
+
+```bash
+rg -n "gmm_nll|mode_sigma|n_modes|sep|intr_amb_manifold_gmm|ManifoldGMM|--M|--sigma" \
+  prototyping/intr_amb_experiments/train_intrinsic_ambient_sphere.py \
+  prototyping/intr_amb_experiments/sphere_data.py
+```
+
+Short CPU smoke run passed:
+
+```bash
+conda run -n memcompgen python prototyping/intr_amb_experiments/train_intrinsic_ambient_sphere.py \
+  --param v \
+  --D 3 \
+  --K 2 \
+  --N 20 \
+  --N_test 20 \
+  --tau 5 \
+  --tau_eval 5 \
+  --N_gen 32 \
+  --tau_sample 8 \
+  --radius 1.0 \
+  --off_manifold_sigma 0.05 \
+  --device cpu \
+  --run_id smoke_sphere_20260603 \
+  --no_progress
+```
+
+Smoke output:
+
+```text
+prototyping/intr_amb_experiments/outputs/sphere_param_runs/smoke_sphere_20260603
+```
+
+Saved artifacts verified:
+- `artifacts/config.json`
+- `artifacts/data_meta.json`
+- `metrics/checkpoint_metrics.csv`
+- `metrics/checkpoint_metrics.jsonl`
+- sphere-specific figure PNGs
+
+Dataset sanity checks:
+
+```bash
+conda run -n memcompgen python -c "from prototyping.intr_amb_experiments.sphere_data import HypersphereShellDataset; ds = HypersphereShellDataset(d=3, k=2, radius=1.25, off_manifold_sigma=0.05, n_train=128, seed=0); xb = ds.sample(2048, seed=123); import torch; print({'radius_mean': round(torch.linalg.norm(ds.subspace_coordinates(xb), dim=-1).mean().item(), 4), 'radius_mae': round(ds.projected_radius_error(xb).mean().item(), 6), 'off_mean': round(ds.dist_to_manifold(xb).mean().item(), 6)});"
+```
+
+Result:
+
+```text
+{'radius_mean': 1.25, 'radius_mae': 0.0, 'off_mean': 0.0}
+```
+
+This is the expected `D=3, K=2` behavior: the sphere fills the ambient space,
+so the orthogonal complement has dimension zero.
+
+Nontrivial off-manifold check:
+
+```bash
+conda run -n memcompgen python -c "from prototyping.intr_amb_experiments.sphere_data import HypersphereShellDataset; ds = HypersphereShellDataset(d=4, k=2, radius=1.25, off_manifold_sigma=0.05, n_train=128, seed=0); xb = ds.sample(4096, seed=123); import torch, math; off = ds.dist_to_manifold(xb).mean().item(); expected = 0.05 * math.sqrt(4 - (2 + 1)); print({'off_mean': round(off, 4), 'expected_scale': round(expected, 4), 'radius_mae': round(ds.projected_radius_error(xb).mean().item(), 6)});"
+```
+
+Result:
+
+```text
+{'off_mean': 0.0397, 'expected_scale': 0.05, 'radius_mae': 0.0}
+```
+
+Invalid geometry guard passed:
+
+```bash
+conda run -n memcompgen python -c "from prototyping.intr_amb_experiments.sphere_data import HypersphereShellDataset; HypersphereShellDataset(d=3, k=3)"
+```
+
+Result:
+
+```text
+ValueError: need k + 1 <= d for an S^K shell in R^d.
+```
+
+### Next actions
+- Launch matched `x`, `eps`, and `v` sphere runs from the job layer.
+- Compare held-out versus generated `radius_mae` and
+  `off_manifold_dist_mean` before interpreting NN-ratio memorization trends.
+- Decide whether the sphere prototype should stay parallel-only or later be
+  folded into a more general synthetic runner.
   - `N03_n_train_tau_gen_threshold_sensitivity_overlay_params`;
   - `N04_n_train_tau_gen_threshold_sensitivity_fmem_0p01_overlay_params`.
 - Added Bonnaire-style tau figures:
@@ -3482,3 +4289,135 @@ Related running jobs at launch checkpoint:
 
 - Capacity resume array `16479052`: `39` completed, `10` still running, no failures seen.
 - Old all-DONE `n_train` sweep eval `16473994`: `76` completed, `4` running, `2` pending, no failures seen; combine job `16473995` still dependency-pending.
+
+2026-06-03T00:40:29Z - Add D=3 prototype sample visualizations
+
+- Goal: add sample-space visual outputs for `ambient_dim == 3` in the unified intrinsic/ambient prototype path, while keeping the existing `D=2` path unchanged.
+- Implementation:
+  - added `save_final_3d_visualizations(...)` to `prototyping/intr_amb_experiments/intr_amb_core.py`
+  - added a small dispatcher so final visualization export now selects `2D` or `3D` from `ambient_dim`
+  - kept metric plots unchanged; only extended the final sample-space artifacts
+- Output artifacts:
+  - `figures/final_3d_source_generated_train.png`
+  - `figures/final_3d_sampling_process.mp4`
+- Checks:
+  - `conda run -n memcompgen python -m py_compile prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `git diff --check -- prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `conda run -n memcompgen python prototyping/intr_amb_experiments/eval_intrinsic_ambient_sphere.py --run_dir prototyping/intr_amb_experiments/outputs/intrinsic_ambient_runs/smoke_unified_sphere_20260603 --device cpu`
+- Result:
+  - replay completed cleanly
+  - verified `final_3d_source_generated_train.png` and `final_3d_sampling_process.mp4` were written under the run `figures/` directory
+
+2026-06-03T00:45:32Z - Run D=3 sphere prototype
+
+- Goal: run the unified prototype trainer for the sphere dataset with `D=3`, `K=2`, and `param=v`.
+- Command:
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 128 --N_test 1000 --radius 1.0 --off_manifold_sigma 0.05 --tau 30000 --B 64 --lr 1e-3 --tau_eval 1000 --tau_log 100 --N_gen 1000 --tau_sample 128 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --run_id sphere_d3_k2_v_seed0_20260603 --no_progress`
+- Result:
+  - run completed cleanly
+  - output directory: `prototyping/intr_amb_experiments/outputs/intrinsic_ambient_runs/sphere_d3_k2_v_seed0_20260603`
+  - wrote `32` checkpoint metric CSV lines, including header
+  - wrote `figures/final_3d_source_generated_train.png`
+  - wrote `figures/final_3d_sampling_process.mp4`
+
+2026-06-03T00:54:09Z - Add sphere radius scale option
+
+- Goal: let sphere prototype runs choose either unit radius or sqrt ambient-dimension radius while keeping existing unit-radius commands unchanged.
+- Implementation:
+  - added `--radius_scale {unit,sqrt_D}` to the unified intrinsic/ambient prototype CLI
+  - kept `--radius` as a positive multiplier
+  - stored the resolved sampling radius in `config.data.radius`
+  - stored `radius_multiplier` and `radius_scale` in config and data metadata
+- Checks:
+  - `PYTHONPATH=src conda run -n memcompgen python -m py_compile prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 8 --N_test 8 --radius 1.0 --radius_scale sqrt_D --off_manifold_sigma 0.05 --tau 2 --B 4 --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 8 --tau_sample 4 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --run_id smoke_radius_scale_sqrtD_20260603 --no_progress`
+  - `git diff --check -- prototyping/intr_amb_experiments/intr_amb_core.py CODING_JOURNAL.md`
+- Result:
+  - smoke run completed cleanly
+  - saved `radius=1.7320508075688772`, `radius_multiplier=1.0`, and `radius_scale=sqrt_D` for `D=3`
+
+2026-06-03T01:09:58Z - Simplify sphere radius CLI to two modes
+
+- Goal: replace the radius multiplier plus scale interface with exactly two sphere radius cases.
+- Implementation:
+  - changed the sphere CLI to `--radius {unit,sqrt_D}`
+  - removed `--radius_scale` from the active CLI
+  - saved the numeric resolved radius in `config.data.radius`
+  - saved the selected case as `radius_mode`
+- Checks:
+  - `PYTHONPATH=src conda run -n memcompgen python -m py_compile prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 8 --N_test 8 --radius unit --off_manifold_sigma 0.05 --tau 2 --B 4 --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 8 --tau_sample 4 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --run_id smoke_radius_unit_20260603 --no_progress`
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 8 --N_test 8 --radius sqrt_D --off_manifold_sigma 0.05 --tau 2 --B 4 --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 8 --tau_sample 4 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --run_id smoke_radius_sqrtD_20260603 --no_progress`
+  - `git diff --check -- prototyping/intr_amb_experiments/intr_amb_core.py CODING_JOURNAL.md`
+- Result:
+  - unit smoke saved `radius=1.0` and `radius_mode=unit`
+  - sqrt_D smoke saved `radius=1.7320508075688772` and `radius_mode=sqrt_D` for `D=3`
+
+2026-06-03T01:20:29Z - Shorten automatic prototype run names
+
+- Goal: remove the need to manually provide annoying `--run_id` values for intrinsic/ambient prototype runs.
+- Implementation:
+  - shortened the automatically generated run directory name when `--run_id` is omitted
+  - kept `--run_id` as an explicit override
+  - added automatic suffixing for generated names if a same-second directory already exists
+  - left full settings in `artifacts/config.json` and `artifacts/data_meta.json`
+- New automatic name shape:
+  - sphere: `sphere_D3_K2_RsqrtD_N128_v_tau30000_seed0_gseed0_YYYYMMDD_HHMMSS`
+  - GMM: `gmm_D2_K2_M5_N128_v_tau30000_seed0_gseed0_YYYYMMDD_HHMMSS`
+- Checks:
+  - `PYTHONPATH=src conda run -n memcompgen python -m py_compile prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 8 --N_test 8 --radius sqrt_D --off_manifold_sigma 0.05 --tau 1 --B 4 --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 8 --tau_sample 4 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --no_progress`
+  - `git diff --check -- prototyping/intr_amb_experiments/intr_amb_core.py CODING_JOURNAL.md`
+- Result:
+  - no-`run_id` smoke completed cleanly
+  - generated directory: `sphere_D3_K2_RsqrtD_N8_v_tau1_seed0_gseed0_20260603_032011`
+  - saved matching `outputs.run_name` in `artifacts/config.json`
+
+2026-06-03T01:22:15Z - Rename sphere sqrt radius flag value
+
+- Goal: remove the underscore from the sphere radius mode value so underscores remain field separators in commands and generated names.
+- Implementation:
+  - changed the active sphere radius choices to `--radius {unit,sqrtD}`
+  - changed numeric radius resolution to use `sqrtD`
+  - kept automatic run names as `RsqrtD`
+- Checks:
+  - `PYTHONPATH=src conda run -n memcompgen python -m py_compile prototyping/intr_amb_experiments/intr_amb_core.py`
+  - `PYTHONPATH=src conda run -n memcompgen python prototyping/intr_amb_experiments/intr_amb_core.py --dataset sphere --param v --D 3 --K 2 --N 8 --N_test 8 --radius sqrtD --off_manifold_sigma 0.05 --tau 1 --B 4 --lr 1e-3 --tau_eval 1 --tau_log 1 --N_gen 8 --tau_sample 4 --sampling_method heun --rho 0.3 --seed 0 --geometry_seed 0 --device cpu --no_progress`
+  - `git diff --check -- prototyping/intr_amb_experiments/intr_amb_core.py CODING_JOURNAL.md`
+- Result:
+  - smoke completed cleanly
+  - generated directory: `sphere_D3_K2_RsqrtD_N8_v_tau1_seed0_gseed0_20260603_032159`
+  - saved `radius_mode=sqrtD` and numeric `radius=1.7320508075688772`
+
+2026-06-03T01:23:59Z - Intrinsic/ambient prototype state summary
+
+- Current prototype state:
+  - replaced duplicated train entrypoints with one unified prototype core in `prototyping/intr_amb_experiments/intr_amb_core.py`
+  - kept dataset-specific replay entrypoints in `eval_intrinsic_ambient_gmm.py` and `eval_intrinsic_ambient_sphere.py`
+  - kept GMM data in `data.py` and added sphere data in `sphere_data.py`
+  - removed the old `train_param_sweep.py` entrypoint
+- Sphere dataset:
+  - samples an `S^K` shell in a random `(K + 1)`-dimensional subspace of `R^D`
+  - enforces `K + 1 <= D`
+  - supports exactly two radius modes through `--radius {unit,sqrtD}`
+  - saves the numeric resolved radius as `config.data.radius` and the selected case as `radius_mode`
+- Metrics:
+  - shared memorization metrics remain `f_mem`, `mean_nn_ratio`, `std_nn_ratio`, `mean_d1`, and `mean_d2`
+  - GMM keeps `gmm_nll` and `gmm_nll_per_dim`
+  - sphere uses `radius_mae` and `off_manifold_dist_mean`
+  - checkpoint evaluation still happens every `tau_eval` optimizer updates unless explicit `tau_ckpts` are provided
+- Visuals:
+  - `D=2` writes final 2D scatter and sampling movie
+  - `D=3` now writes final 3D scatter and sampling movie
+  - metric curves are written for both datasets
+- Run naming:
+  - `--run_id` is now optional
+  - automatic sphere names use the compact shape `sphere_D3_K2_RsqrtD_N128_v_tau30000_seed0_gseed0_YYYYMMDD_HHMMSS`
+  - automatic GMM names use the compact shape `gmm_D2_K2_M5_N128_v_tau30000_seed0_gseed0_YYYYMMDD_HHMMSS`
+- Verification already completed:
+  - syntax checks on the unified core
+  - short sphere runs for `unit` and `sqrtD` radius modes
+  - short no-`run_id` run to verify automatic naming
+  - full `D=3`, `K=2`, `param=v`, `tau=30000` sphere run with 3D outputs
+- Current note:
+  - generated outputs under `prototyping/intr_amb_experiments/outputs/` are present in the working tree and should be treated as experiment artifacts, not source code

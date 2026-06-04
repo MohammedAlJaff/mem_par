@@ -21,6 +21,10 @@ try:
         RHO_SWEEP,
     )
     from mp_metrics.metrics_images import _to_uint8_rgb
+    from mp_metrics.metrics_synthetic import (
+        compute_memorization_metrics as compute_synthetic_memorization_metrics,
+        compute_nn_stats as compute_synthetic_nn_stats,
+    )
     from mp_runners.metric_io import compute_image_folder_memorization_metrics
 except ModuleNotFoundError:
     torch = None
@@ -35,6 +39,8 @@ except ModuleNotFoundError:
     compute_projected_image_memorization_metrics = None
     compute_memorization_metrics = None
     compute_nn_stats = None
+    compute_synthetic_memorization_metrics = None
+    compute_synthetic_nn_stats = None
     collect_image32_metric_record = None
     make_random_projection_matrix = None
     RHO_SWEEP = None
@@ -42,7 +48,10 @@ except ModuleNotFoundError:
 
 
 @unittest.skipIf(
-    torch is None or get_base_config is None or compute_memorization_metrics is None,
+    torch is None
+    or get_base_config is None
+    or compute_memorization_metrics is None
+    or compute_synthetic_memorization_metrics is None,
     "torch and the memorization metric stack are required",
 )
 class TestMPMetrics(unittest.TestCase):
@@ -92,6 +101,107 @@ class TestMPMetrics(unittest.TestCase):
         for key in ("d1", "d2", "r"):
             self.assertTrue(torch.allclose(chunked[key], full[key], atol=1.0e-6))
         self.assertTrue(torch.equal(chunked["nn_idx"], full["nn_idx"]))
+
+    def test_synthetic_chunking_matches_full_for_fixed_jittered_samples(self):
+        rho = 0.3
+        reference_count = 2048
+        copy_count = 512
+        sample_count = 2048
+        expected_f_mem = copy_count / sample_count
+        chunk_settings = (
+            {"chunk_size": 1},
+            {"chunk_size": 2},
+            {"chunk_size": 7},
+            {"query_batch_size": 4},
+            {"query_batch_size": sample_count, "reference_batch_size": 257},
+            {"query_batch_size": sample_count, "reference_batch_size": 509},
+            {"chunk_size": 7, "reference_batch_size": 257},
+            {"query_batch_size": 4, "reference_batch_size": 509},
+        )
+
+        for dim in (2, 3, 10, 100):
+            with self.subTest(dim=dim):
+                x = torch.zeros(reference_count, dim, dtype=torch.float32)
+                x[:, 0] = torch.arange(reference_count, dtype=torch.float32)
+                y_near_train = x[:copy_count].clone()
+                y_near_train[:, 1] = 0.01
+                y_other = x[copy_count:sample_count].clone()
+                y_other[:, 1] = 100.0
+                y = torch.cat([y_near_train, y_other], dim=0)
+
+                full_stats = compute_synthetic_nn_stats(
+                    y,
+                    x,
+                    query_batch_size=y.shape[0],
+                    reference_batch_size=None,
+                )
+                full_metrics = compute_synthetic_memorization_metrics(
+                    y,
+                    x,
+                    ratio_threshold=rho,
+                    query_batch_size=y.shape[0],
+                    reference_batch_size=None,
+                )
+
+                self.assertLess(float(full_stats["r"][:copy_count].max()), rho)
+                self.assertGreater(float(full_stats["r"][copy_count:].min()), rho)
+                self.assertAlmostEqual(
+                    full_metrics["f_mem"],
+                    expected_f_mem,
+                    places=6,
+                )
+
+            for settings in chunk_settings:
+                with self.subTest(dim=dim, settings=settings):
+                    chunked_stats = compute_synthetic_nn_stats(y, x, **settings)
+                    chunked_metrics = compute_synthetic_memorization_metrics(
+                        y,
+                        x,
+                        ratio_threshold=rho,
+                        **settings,
+                    )
+
+                    self.assertAlmostEqual(
+                        chunked_metrics["f_mem"],
+                        expected_f_mem,
+                        places=6,
+                    )
+                    self.assertAlmostEqual(
+                        chunked_metrics["f_mem"],
+                        full_metrics["f_mem"],
+                        places=6,
+                    )
+                    for key in ("d1", "d2", "r"):
+                        self.assertTrue(
+                            torch.allclose(
+                                chunked_stats[key],
+                                full_stats[key],
+                                atol=2.0e-2,
+                            )
+                        )
+                    self.assertTrue(
+                        torch.equal(chunked_stats["nn_idx"], full_stats["nn_idx"])
+                    )
+                    for key in (
+                        "mean_nn_ratio",
+                        "std_nn_ratio",
+                        "mean_d1",
+                        "mean_d2",
+                        "ratio_threshold",
+                    ):
+                        self.assertAlmostEqual(
+                            chunked_metrics[key],
+                            full_metrics[key],
+                            places=3,
+                        )
+                    self.assertEqual(
+                        chunked_metrics["n_samples"],
+                        full_metrics["n_samples"],
+                    )
+                    self.assertEqual(
+                        chunked_metrics["n_reference"],
+                        full_metrics["n_reference"],
+                    )
 
     def test_rho_can_come_from_config(self):
         reference = torch.tensor(
